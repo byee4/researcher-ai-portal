@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: researcher_ai
+      POSTGRES_USER: researcher
+      POSTGRES_PASSWORD: researcher_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U researcher -d researcher_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: sh -c "python manage.py migrate --noinput && gunicorn --bind 0.0.0.0:8000 --workers 2 --timeout 120 --access-logfile - --error-logfile - researcher_ai_portal.wsgi:application"
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://researcher:researcher_dev_password@db:5432/researcher_ai
+      DJANGO_SECRET_KEY: dev-secret-key-change-in-production
+      DJANGO_DEBUG: "True"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
+      GLOBUS_CLIENT_ID: ${GLOBUS_CLIENT_ID:-}
+      GLOBUS_CLIENT_SECRET: ${GLOBUS_CLIENT_SECRET:-}
+      GLOBUS_ADMIN_GROUP: ${GLOBUS_ADMIN_GROUP:-}
+      SOCIAL_AUTH_GLOBUS_REDIRECT_URI: ${SOCIAL_AUTH_GLOBUS_REDIRECT_URI:-}
+    volumes:
+      - ./mounted_data:/app/mounted_data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz/', timeout=3).getcode() == 200 else 1)\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:

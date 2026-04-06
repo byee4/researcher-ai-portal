@@ -1,0 +1,261 @@
+{% extends "researcher_ai_portal/base.html" %}
+{% block title %}{{ step_label }} — researcher-ai{% endblock %}
+
+{% block max_width %}1100{% endblock %}
+
+{% block extra_head %}{{ form.media }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="{% url 'home' %}">Home</a>
+  <span class="crumb-sep">›</span>
+  <a href="{% url 'workflow_step' job_id=job_id step='paper' %}">Job {{ job_id|truncatechars:10 }}</a>
+  <span class="crumb-sep">›</span>
+  <span class="crumb-current">{{ step_label }}</span>
+{% endblock %}
+
+{% block content %}
+<div class="page">
+
+  <!-- ── Step pipeline nav ─────────────────────────────────── -->
+  <div class="card card-sm mb-4" style="padding: 14px 20px;">
+    <div style="display: flex; align-items: flex-start; gap: 0; position: relative;">
+      <!-- connector line behind the dots -->
+      <div style="position: absolute; top: 13px; left: 20px; right: 60px; height: 2px; background: var(--border-2); z-index: 0;"></div>
+
+      <!-- Workflow steps -->
+      {% for chip in step_chips %}
+        <a href="{% url 'workflow_step' job_id=job_id step=chip.id %}"
+           style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px;
+                  text-decoration: none; position: relative; z-index: 1;">
+          <div style="width: 28px; height: 28px; border-radius: 50%;
+                      {% if chip.id == step %}
+                        background: var(--primary); border: 2px solid var(--primary); color: white;
+                        box-shadow: 0 0 0 4px var(--primary-soft);
+                      {% else %}
+                        background: var(--surface); border: 2px solid var(--border-2); color: var(--text-3);
+                      {% endif %}
+                      display: flex; align-items: center; justify-content: center;
+                      font-size: 0.7rem; font-weight: 700; transition: all .2s;">
+            {{ forloop.counter }}
+          </div>
+          <span style="font-size: 0.7rem;
+                       font-weight: {% if chip.id == step %}700{% else %}500{% endif %};
+                       color: {% if chip.id == step %}var(--primary){% else %}var(--text-3){% endif %};
+                       white-space: nowrap; transition: color .2s;">
+            {{ chip.label }}
+          </span>
+        </a>
+      {% endfor %}
+
+      <!-- Dashboard endpoint node -->
+      <a href="{% url 'dashboard' job_id=job_id %}"
+         style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 5px;
+                text-decoration: none; position: relative; z-index: 1; margin-left: 4px;">
+        <div style="width: 28px; height: 28px; border-radius: 50%;
+                    background: var(--teal-soft); border: 2px solid var(--teal); color: var(--teal);
+                    display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700;">
+          ⊞
+        </div>
+        <span style="font-size: 0.7rem; font-weight: 600; color: var(--teal); white-space: nowrap;">Dashboard</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- ── Overall progress bar ──────────────────────────────── -->
+  <div class="progress-track mb-1">
+    <div id="step-progress-bar" class="progress-fill" style="width: {{ progress }}%;"></div>
+  </div>
+  <p class="text-xs text-muted mb-4" style="text-align: right;">{{ progress }}% complete</p>
+
+  <!-- ── Alerts ────────────────────────────────────────────── -->
+  {% if error %}<div class="alert alert-error mb-3">{{ error }}</div>{% endif %}
+  {% if info  %}<div class="alert alert-success mb-3">{{ info }}</div>{% endif %}
+
+  <div style="display: grid; grid-template-columns: 250px 1fr; gap: 20px; align-items: start;">
+
+    <!-- ── Left sidebar ───────────────────────────────────── -->
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+
+      <!-- Dashboard shortcut — always visible -->
+      <a href="{% url 'dashboard' job_id=job_id %}"
+         class="btn btn-teal w-full" style="justify-content: center; font-size: 0.875rem;">
+        ⊞ View Dashboard
+      </a>
+
+      <!-- Step status -->
+      <div class="card card-sm">
+        <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">Step status</p>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="pill pill-{{ component_meta.status|default:'missing' }}">
+            {{ component_meta.status|default:'missing'|title }}
+          </span>
+        </div>
+        <p class="text-xs text-muted">
+          Source: <strong style="color: var(--text);">{{ component_meta.source|default:"none" }}</strong>
+        </p>
+        {% if component_meta.missing %}
+          <div style="margin-top: 8px; padding: 8px 10px; background: var(--warning-soft);
+                      border: 1px solid var(--warning-mid); border-radius: var(--radius-sm);">
+            <p class="text-xs font-600" style="color: var(--warning); margin-bottom: 4px;">Missing / weak</p>
+            {% for m in component_meta.missing %}
+              <div class="text-xs" style="color: var(--warning);">• {{ m }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+
+      <!-- Figure parse progress (figures step only) -->
+      {% if step == "figures" %}
+        <div class="card card-sm">
+          <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">Figure parsing</p>
+          <div class="progress-track mb-1">
+            <div class="progress-fill" style="width: {{ figure_parse_percent }}%; background: linear-gradient(90deg, var(--teal), #06b6d4);"></div>
+          </div>
+          <p class="text-xs text-muted">
+            <strong style="color: var(--text);">{{ figure_parse_current }}</strong> /
+            <strong style="color: var(--text);">{{ figure_parse_total }}</strong> figures
+          </p>
+        </div>
+        {% if supplementary_figure_ids %}
+          <div class="card card-sm" style="background: var(--warning-soft); border-color: var(--warning-mid);">
+            <p class="text-xs font-600" style="color: var(--warning); margin-bottom: 5px;">Supplementary (deferred)</p>
+            {% for sid in supplementary_figure_ids %}
+              <div class="text-xs" style="color: var(--warning);">• {{ sid }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endif %}
+
+      <!-- Actions card -->
+      <div class="card card-sm">
+        <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">Actions</p>
+        <form id="step-form" method="post" action="{{ request.path }}" style="display: flex; flex-direction: column; gap: 7px;">
+          {% csrf_token %}
+          {% if step == "figures" %}
+            <button id="run-step-btn" name="step_action" value="run" type="button"
+                    class="btn btn-primary w-full" style="justify-content: center;">
+              ▶ Run {{ step_label }}
+            </button>
+          {% else %}
+            <button name="step_action" value="run" class="btn btn-primary w-full" style="justify-content: center;">
+              ▶ Run {{ step_label }}
+            </button>
+          {% endif %}
+          <button name="step_action" value="save" class="btn btn-success w-full" style="justify-content: center;">
+            ✓ Save corrections
+          </button>
+          <div style="border-top: 1px solid var(--border); margin: 3px 0;"></div>
+          {% if prev_step %}
+            <button name="step_action" value="prev" class="btn btn-ghost w-full" style="justify-content: center;">
+              ← {{ step_labels|default_if_none:""|dictsort:"id" }}Previous
+            </button>
+          {% endif %}
+          {% if next_step %}
+            <button name="step_action" value="next" class="btn btn-ghost w-full" style="justify-content: center;">
+              Next step →
+            </button>
+          {% else %}
+            <button name="step_action" value="finish" class="btn btn-ghost w-full" style="justify-content: center;">
+              Finish workflow
+            </button>
+          {% endif %}
+        </form>
+      </div>
+
+      <a class="text-xs text-muted" href="{% url 'home' %}" style="text-align: center; display: block;">Start over</a>
+    </div>
+
+    <!-- ── Main panel ─────────────────────────────────────── -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+
+      <!-- Unified figure review (figures step only) -->
+      {% if step == "figures" %}
+        {% if figure_gt_form.errors %}
+          <div class="alert alert-error mb-3">{{ figure_gt_form.errors }}</div>
+        {% endif %}
+        {% with gt_form_prefix="gt_figures" %}
+          {% include "researcher_ai_portal/_figure_cards.html" %}
+        {% endwith %}
+      {% endif %}
+
+      <!-- JSON editor -->
+      <div class="card" style="padding: 20px;">
+        <div class="section-header mb-3">
+          <h2>{{ step_label }} data</h2>
+          <code class="text-xs" style="color: var(--text-3);">step: {{ step }}</code>
+        </div>
+        <div class="json-editor">{{ form.component_json }}</div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<style>
+  .json-editor textarea {
+    width: 100%; min-height: 420px;
+    border: 1.5px solid var(--border-2); border-radius: var(--radius);
+    font-family: var(--mono); font-size: 12px; padding: 12px;
+    color: var(--text); background: var(--surface-2);
+    outline: none; transition: border-color .15s;
+  }
+  .json-editor textarea:focus { border-color: var(--primary); }
+  .accordion .form-group input, .accordion .form-group select, .accordion .form-group textarea {
+    width: 100%; padding: 7px 9px; border: 1.5px solid var(--border-2); border-radius: var(--radius-sm);
+    font-family: var(--font); font-size: 0.875rem; color: var(--text); background: var(--surface);
+    outline: none; transition: border-color .15s; box-sizing: border-box;
+  }
+  .accordion .form-group input:focus,
+  .accordion .form-group select:focus { border-color: var(--primary); }
+</style>
+
+{% if step == "figures" %}
+<script>
+  (function () {
+    const form    = document.getElementById("step-form");
+    const runBtn  = document.getElementById("run-step-btn");
+    const stepBar = document.getElementById("step-progress-bar");
+    if (!form || !runBtn || !stepBar) return;
+
+    const statusUrl = "{{ status_url }}";
+    let running = false;
+    let pollTimer = null;
+
+    async function pollStatus() {
+      try {
+        const res = await fetch(statusUrl, { credentials: "same-origin" });
+        if (!res.ok) return;
+        const data = await res.json();
+        stepBar.style.width = Math.max(0, Math.min(100, data.progress || 0)) + "%";
+        const cur   = Number(data.figure_parse_current || 0);
+        const total = Number(data.figure_parse_total   || 0);
+        const figPct = total > 0 ? Math.round((cur / total) * 100) : 0;
+        const miniBar = document.querySelector('.progress-fill[style*="teal"]');
+        if (miniBar) miniBar.style.width = figPct + "%";
+      } catch (e) { /* noop */ }
+    }
+
+    runBtn.addEventListener("click", async function (e) {
+      e.preventDefault();
+      if (running) return;
+      running = true;
+      runBtn.disabled = true;
+      runBtn.textContent = "Running…";
+      const fd = new FormData(form);
+      fd.set("step_action", "run");
+      pollTimer = setInterval(pollStatus, 1200);
+      await pollStatus();
+      try {
+        await fetch(form.getAttribute("action") || window.location.href,
+                    { method: "POST", body: fd, credentials: "same-origin" });
+      } finally {
+        if (pollTimer) clearInterval(pollTimer);
+        await pollStatus();
+        window.location.reload();
+      }
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

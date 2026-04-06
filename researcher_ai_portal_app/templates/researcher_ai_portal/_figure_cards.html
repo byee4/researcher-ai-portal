@@ -1,0 +1,522 @@
+{% load portal_extras %}
+
+{% if merged_figure_rows %}
+
+  <!-- ── Summary bar ─────────────────────────────────────────── -->
+  {% with total=merged_figure_rows|length %}
+    {% if total %}
+      <div style="display:flex; align-items:center; justify-content:space-between;
+                  flex-wrap:wrap; gap:10px; margin-bottom:18px;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span class="text-sm font-600" style="color:var(--text);">{{ total }} figure{{ total|pluralize }}</span>
+          {% for fig in merged_figure_rows %}{% if fig.is_uncertain %}{% if forloop.first %}
+            <span class="pill pill-inferred">
+              ⚠ {{ merged_figure_rows|length }} need review
+            </span>
+          {% endif %}{% endif %}{% endfor %}
+        </div>
+        <p class="text-xs text-muted">Sorted by confidence — low first. Click <strong>Correct panel</strong> to fix a parse.</p>
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <!-- ── Figure cards ─────────────────────────────────────────── -->
+  {% for fig in merged_figure_rows %}
+    <div class="fig-review-card {% if fig.is_uncertain %}fig-uncertain{% endif %}"
+         id="fig-card-{{ fig.figure_key }}">
+
+      <!-- Card header -->
+      <div class="fig-card-header">
+        <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+          {% if fig.is_uncertain %}
+            <div class="conf-dot conf-dot-warn" title="Has uncertain panels"></div>
+          {% elif fig.min_confidence >= 80 %}
+            <div class="conf-dot conf-dot-good" title="High confidence"></div>
+          {% else %}
+            <div class="conf-dot conf-dot-med" title="Medium confidence"></div>
+          {% endif %}
+          <span class="font-600" style="color:var(--text); font-size:0.9375rem;">{{ fig.figure_id }}</span>
+          {% if fig.title %}
+            <span class="text-sm text-muted" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              — {{ fig.title|truncatechars:60 }}
+            </span>
+          {% endif %}
+        </div>
+        {% if fig.min_confidence < 100 %}
+          <span class="text-xs font-600"
+                style="color:{% if fig.min_confidence >= 80 %}var(--success){% elif fig.min_confidence >= 50 %}var(--warning){% else %}var(--danger){% endif %}; flex-shrink:0;">
+            min {{ fig.min_confidence|floatformat:0 }}% conf
+          </span>
+        {% endif %}
+      </div>
+
+      <!-- Card body: image + panels side by side -->
+      <div class="fig-card-body">
+
+        <!-- Image column -->
+        <div class="fig-image-col">
+          {% if fig.entries %}
+            {% with entry=fig.entries.0 %}
+              <a href="{{ entry.url }}" target="_blank" rel="noopener">
+                <img src="{{ entry.proxy_url }}" alt="{{ fig.figure_id }}"
+                     loading="lazy" class="fig-img"
+                     onerror="this.closest('.fig-image-col').innerHTML='<p class=\'fig-no-img\'>Image unavailable</p>'" />
+              </a>
+              {% if fig.entries|length > 1 %}
+                <p class="text-xs text-muted mt-1">+{{ fig.entries|length|add:"-1" }} more panel image{{ fig.entries|length|add:"-1"|pluralize }}</p>
+              {% endif %}
+            {% endwith %}
+          {% elif fig.deferred_parser %}
+            <div class="fig-deferred">
+              <p class="text-xs font-600" style="color:var(--warning);">Deferred</p>
+              <p class="text-xs text-muted">{{ fig.deferred_parser }}</p>
+            </div>
+          {% else %}
+            <div class="fig-no-img-box">
+              <p class="fig-no-img">No image found</p>
+            </div>
+          {% endif %}
+          {% if fig.caption %}
+            <p class="fig-caption">{{ fig.caption|truncatechars:180 }}</p>
+          {% endif %}
+        </div>
+
+        <!-- Panels column -->
+        <div class="fig-panels-col">
+          {% if fig.panels %}
+            {% for panel in fig.panels %}
+              <div class="panel-row {% if panel.is_uncertain %}panel-row-uncertain{% endif %}"
+                   id="panel-{{ fig.figure_key }}-{{ panel.label }}">
+                <!-- Panel header -->
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+                  <span class="panel-label-chip">Panel {{ panel.label }}</span>
+                  <span class="text-xs" style="color:var(--text-2);">{{ panel.plot_type }}</span>
+                  <!-- Confidence bar inline -->
+                  <div style="display:flex; align-items:center; gap:5px; flex:1; min-width:80px;">
+                    <div style="flex:1; height:5px; background:var(--surface-3); border-radius:999px; overflow:hidden; border:1px solid var(--border);">
+                      <div style="height:100%; border-radius:999px; width:{{ panel.confidence|floatformat:0 }}%;
+                                  background:{% if panel.confidence >= 80 %}var(--success){% elif panel.confidence >= 50 %}var(--warning){% else %}var(--danger){% endif %};"></div>
+                    </div>
+                    <span class="text-xs font-600"
+                          style="color:{% if panel.confidence >= 80 %}var(--success){% elif panel.confidence >= 50 %}var(--warning){% else %}var(--danger){% endif %}; white-space:nowrap;">
+                      {{ panel.confidence|floatformat:0 }}%
+                    </span>
+                  </div>
+                  {% if panel.is_uncertain %}
+                    <span style="font-size:0.75rem; color:var(--warning);">⚠</span>
+                  {% endif %}
+                </div>
+
+                <!-- Issue tags (only problems) -->
+                {% if panel.issue_tags %}
+                  <div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px;">
+                    {% for tag in panel.issue_tags %}
+                      <span class="issue-tag">{{ tag|cut:"panel_"|replace:"_: " }}</span>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+
+                <!-- Key low-confidence score breakdown (only show dims < 80) -->
+                {% if panel.confidence_scores %}
+                  <div class="score-breakdown">
+                    {% for key, val in panel.confidence_scores.items %}
+                      {% if val < 80 %}
+                        <div class="score-row">
+                          <span class="score-key">{{ key|cut:"_score"|replace:"_: " }}</span>
+                          <div class="score-bar-track">
+                            <div class="score-bar-fill"
+                                 style="width:{{ val|floatformat:0 }}%;
+                                        background:{% if val >= 80 %}var(--success){% elif val >= 50 %}var(--warning){% else %}var(--danger){% endif %};"></div>
+                          </div>
+                          <span class="score-val"
+                                style="color:{% if val >= 80 %}var(--success){% elif val >= 50 %}var(--warning){% else %}var(--danger){% endif %};">
+                            {{ val|floatformat:0 }}
+                          </span>
+                        </div>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                {% endif %}
+
+                <!-- Ground-truth tags already applied -->
+                {% if panel.ground_truth_tags %}
+                  <div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;">
+                    {% for tag in panel.ground_truth_tags %}
+                      <span style="font-size:0.72rem; padding:2px 7px; border-radius:999px;
+                                   background:var(--teal-soft); border:1px solid #99f6e4; color:var(--teal);">{{ tag }}</span>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+
+                <!-- Correct button -->
+                <button type="button" class="btn btn-ghost btn-sm correct-panel-btn"
+                        style="font-size:0.78rem; padding:4px 10px; margin-top:4px;"
+                        data-figure-id="{{ fig.figure_id }}"
+                        data-panel-label="{{ panel.label }}"
+                        data-plot-type="{{ panel.plot_type }}"
+                        data-card-id="fig-card-{{ fig.figure_key }}"
+                        onclick="openCorrection(this)">
+                  ✏ Correct this panel
+                </button>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="text-xs text-muted" style="padding:12px 0;">No panel data extracted for this figure.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+
+{% else %}
+  <div class="card" style="padding:40px; text-align:center;">
+    <p class="text-muted">No figures extracted yet.</p>
+  </div>
+{% endif %}
+
+
+<!-- ── Correction drawer (shared, pre-filled via JS) ────────────── -->
+<div id="correction-drawer" style="
+  display:none; position:fixed; bottom:0; left:0; right:0; z-index:200;
+  background:var(--surface); border-top:2px solid var(--primary);
+  box-shadow:0 -4px 24px rgba(15,23,42,.12);
+  max-height:70vh; overflow-y:auto;">
+  <div style="max-width:900px; margin:0 auto; padding:20px 24px 28px;">
+
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+      <div>
+        <h2 id="drawer-title" style="margin-bottom:3px; font-size:1rem;">Correct panel</h2>
+        <p class="text-xs text-muted" id="drawer-subtitle">Override the parser's inference for this panel.</p>
+      </div>
+      <button type="button" onclick="closeCorrection()"
+              class="btn btn-ghost btn-sm" style="flex-shrink:0;">✕ Close</button>
+    </div>
+
+    <form method="post" id="correction-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="inject_ground_truth" />
+
+      <!-- Pre-filled hidden identifiers (updated by JS) -->
+      {{ figure_gt_form.figure_id }}
+      {{ figure_gt_form.panel_label }}
+
+      <!-- The important corrections — shown prominently -->
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:12px; margin-bottom:14px;">
+        <div class="form-group">
+          <label class="form-label">Plot Type</label>
+          {{ figure_gt_form.plot_type }}
+        </div>
+        <div class="form-group">
+          <label class="form-label">Plot Category</label>
+          {{ figure_gt_form.plot_category }}
+        </div>
+        <div class="form-group">
+          <label class="form-label">X-Axis Label</label>
+          {{ figure_gt_form.x_axis_label }}
+        </div>
+        <div class="form-group">
+          <label class="form-label">X-Axis Scale</label>
+          {{ figure_gt_form.x_axis_scale }}
+        </div>
+        <div class="form-group">
+          <label class="form-label">Y-Axis Label</label>
+          {{ figure_gt_form.y_axis_label }}
+        </div>
+        <div class="form-group">
+          <label class="form-label">Y-Axis Scale</label>
+          {{ figure_gt_form.y_axis_scale }}
+        </div>
+      </div>
+
+      <!-- Secondary fields collapsed -->
+      <details style="margin-bottom:14px;">
+        <summary style="font-size:0.875rem; font-weight:600; cursor:pointer; color:var(--text-2); padding:4px 0;">
+          Caption &amp; description overrides
+        </summary>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:12px; margin-top:10px;">
+          <div class="form-group">
+            <label class="form-label">Title Override</label>
+            {{ figure_gt_form.title_override }}
+          </div>
+          <div class="form-group">
+            <label class="form-label">Caption Override</label>
+            {{ figure_gt_form.caption_override }}
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description</label>
+            {{ figure_gt_form.description }}
+          </div>
+          <div class="form-group" style="display:flex; align-items:flex-end; gap:8px;">
+            <label class="form-label">Mark Uncertain</label>
+            {{ figure_gt_form.mark_uncertain }}
+          </div>
+        </div>
+      </details>
+
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button class="btn btn-teal" type="submit">✓ Save correction</button>
+        <button type="button" class="btn btn-ghost" onclick="closeCorrection()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div id="correction-overlay"
+     style="display:none; position:fixed; inset:0; background:rgba(15,23,42,.25); z-index:199;"
+     onclick="closeCorrection()"></div>
+
+
+<style>
+  /* ── Figure review card ─────────────────────────────────── */
+  .fig-review-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 16px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow .15s;
+  }
+  .fig-review-card:hover { box-shadow: var(--shadow); }
+  .fig-uncertain { border-left: 3px solid var(--warning); }
+
+  .fig-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .fig-card-body {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 0;
+  }
+  @media (max-width: 700px) { .fig-card-body { grid-template-columns: 1fr; } }
+
+  .fig-image-col {
+    padding: 14px;
+    border-right: 1px solid var(--border);
+    background: var(--surface-2);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .fig-img {
+    width: 100%;
+    max-height: 200px;
+    object-fit: contain;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: zoom-in;
+    display: block;
+    background: var(--surface-3);
+    transition: opacity .15s;
+  }
+  .fig-img:hover { opacity: .88; }
+  .fig-no-img-box {
+    width: 100%; aspect-ratio: 4/3;
+    background: var(--surface-3);
+    border: 1px dashed var(--border-2);
+    border-radius: var(--radius-sm);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .fig-no-img { font-size: 0.78rem; color: var(--text-3); }
+  .fig-deferred {
+    padding: 12px;
+    background: var(--warning-soft);
+    border: 1px solid var(--warning-mid);
+    border-radius: var(--radius-sm);
+  }
+  .fig-caption {
+    font-size: 0.75rem;
+    color: var(--text-3);
+    line-height: 1.5;
+    max-height: 72px;
+    overflow-y: auto;
+  }
+
+  .fig-panels-col {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Panel rows ─────────────────────────────────────────── */
+  .panel-row {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    transition: background .1s;
+  }
+  .panel-row:last-child { border-bottom: none; }
+  .panel-row:hover { background: var(--surface-2); }
+  .panel-row-uncertain { background: rgba(217, 119, 6, .04); }
+  .panel-row-uncertain:hover { background: rgba(217, 119, 6, .08); }
+
+  .panel-label-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--surface-3);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+
+  /* ── Issue tags ─────────────────────────────────────────── */
+  .issue-tag {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: var(--warning-soft);
+    color: var(--warning);
+    border: 1px solid var(--warning-mid);
+  }
+
+  /* ── Score breakdown ────────────────────────────────────── */
+  .score-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    background: var(--surface-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+  }
+  .score-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 28px;
+    align-items: center;
+    gap: 6px;
+  }
+  .score-key {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-transform: capitalize;
+  }
+  .score-bar-track {
+    height: 5px;
+    background: var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .score-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition: width .3s;
+  }
+  .score-val {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-align: right;
+  }
+
+  /* ── Confidence dot ─────────────────────────────────────── */
+  .conf-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .conf-dot-good { background: var(--success); }
+  .conf-dot-med  { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
+  .conf-dot-warn { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft);
+                   animation: pulse-warn 1.8s ease-in-out infinite; }
+  @keyframes pulse-warn {
+    0%, 100% { box-shadow: 0 0 0 3px var(--warning-soft); }
+    50%       { box-shadow: 0 0 0 5px var(--warning-mid); }
+  }
+
+  /* ── Drawer form field styles ───────────────────────────── */
+  #correction-drawer .form-group select,
+  #correction-drawer .form-group input[type="text"],
+  #correction-drawer .form-group input[type="number"],
+  #correction-drawer .form-group textarea {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1.5px solid var(--border-2);
+    border-radius: var(--radius-sm);
+    font-family: var(--font);
+    font-size: 0.875rem;
+    color: var(--text);
+    background: var(--surface);
+    outline: none;
+    transition: border-color .15s;
+    box-sizing: border-box;
+  }
+  #correction-drawer .form-group select:focus,
+  #correction-drawer .form-group input:focus,
+  #correction-drawer .form-group textarea:focus { border-color: var(--primary); }
+
+  /* Hide the figure_id / panel_label fields — set by JS */
+  #correction-drawer [id$="-figure_id"],
+  #correction-drawer [id$="-panel_label"] {
+    display: none !important;
+  }
+</style>
+
+
+<script>
+(function() {
+  // Find Django form field IDs — they use the form prefix
+  // Django renders select as <select id="id_{prefix}-{field}">
+  function fieldEl(name) {
+    // Try both common Django id patterns
+    return document.querySelector('[name$="-' + name + '"]');
+  }
+
+  window.openCorrection = function(btn) {
+    const figureId  = btn.dataset.figureId;
+    const panelLabel = btn.dataset.panelLabel;
+    const plotType  = btn.dataset.plotType;
+
+    // Pre-fill the figure_id and panel_label fields
+    const fidEl = fieldEl('figure_id');
+    const plEl  = fieldEl('panel_label');
+    const ptEl  = fieldEl('plot_type');
+    if (fidEl) {
+      // It may be a <select> or <input>
+      fidEl.value = figureId;
+      // If select, trigger change so Django validation is happy
+      fidEl.dispatchEvent(new Event('change'));
+    }
+    if (plEl)  plEl.value = panelLabel;
+    if (ptEl)  ptEl.value = plotType;
+
+    // Update drawer title
+    document.getElementById('drawer-title').textContent =
+      'Correct ' + figureId + ' — Panel ' + panelLabel;
+    document.getElementById('drawer-subtitle').textContent =
+      'Current parse: ' + plotType + ' · override any fields below and save.';
+
+    // Show drawer
+    const drawer  = document.getElementById('correction-drawer');
+    const overlay = document.getElementById('correction-overlay');
+    drawer.style.display  = '';
+    overlay.style.display = '';
+    // Scroll drawer into view after a tick
+    setTimeout(function() { drawer.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, 50);
+  };
+
+  window.closeCorrection = function() {
+    document.getElementById('correction-drawer').style.display  = 'none';
+    document.getElementById('correction-overlay').style.display = 'none';
+  };
+
+  // Close on Escape
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeCorrection();
+  });
+})();
+</script>

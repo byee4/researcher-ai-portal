@@ -1,0 +1,176 @@
+{% extends "researcher_ai_portal/base.html" %}
+{% block title %}Parsing… — researcher-ai{% endblock %}
+
+{% block max_width %}680{% endblock %}
+
+{% block breadcrumb %}
+  <a href="{% url 'home' %}">New Analysis</a>
+  <span class="crumb-sep">›</span>
+  <span class="crumb-current">Parsing</span>
+{% endblock %}
+
+{% block content %}
+<div class="page">
+
+  <div class="card" style="padding: 32px;">
+
+    <!-- Header -->
+    <div class="flex items-center gap-3 mb-6">
+      <div style="width: 40px; height: 40px; background: var(--primary-soft); border: 1.5px solid var(--primary-mid);
+                  border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <circle cx="9" cy="9" r="7.5" stroke="#1d4ed8" stroke-width="1.5" stroke-dasharray="4 2"/>
+          <circle cx="9" cy="9" r="3" fill="#1d4ed8"/>
+        </svg>
+      </div>
+      <div>
+        <h1 style="font-size: 1.25rem;">Parsing paper</h1>
+        <p class="text-sm text-muted mt-1">Job <code>{{ job_id }}</code></p>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="progress-track progress-track-lg mb-2">
+      <div id="progress-bar" class="progress-fill progress-fill-lg" style="width: 0%;">0%</div>
+    </div>
+    <p id="stage" class="text-sm text-muted mb-6" style="text-align: center;">Starting…</p>
+
+    <!-- Stage indicators -->
+    <div id="stage-indicators" style="display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; margin-bottom: 28px;">
+      {% for s in stages %}
+        <div class="stage-step" data-stage="{{ s.id }}"
+             style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;">
+          <div class="stage-dot"
+               style="width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border-2);
+                      background: var(--surface-3); display: flex; align-items: center; justify-content: center;
+                      font-size: 0.7rem; font-weight: 700; color: var(--text-3); transition: all .3s;
+                      position: relative;">
+            {{ forloop.counter }}
+          </div>
+          <span style="font-size: 0.7rem; color: var(--text-3); font-weight: 500; transition: color .3s; max-width: 60px; line-height: 1.3;">
+            {{ s.label }}
+          </span>
+        </div>
+      {% empty %}
+        {% for s in default_stages %}
+          <div class="stage-step" data-stage="{{ s.id }}"
+               style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;">
+            <div class="stage-dot"
+                 style="width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border-2);
+                        background: var(--surface-3); display: flex; align-items: center; justify-content: center;
+                        font-size: 0.7rem; font-weight: 700; color: var(--text-3); transition: all .3s;">
+              {{ forloop.counter }}
+            </div>
+            <span style="font-size: 0.7rem; color: var(--text-3); font-weight: 500; transition: color .3s; max-width: 60px; line-height: 1.3;">
+              {{ s.label }}
+            </span>
+          </div>
+        {% endfor %}
+      {% endfor %}
+    </div>
+
+    <!-- Error area -->
+    <div id="error-area" style="display: none;" class="alert alert-error mb-4"></div>
+
+    <div class="flex items-center gap-3">
+      <div id="spinner" style="width: 18px; height: 18px; border: 2px solid var(--border-2);
+                                border-top-color: var(--primary); border-radius: 50;
+                                animation: spin 0.8s linear infinite; flex-shrink: 0;"></div>
+      <p class="text-sm text-muted">This may take a minute or two depending on paper complexity and LLM latency.</p>
+    </div>
+
+    <hr class="section-divider" />
+    <a class="btn btn-ghost btn-sm" href="{% url 'home' %}">← Cancel and start over</a>
+  </div>
+
+</div>
+
+<style>
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .stage-step[data-active="true"] .stage-dot {
+    border-color: var(--primary) !important;
+    background: var(--primary-soft) !important;
+    color: var(--primary) !important;
+    box-shadow: 0 0 0 4px rgba(29,78,216,.10);
+  }
+  .stage-step[data-active="true"] > span { color: var(--primary) !important; }
+
+  .stage-step[data-done="true"] .stage-dot {
+    border-color: var(--success) !important;
+    background: var(--success) !important;
+    color: white !important;
+  }
+  .stage-step[data-done="true"] > span { color: var(--success) !important; }
+</style>
+
+<script>
+  const statusUrl   = "{% url 'job_status' job_id=job_id %}";
+  const dashboardUrl = "{% url 'dashboard' job_id=job_id %}";
+  const bar    = document.getElementById("progress-bar");
+  const stageEl = document.getElementById("stage");
+  const errBox  = document.getElementById("error-area");
+  const spinner  = document.getElementById("spinner");
+
+  // Map stage label text → stage step element
+  const stageMap = {
+    "parse_paper":    "paper",
+    "paper":          "paper",
+    "parse_figures":  "figures",
+    "figures":        "figures",
+    "parse_methods":  "methods",
+    "methods":        "methods",
+    "parse_datasets": "datasets",
+    "datasets":       "datasets",
+    "parse_software": "software",
+    "software":       "software",
+    "build_pipeline": "pipeline",
+    "pipeline":       "pipeline",
+  };
+
+  function markStages(activeStageId, pct) {
+    const steps = document.querySelectorAll(".stage-step");
+    const stageIds = Array.from(steps).map(s => s.dataset.stage);
+    const activeIdx = stageIds.indexOf(activeStageId);
+    steps.forEach((step, i) => {
+      step.removeAttribute("data-active");
+      step.removeAttribute("data-done");
+      if (i < activeIdx) step.setAttribute("data-done", "true");
+      else if (i === activeIdx) step.setAttribute("data-active", "true");
+    });
+    // If 100%, mark all done
+    if (pct >= 100) steps.forEach(s => { s.removeAttribute("data-active"); s.setAttribute("data-done", "true"); });
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch(statusUrl, { credentials: "same-origin" });
+      if (!res.ok) { stageEl.textContent = "Failed to read job status."; return; }
+      const data = await res.json();
+      const pct = Math.max(0, Math.min(100, data.progress || 0));
+      bar.style.width = pct + "%";
+      bar.textContent = pct + "%";
+      const stageLabel = data.stage || data.status || "";
+      stageEl.textContent = stageLabel;
+      const mappedStage = stageMap[stageLabel.toLowerCase()] || stageMap[stageLabel] || null;
+      if (mappedStage) markStages(mappedStage, pct);
+
+      if (data.status === "completed") {
+        spinner.style.display = "none";
+        window.location.assign(dashboardUrl);
+        return;
+      }
+      if (data.status === "failed") {
+        spinner.style.display = "none";
+        errBox.style.display = "";
+        errBox.textContent = data.error || "Workflow failed.";
+        return;
+      }
+    } catch (e) {
+      // network hiccup — keep polling
+    }
+    setTimeout(poll, 1500);
+  }
+  poll();
+</script>
+{% endblock %}

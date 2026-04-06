@@ -1,0 +1,310 @@
+{% extends "researcher_ai_portal/base.html" %}
+{% block title %}researcher-ai — Parse a Paper{% endblock %}
+
+{% block max_width %}860{% endblock %}
+
+{% block breadcrumb %}
+  <span class="crumb-current">New Analysis</span>
+{% endblock %}
+
+{% block content %}
+<div class="page">
+
+  <!-- ── Hero ──────────────────────────────────────────────── -->
+  <div style="margin-bottom: 28px;">
+    <h1>Parse a published paper</h1>
+    <p class="mt-1" style="font-size: 1rem; color: var(--text-2); max-width: 540px;">
+      Provide a PubMed ID or upload a PDF and researcher-ai will extract the full
+      computational workflow — assay graph, figures, datasets, software, and pipeline.
+    </p>
+  </div>
+
+  {% if error %}
+    <div class="alert alert-error mb-4">{{ error }}</div>
+  {% endif %}
+
+  <div style="display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start;">
+
+    <!-- ── Parse form ──────────────────────────────────────── -->
+    <div class="card">
+      <h2 class="mb-4" style="color: var(--text);">Paper source</h2>
+
+      <!-- Tab switcher -->
+      <div style="display: flex; gap: 0; border: 1.5px solid var(--border-2); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; width: fit-content;">
+        <button type="button" id="tab-pmid" onclick="switchTab('pmid')"
+          style="padding: 7px 18px; font-size: 0.875rem; font-weight: 600; font-family: var(--font);
+                 border: none; cursor: pointer; background: var(--primary); color: white; transition: all .15s;">
+          PubMed ID
+        </button>
+        <button type="button" id="tab-pdf" onclick="switchTab('pdf')"
+          style="padding: 7px 18px; font-size: 0.875rem; font-weight: 600; font-family: var(--font);
+                 border: none; cursor: pointer; background: var(--surface); color: var(--text-2); transition: all .15s;">
+          Upload PDF
+        </button>
+      </div>
+
+      <form action="{% url 'start_parse' %}" method="post" enctype="multipart/form-data" id="parse-form">
+        {% csrf_token %}
+
+        <!-- PMID panel -->
+        <div id="panel-pmid">
+          <div class="form-group">
+            <label class="form-label" for="pmid">PubMed ID</label>
+            <input class="form-control" id="pmid" name="pmid" type="text"
+              placeholder="e.g., 26971820" value="{{ pmid|default:'' }}" autocomplete="off" />
+            <span class="form-hint">Enter the numeric PubMed ID for your paper.</span>
+          </div>
+        </div>
+
+        <!-- PDF panel (hidden by default) -->
+        <div id="panel-pdf" style="display: none;">
+          <div class="form-group">
+            <label class="form-label" for="paper_pdf">PDF file</label>
+            <input class="form-control" id="paper_pdf" name="paper_pdf" type="file" accept="application/pdf"
+              style="padding: 7px 10px; cursor: pointer;" />
+            <span class="form-hint">Upload a local copy of the paper (max 50 MB).</span>
+          </div>
+        </div>
+
+        <hr class="section-divider" />
+
+        <h3 class="mb-3" style="color: var(--text);">LLM configuration</h3>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+          <div class="form-group">
+            <label class="form-label" for="llm_model">Model</label>
+            <select class="form-control" id="llm_model" name="llm_model" required
+              style="background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\");
+                     background-repeat: no-repeat; background-position: right 10px center; padding-right: 32px;">
+              {% for model in common_llm_models %}
+                <option value="{{ model }}" {% if llm_model == model %}selected{% endif %}>{{ model }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="llm_api_key">API key</label>
+            <input class="form-control" id="llm_api_key" name="llm_api_key" type="password"
+              placeholder="sk-… or sk-ant-…" value="{{ llm_api_key|default:'' }}"
+              autocomplete="off" required />
+          </div>
+        </div>
+
+        <div class="form-group mt-3">
+          <label class="text-sm" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" name="force_reparse" value="1" {% if force_reparse %}checked{% endif %} />
+            Refresh cache (re-parse paper)
+          </label>
+          <span class="form-hint">Ignore cached paper/figure outputs and run a fresh parse for this source.</span>
+        </div>
+
+        <div class="mt-4">
+          <button class="btn btn-primary btn-lg w-full" type="submit" id="submit-btn">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Start Analysis
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- ── Sidebar ─────────────────────────────────────────── -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+
+      <!-- Auth card -->
+      <div class="card card-sm">
+        <div class="flex items-center gap-2 mb-3">
+          <div style="width: 32px; height: 32px; background: var(--primary-soft); border: 1px solid var(--primary-mid);
+                      border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="5" r="3" stroke="#1d4ed8" stroke-width="1.5"/>
+              <path d="M2 14c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="#1d4ed8" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h3 style="margin: 0;">Account</h3>
+        </div>
+        {% if user.is_authenticated %}
+          <div class="flex items-center gap-2 mb-2">
+            <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex-shrink: 0;"></div>
+            <span class="text-sm font-600">{{ user.get_username|default:user.username }}</span>
+          </div>
+          <p class="text-sm text-muted mb-3">Signed in via Globus. Jobs are scoped to your account.</p>
+          <a class="btn btn-ghost btn-sm w-full" href="{% url 'logout' %}?next=/" style="justify-content: center;">Sign out</a>
+        {% else %}
+          <p class="text-sm text-muted mb-3">Sign in with your Globus account to save and manage jobs.</p>
+          <a class="btn btn-primary btn-sm w-full" href="{% url 'social:begin' 'globus' %}" style="justify-content: center;">
+            Sign in with Globus
+          </a>
+        {% endif %}
+      </div>
+
+      <!-- What happens card -->
+      <div class="card card-sm" style="background: var(--surface-2);">
+        <h3 class="mb-3">How it works</h3>
+        <ol style="padding-left: 18px; display: flex; flex-direction: column; gap: 8px;">
+          <li class="text-sm text-muted"><strong style="color: var(--text);">Paper</strong> — title, abstract, type</li>
+          <li class="text-sm text-muted"><strong style="color: var(--text);">Figures</strong> — panels, plot types, axes</li>
+          <li class="text-sm text-muted"><strong style="color: var(--text);">Methods</strong> — assay graph &amp; steps</li>
+          <li class="text-sm text-muted"><strong style="color: var(--text);">Datasets</strong> — GEO, SRA, dbGaP links</li>
+          <li class="text-sm text-muted"><strong style="color: var(--text);">Software</strong> — tools and versions</li>
+          <li class="text-sm text-muted"><strong style="color: var(--text);">Pipeline</strong> — Snakemake DAG</li>
+        </ol>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- ── Recent jobs ───────────────────────────────────────── -->
+  {% if recent_jobs %}
+    <div style="margin-top: 36px;">
+      <div class="section-header mb-3">
+        <h2>Recent analyses</h2>
+        <span class="text-xs text-muted">Your last {{ recent_jobs|length }} job{{ recent_jobs|length|pluralize }}</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        {% for job in recent_jobs %}
+          <div class="card card-sm" style="padding: 12px 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+            <!-- Status indicator -->
+            <div style="flex-shrink: 0;">
+              {% if job.status == "completed" %}
+                <div style="width: 10px; height: 10px; border-radius: 50%; background: var(--success);"></div>
+              {% elif job.status == "failed" %}
+                <div style="width: 10px; height: 10px; border-radius: 50%; background: var(--danger);"></div>
+              {% else %}
+                <div style="width: 10px; height: 10px; border-radius: 50%; background: var(--warning);
+                            box-shadow: 0 0 0 3px var(--warning-soft);"></div>
+              {% endif %}
+            </div>
+
+            <!-- Source / title -->
+            <div style="flex: 1; min-width: 180px;">
+              <p class="font-600 text-sm" style="color: var(--text); margin-bottom: 2px;">
+                {% if job.title %}
+                  {{ job.title|truncatechars:60 }}
+                {% elif job.source %}
+                  {{ job.source|truncatechars:60 }}
+                {% else %}
+                  Job {{ job.id|truncatechars:14 }}
+                {% endif %}
+              </p>
+              <p class="text-xs text-muted">
+                {{ job.created_at|date:"M j, Y · H:i" }}
+                &nbsp;·&nbsp;
+                {% if job.status == "completed" %}
+                  <span style="color: var(--success);">Completed</span>
+                {% elif job.status == "failed" %}
+                  <span style="color: var(--danger);">Failed</span>
+                {% elif job.status == "in_progress" %}
+                  <span style="color: var(--warning);">In progress ({{ job.progress|default:0 }}%)</span>
+                {% else %}
+                  {{ job.status|title }}
+                {% endif %}
+              </p>
+            </div>
+
+            <!-- Actions -->
+            <div style="display: flex; gap: 8px; flex-shrink: 0; align-items: center;">
+              {% if job.status == "completed" %}
+                <a class="btn btn-teal btn-sm"
+                   href="{% url 'dashboard' job_id=job.id %}">
+                  View Dashboard
+                </a>
+              {% endif %}
+              <a class="btn btn-ghost btn-sm"
+                 href="{% url 'workflow_step' job_id=job.id step=job.current_step|default:'paper' %}">
+                {% if job.status == "in_progress" %}Continue{% else %}View steps{% endif %}
+              </a>
+              <!-- Delete (POST with inline confirm) -->
+              <form method="post" action="{% url 'delete_job' job_id=job.id %}"
+                    class="delete-job-form" style="margin: 0;">
+                {% csrf_token %}
+                <button type="button" class="btn btn-ghost btn-sm delete-btn"
+                        style="color: var(--danger); border-color: transparent; padding: 6px 8px;"
+                        title="Delete this job">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="display:block;">
+                    <path d="M2 3.5h10M5.5 3.5V2.5h3V3.5M6 6.5v4M8 6.5v4M3 3.5l.7 7.5h6.6l.7-7.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+</div>
+
+<script>
+  function switchTab(tab) {
+    const pmidPanel = document.getElementById('panel-pmid');
+    const pdfPanel  = document.getElementById('panel-pdf');
+    const tabPmid   = document.getElementById('tab-pmid');
+    const tabPdf    = document.getElementById('tab-pdf');
+    const pmidInput = document.getElementById('pmid');
+    const pdfInput  = document.getElementById('paper_pdf');
+    if (tab === 'pmid') {
+      pmidPanel.style.display = '';
+      pdfPanel.style.display  = 'none';
+      tabPmid.style.background = 'var(--primary)';
+      tabPmid.style.color      = 'white';
+      tabPdf.style.background  = 'var(--surface)';
+      tabPdf.style.color       = 'var(--text-2)';
+      pmidInput.required = true;
+      pdfInput.required  = false;
+    } else {
+      pmidPanel.style.display = 'none';
+      pdfPanel.style.display  = '';
+      tabPmid.style.background = 'var(--surface)';
+      tabPmid.style.color      = 'var(--text-2)';
+      tabPdf.style.background  = 'var(--primary)';
+      tabPdf.style.color       = 'white';
+      pmidInput.required = false;
+      pdfInput.required  = true;
+    }
+  }
+
+  // Show loading state on submit
+  document.getElementById('parse-form').addEventListener('submit', function() {
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+  });
+
+  // Delete confirmation: first click shows a red "Confirm?" button; second click submits.
+  document.querySelectorAll('.delete-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      if (btn.dataset.confirming) {
+        btn.closest('form').submit();
+      } else {
+        btn.dataset.confirming = '1';
+        btn.innerHTML = '<span style="font-size:0.78rem;white-space:nowrap;">Confirm?</span>';
+        btn.style.background = 'var(--danger-soft)';
+        btn.style.color = 'var(--danger)';
+        btn.style.borderColor = 'var(--danger-mid)';
+        btn.style.padding = '5px 10px';
+        // Auto-cancel after 4 s
+        setTimeout(function() {
+          delete btn.dataset.confirming;
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="display:block;"><path d="M2 3.5h10M5.5 3.5V2.5h3V3.5M6 6.5v4M8 6.5v4M3 3.5l.7 7.5h6.6l.7-7.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+          btn.style.background = '';
+          btn.style.color = 'var(--danger)';
+          btn.style.borderColor = 'transparent';
+          btn.style.padding = '6px 8px';
+        }, 4000);
+      }
+    });
+    // Clicking anywhere else cancels
+    document.addEventListener('click', function(e) {
+      if (btn.dataset.confirming && !btn.contains(e.target)) {
+        delete btn.dataset.confirming;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="display:block;"><path d="M2 3.5h10M5.5 3.5V2.5h3V3.5M6 6.5v4M8 6.5v4M3 3.5l.7 7.5h6.6l.7-7.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        btn.style.background = '';
+        btn.style.color = 'var(--danger)';
+        btn.style.borderColor = 'transparent';
+        btn.style.padding = '6px 8px';
+      }
+    }, true);
+  });
+</script>
+{% endblock %}

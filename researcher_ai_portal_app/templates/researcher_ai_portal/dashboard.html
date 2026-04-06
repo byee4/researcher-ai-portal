@@ -1,0 +1,498 @@
+{% extends "researcher_ai_portal/base.html" %}
+{% load plotly_dash %}
+{% block title %}{{ summary.title|default:"Dashboard" }} — researcher-ai{% endblock %}
+
+{% block extra_head %}{{ dashboard_form_media }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="{% url 'home' %}">Home</a>
+  <span class="crumb-sep">›</span>
+  <a href="{% url 'workflow_step' job_id=job_id step='paper' %}">
+    {{ summary.title|default:job_id|truncatechars:36 }}
+  </a>
+  <span class="crumb-sep">›</span>
+  <span class="crumb-current">Dashboard</span>
+{% endblock %}
+
+{% block content %}
+<style>
+  /* ── Tab system ──────────────────────────────────────────── */
+  .dash-tab {
+    padding: 10px 18px;
+    border: none;
+    background: none;
+    font-family: var(--font);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-2);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all .15s;
+    white-space: nowrap;
+  }
+  .dash-tab:hover { color: var(--text); }
+  .dash-tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); }
+  .tab-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+    background: var(--surface-3); color: var(--text-2);
+    font-size: 0.7rem; font-weight: 700; margin-left: 6px;
+  }
+  .dash-tab.active .tab-badge { background: var(--primary-soft); color: var(--primary); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── JSON editor ─────────────────────────────────────────── */
+  .json-editor textarea {
+    width: 100%; min-height: 280px;
+    border: 1.5px solid var(--border-2); border-radius: var(--radius);
+    font-family: var(--mono); font-size: 12px; padding: 12px;
+    color: var(--text); background: var(--surface-2);
+    outline: none; transition: border-color .15s; box-sizing: border-box;
+  }
+  .json-editor textarea:focus { border-color: var(--primary); }
+
+  /* ── Step edit inputs ────────────────────────────────────── */
+  .step-edit-input {
+    width: 100%; padding: 7px 9px;
+    border: 1.5px solid var(--border-2); border-radius: var(--radius-sm);
+    font-family: var(--font); font-size: 0.875rem;
+    color: var(--text); background: var(--surface);
+    outline: none; transition: border-color .15s; box-sizing: border-box;
+  }
+  .step-edit-input:focus { border-color: var(--primary); }
+
+  /* ── Confidence meter ────────────────────────────────────── */
+  .conf-ring {
+    position: relative;
+    width: 96px; height: 96px; flex-shrink: 0;
+  }
+  .conf-ring svg { transform: rotate(-90deg); }
+  .conf-ring-label {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .conf-ring-pct {
+    font-size: 1.375rem; font-weight: 800; line-height: 1; letter-spacing: -0.03em;
+  }
+  .conf-ring-sub { font-size: 0.65rem; font-weight: 500; color: var(--text-3); letter-spacing: .02em; margin-top: 2px; }
+
+  /* ── Figure card hover ───────────────────────────────────── */
+  .fig-card { transition: box-shadow .15s, border-color .15s; }
+  .fig-card:hover { box-shadow: var(--shadow); border-color: var(--border-2); }
+
+  /* ── Accordion form fields ───────────────────────────────── */
+  .accordion .form-group select,
+  .accordion .form-group input[type="text"],
+  .accordion .form-group input[type="number"],
+  .accordion .form-group textarea {
+    width: 100%; padding: 7px 9px;
+    border: 1.5px solid var(--border-2); border-radius: var(--radius-sm);
+    font-family: var(--font); font-size: 0.875rem;
+    color: var(--text); background: var(--surface);
+    outline: none; transition: border-color .15s; box-sizing: border-box;
+  }
+  .accordion .form-group select:focus,
+  .accordion .form-group input:focus,
+  .accordion .form-group textarea:focus { border-color: var(--primary); }
+</style>
+
+<div class="page">
+
+  <!-- ── Paper header card ─────────────────────────────────── -->
+  <div class="card mb-4" style="padding: 22px 28px;">
+    <div style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap;">
+
+      <!-- Title + metadata -->
+      <div style="flex: 1; min-width: 240px;">
+        <div class="flex items-center gap-2 mb-2">
+          <a href="{% url 'workflow_step' job_id=job_id step='paper' %}"
+             class="btn btn-ghost btn-sm" style="padding: 4px 10px; font-size: 0.78rem;">
+            ← Workflow
+          </a>
+          <a href="{% url 'home' %}" class="btn btn-ghost btn-sm" style="padding: 4px 10px; font-size: 0.78rem;">
+            New analysis
+          </a>
+        </div>
+        <h1 style="font-size: 1.375rem; line-height: 1.35; margin-bottom: 6px;">
+          {{ summary.title|default:"Parsed Paper" }}
+        </h1>
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-sm text-muted">
+            Type: <strong style="color: var(--text);">{{ summary.paper_type|default:"—" }}</strong>
+          </span>
+          <span style="color: var(--border-2);">·</span>
+          <span class="text-sm text-muted">Job <code>{{ job_id|truncatechars:14 }}</code></span>
+          {% if confidence.validation_passed %}
+            <span class="pill pill-found">Validated</span>
+          {% else %}
+            <span class="pill pill-inferred">Unvalidated</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Confidence ring -->
+      {% with conf=confidence.overall|default:50 %}
+        {% if conf >= 80 %}{% with ring_color="#16a34a" track_color="#bbf7d0" %}
+          <div class="conf-ring">
+            <svg width="96" height="96" viewBox="0 0 96 96">
+              <circle cx="48" cy="48" r="40" fill="none" stroke="{{ track_color }}" stroke-width="8"/>
+              <circle cx="48" cy="48" r="40" fill="none" stroke="{{ ring_color }}" stroke-width="8"
+                stroke-dasharray="{{ conf|floatformat:0 }} {{ 100 }}"
+                stroke-dashoffset="0"
+                stroke-linecap="round"
+                style="stroke-dasharray: calc({{ conf }} * 2.513px) 251.3px;"/>
+            </svg>
+            <div class="conf-ring-label">
+              <span class="conf-ring-pct" style="color: {{ ring_color }};">{{ conf }}%</span>
+              <span class="conf-ring-sub">confidence</span>
+            </div>
+          </div>{% endwith %}
+        {% elif conf >= 50 %}{% with ring_color="#d97706" track_color="#fde68a" %}
+          <div class="conf-ring">
+            <svg width="96" height="96" viewBox="0 0 96 96">
+              <circle cx="48" cy="48" r="40" fill="none" stroke="{{ track_color }}" stroke-width="8"/>
+              <circle cx="48" cy="48" r="40" fill="none" stroke="{{ ring_color }}" stroke-width="8"
+                stroke-dasharray="{{ conf|floatformat:0 }} {{ 100 }}"
+                stroke-linecap="round"
+                style="stroke-dasharray: calc({{ conf }} * 2.513px) 251.3px;"/>
+            </svg>
+            <div class="conf-ring-label">
+              <span class="conf-ring-pct" style="color: {{ ring_color }};">{{ conf }}%</span>
+              <span class="conf-ring-sub">confidence</span>
+            </div>
+          </div>{% endwith %}
+        {% else %}{% with ring_color="#dc2626" track_color="#fecaca" %}
+          <div class="conf-ring">
+            <svg width="96" height="96" viewBox="0 0 96 96">
+              <circle cx="48" cy="48" r="40" fill="none" stroke="{{ track_color }}" stroke-width="8"/>
+              <circle cx="48" cy="48" r="40" fill="none" stroke="{{ ring_color }}" stroke-width="8"
+                stroke-dasharray="{{ conf|floatformat:0 }} {{ 100 }}"
+                stroke-linecap="round"
+                style="stroke-dasharray: calc({{ conf }} * 2.513px) 251.3px;"/>
+            </svg>
+            <div class="conf-ring-label">
+              <span class="conf-ring-pct" style="color: {{ ring_color }};">{{ conf }}%</span>
+              <span class="conf-ring-sub">confidence</span>
+            </div>
+          </div>{% endwith %}
+        {% endif %}
+      {% endwith %}
+
+    </div>
+  </div>
+
+  <!-- ── Stat tiles ─────────────────────────────────────────── -->
+  <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px;">
+    <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
+      <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
+        {{ summary.figure_count|default:"—" }}</div>
+      <div class="text-xs text-muted font-600" style="text-transform: uppercase; letter-spacing: .04em;">Figures</div>
+    </div>
+    <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
+      <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
+        {{ summary.assay_count|default:"—" }}</div>
+      <div class="text-xs text-muted font-600" style="text-transform: uppercase; letter-spacing: .04em;">Assays</div>
+    </div>
+    <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
+      <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
+        {{ summary.dataset_count|default:"—" }}</div>
+      <div class="text-xs text-muted font-600" style="text-transform: uppercase; letter-spacing: .04em;">Datasets</div>
+    </div>
+    <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
+      <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
+        {{ summary.software_count|default:"—" }}</div>
+      <div class="text-xs text-muted font-600" style="text-transform: uppercase; letter-spacing: .04em;">Software</div>
+    </div>
+    <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
+      <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
+        {{ summary.pipeline_step_count|default:"—" }}</div>
+      <div class="text-xs text-muted font-600" style="text-transform: uppercase; letter-spacing: .04em;">Steps</div>
+    </div>
+  </div>
+
+  <!-- ── Tab bar ────────────────────────────────────────────── -->
+  <div style="display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 22px;
+              overflow-x: auto; -webkit-overflow-scrolling: touch;">
+    <button class="dash-tab active" onclick="showTab('overview',this)">Overview</button>
+    <button class="dash-tab" onclick="showTab('dag',this)">Workflow Graph</button>
+    <button class="dash-tab" onclick="showTab('figures',this)">
+      Figures{% if merged_figure_rows %}<span class="tab-badge">{{ merged_figure_rows|length }}</span>{% endif %}
+    </button>
+    <button class="dash-tab" onclick="showTab('editing',this)">
+      Step Editing{% if structured_assays %}<span class="tab-badge">{{ structured_assays|length }}</span>{% endif %}
+    </button>
+    <button class="dash-tab" onclick="showTab('advanced',this)">Advanced</button>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Overview
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel active" id="tab-overview">
+
+    <div style="display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start;">
+
+      <!-- Left: parser status + chart -->
+      <div>
+        <!-- Parser status grid -->
+        <h2 class="mb-3">Parser status</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-bottom: 24px;">
+          {% for row in step_rows %}
+            <a href="{% url 'workflow_step' job_id=job_id step=row.id %}"
+               style="display: block; text-decoration: none;">
+              <div class="card card-sm" style="padding: 10px 12px; transition: box-shadow .15s, border-color .15s;"
+                   onmouseover="this.style.boxShadow='var(--shadow)';this.style.borderColor='var(--border-2)'"
+                   onmouseout="this.style.boxShadow='';this.style.borderColor=''">
+                <div class="flex items-center justify-between mb-1">
+                  <strong class="text-sm">{{ row.label }}</strong>
+                  <span class="pill pill-{{ row.meta.status|default:'missing' }}" style="font-size: 0.72rem; padding: 2px 7px;">
+                    {{ row.meta.status|default:'missing'|title }}
+                  </span>
+                </div>
+                <p class="text-xs text-muted">{{ row.meta.source|default:"none" }}</p>
+                {% if row.meta.missing %}
+                  <p class="text-xs" style="color: var(--warning); margin-top: 3px;">{{ row.meta.missing|join:", "|truncatechars:40 }}</p>
+                {% endif %}
+              </div>
+            </a>
+          {% endfor %}
+        </div>
+
+        <!-- Summary chart -->
+        <h2 class="mb-3">Summary charts</h2>
+        <div class="card" style="padding: 0; overflow: hidden;">
+          {% plotly_app name=dashboard_name ratio=0.85 %}
+        </div>
+      </div>
+
+      <!-- Right: rebuild panel + per-assay confidence -->
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+
+        <!-- Rebuild card -->
+        <div class="card" style="padding: 16px 18px; border-left: 3px solid var(--primary);">
+          <p class="font-600 mb-1" style="color: var(--text);">↺ Rebuild pipeline</p>
+          <p class="text-sm text-muted mb-3">
+            {% if rebuild_steps %}
+              Re-runs {{ rebuild_steps|length }} downstream step{{ rebuild_steps|length|pluralize }}:
+              <strong style="color: var(--text);">{{ rebuild_steps|join:", " }}</strong>.
+            {% else %}
+              Re-runs pipeline from the last edited step.
+            {% endif %}
+          </p>
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="rebuild_pipeline" />
+            <input type="hidden" name="edited_step" value="{{ edited_step|default:'method' }}" />
+            <button class="btn btn-primary btn-sm w-full" type="submit" style="justify-content: center;">
+              Rebuild
+            </button>
+          </form>
+        </div>
+
+        <!-- Per-assay confidence (if available) -->
+        {% if confidence.assay_confidences %}
+          <div class="card" style="padding: 16px 18px;">
+            <p class="font-600 mb-3" style="color: var(--text);">Assay confidence</p>
+            {% for assay_name, assay_conf in confidence.assay_confidences.items %}
+              <div class="mb-3">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-xs font-600" style="color: var(--text);">{{ assay_name|truncatechars:28 }}</span>
+                  <span class="text-xs font-600"
+                        style="color: {% if assay_conf.overall >= 80 %}var(--success){% elif assay_conf.overall >= 50 %}var(--warning){% else %}var(--danger){% endif %};">
+                    {{ assay_conf.overall|floatformat:0 }}%
+                  </span>
+                </div>
+                <div class="progress-track" style="height: 5px;">
+                  <div class="progress-fill" style="width: {{ assay_conf.overall|floatformat:0 }}%;
+                    {% if assay_conf.overall >= 80 %}background: var(--success);
+                    {% elif assay_conf.overall >= 50 %}background: var(--warning);
+                    {% else %}background: var(--danger);{% endif %}"></div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <!-- Quick nav to workflow -->
+        <div class="card card-sm" style="padding: 14px 16px; background: var(--surface-2);">
+          <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">Re-run a step</p>
+          <div style="display: flex; flex-direction: column; gap: 5px;">
+            {% for row in step_rows %}
+              <a href="{% url 'workflow_step' job_id=job_id step=row.id %}"
+                 class="text-sm" style="color: var(--text-2); text-decoration: none; padding: 4px 0;
+                         border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;"
+                 onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-2)'">
+                <span>{{ row.label }}</span>
+                <span class="pill pill-{{ row.meta.status|default:'missing' }}" style="font-size: 0.68rem; padding: 1px 6px;">{{ row.meta.status|default:'missing'|title }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Workflow Graph
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-dag">
+    <div class="card" style="padding: 0; overflow: hidden;">
+      <div style="padding: 16px 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+        <div>
+          <h2 style="margin-bottom: 4px;">Assay workflow graph</h2>
+          <p class="text-sm text-muted">Click a node to see its steps, software, and datasets.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="pill pill-found">≥ 80% confidence</span>
+          <span class="pill pill-inferred">50–79%</span>
+          <span class="pill pill-missing">&lt; 50%</span>
+        </div>
+      </div>
+      {% plotly_app name=dag_app_name ratio=0.72 %}
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Figures
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-figures">
+    {% if figure_gt_form.errors %}
+      <div class="alert alert-error mb-3">{{ figure_gt_form.errors }}</div>
+    {% endif %}
+    {% with gt_form_prefix="gt_dashboard" %}
+      {% include "researcher_ai_portal/_figure_cards.html" %}
+    {% endwith %}
+    {% if not merged_figure_rows %}
+      <div style="text-align:center; margin-top:-8px;">
+        <a class="btn btn-ghost btn-sm" href="{% url 'workflow_step' job_id=job_id step='figures' %}">
+          Run Figures step →
+        </a>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Step Editing
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-editing">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 style="margin-bottom: 4px;">Structured step editing</h2>
+        <p class="text-sm text-muted">Edit assay steps without touching raw JSON. Changes save immediately.</p>
+      </div>
+    </div>
+    {% if structured_assays %}
+      {% for assay in structured_assays %}
+        <details class="accordion {% if forloop.first %}open{% endif %}" style="margin-bottom: 8px;">
+          <summary>
+            {{ assay.name }}
+            <span class="pill pill-neutral" style="margin-left: 8px;">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
+          </summary>
+          <div class="accordion-body">
+            {% for step in assay.steps %}
+              <form method="post"
+                    style="padding: 14px 0;{% if not forloop.last %} border-bottom: 1px solid var(--border);{% endif %}">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="save_structured_step" />
+                <input type="hidden" name="assay_name" value="{{ assay.name }}" />
+                <input type="hidden" name="step_index" value="{{ forloop.counter0 }}" />
+                <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">
+                  Step {{ forloop.counter }}
+                </p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 10px;">
+                  <div class="form-group">
+                    <label class="form-label">Software</label>
+                    <input class="step-edit-input" type="text" name="software" value="{{ step.software|default:'' }}" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Version</label>
+                    <input class="step-edit-input" type="text" name="software_version" value="{{ step.software_version|default:'' }}" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Input Data</label>
+                    <input class="step-edit-input" type="text" name="input_data" value="{{ step.input_data|default:'' }}" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Output Data</label>
+                    <input class="step-edit-input" type="text" name="output_data" value="{{ step.output_data|default:'' }}" />
+                  </div>
+                </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                  <label class="form-label">Parameters JSON</label>
+                  <textarea class="step-edit-input" name="parameters_json" rows="2"
+                            style="font-family: var(--mono); font-size: 0.8125rem; resize: vertical;">{{ step.parameters_json }}</textarea>
+                </div>
+                <button class="btn btn-success btn-sm" type="submit">✓ Save step</button>
+              </form>
+            {% endfor %}
+          </div>
+        </details>
+      {% endfor %}
+    {% else %}
+      <div class="card" style="padding: 40px; text-align: center;">
+        <p class="text-muted mb-4">No assay steps found. Complete the Methods step first.</p>
+        <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='method' %}">Go to Methods step →</a>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Advanced (raw JSON editors)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-advanced">
+    <div class="mb-4">
+      <h2 style="margin-bottom: 4px;">Raw component editors</h2>
+      <p class="text-sm text-muted">
+        Edit component JSON directly. Invalid JSON is rejected.
+        Use the <a href="{% url 'workflow_step' job_id=job_id step='paper' %}">step workflow</a> for guided editing.
+      </p>
+    </div>
+    {% for row in step_rows %}
+      <details class="accordion" style="margin-bottom: 8px;">
+        <summary>
+          {{ row.label }}
+          <span class="pill pill-{{ row.meta.status|default:'missing' }}" style="margin-left: 8px;">{{ row.meta.status|default:'missing'|title }}</span>
+        </summary>
+        <div class="accordion-body">
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="step" value="{{ row.id }}" />
+            <div class="json-editor">{{ row.form.component_json }}</div>
+            <div class="flex items-center gap-2 mt-3">
+              <button class="btn btn-primary btn-sm" type="submit">Save {{ row.label }}</button>
+              <a class="btn btn-ghost btn-sm" href="{% url 'workflow_step' job_id=job_id step=row.id %}">
+                Open in workflow →
+              </a>
+            </div>
+          </form>
+        </div>
+      </details>
+    {% endfor %}
+  </div>
+
+</div>
+
+<script>
+  function showTab(name, btn) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.dash-tab').forEach(t => t.classList.remove('active'));
+    const panel = document.getElementById('tab-' + name);
+    if (panel) panel.classList.add('active');
+    if (btn) btn.classList.add('active');
+    sessionStorage.setItem('dash-tab-{{ job_id }}', name);
+  }
+
+  // Restore last active tab on load
+  (function() {
+    const saved = sessionStorage.getItem('dash-tab-{{ job_id }}');
+    if (!saved) return;
+    const btn = Array.from(document.querySelectorAll('.dash-tab'))
+      .find(b => (b.getAttribute('onclick') || '').includes("'" + saved + "'"));
+    if (btn) showTab(saved, btn);
+  })();
+</script>
+{% endblock %}
