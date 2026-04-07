@@ -562,7 +562,7 @@
                   <td style="padding: 9px 14px;">
                     <code style="font-size: 0.82rem;">{{ ds.accession|default:"—" }}</code>
                   </td>
-                  <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.source_type|default:ds.data_source|default:"—" }}</td>
+                  <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.source|default:ds.source_type|default:"—" }}</td>
                   <td style="padding: 9px 14px;">
                     {% if ds.accession %}
                       <span class="pill pill-found" style="font-size: 0.68rem; padding: 2px 7px;">Resolved</span>

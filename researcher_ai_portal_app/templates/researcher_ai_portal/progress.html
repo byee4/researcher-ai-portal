@@ -137,10 +137,10 @@
           <span class="pg-label" id="lbl-{{ s.id }}" data-s="pending">{{ s.label }}</span>
         </div>
       {% endfor %}
-      <div class="pg-step">
+      <a href="{% url 'dashboard' job_id=job_id %}" class="pg-step" style="text-decoration:none;">
         <div class="pg-dot" data-s="dashboard">⊞</div>
         <span class="pg-label" data-s="dashboard">Dashboard</span>
-      </div>
+      </a>
     </div>
   </div>
 
@@ -191,6 +191,11 @@
         </div>
         <span id="total-time-badge" class="text-xs text-muted" style="white-space:nowrap;"></span>
       </div>
+      <p id="redirect-countdown" class="text-xs text-muted"
+         style="margin-top:10px;text-align:right;display:none;">
+        Redirecting to dashboard in <strong id="countdown-secs">3</strong>s…
+        <a href="{% url 'dashboard' job_id=job_id %}" style="margin-left:4px;">Go now →</a>
+      </p>
     </div>
 
     <div class="card card-sm" style="padding:14px 20px;margin-top:0;">
@@ -207,10 +212,11 @@
             </span>
           </div>
         {% endfor %}
-        <div class="pg-step">
+        <a id="completion-dash-link" href="{% url 'dashboard' job_id=job_id %}"
+           class="pg-step" style="text-decoration:none;">
           <div class="pg-dot" data-s="dashboard">⊞</div>
-          <span class="pg-label" data-s="dashboard">Dashboard</span>
-        </div>
+          <span class="pg-label" data-s="dashboard">Dashboard →</span>
+        </a>
       </div>
     </div>
 
@@ -445,6 +451,20 @@
 
     applyCompletionMeta(data && data.component_meta);
     elCompletion.style.display = "";
+
+    /* Auto-redirect countdown */
+    const elCountdownWrap = document.getElementById("redirect-countdown");
+    const elCountdownSecs = document.getElementById("countdown-secs");
+    if (elCountdownWrap) elCountdownWrap.style.display = "";
+    let secsLeft = 3;
+    const redirectTimer = setInterval(() => {
+      secsLeft--;
+      if (elCountdownSecs) elCountdownSecs.textContent = secsLeft;
+      if (secsLeft <= 0) {
+        clearInterval(redirectTimer);
+        window.location.assign(DASHBOARD_URL);
+      }
+    }, 1000);
   }
 
   /* ── Show failure ────────────────────────────────────────────────────── */
