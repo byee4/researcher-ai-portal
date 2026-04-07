@@ -1,19 +1,17 @@
-{# ──────────────────────────────────────────────────────────────────────────
-   _stepper.html — shared journey-progression stepper partial
-   ─────────────────────────────────────────────────────────────────────────
+{% comment %}
+_stepper.html - shared journey-progression stepper partial
 
-   Required context:
-     stepper_chips         list[{id, label, meta, stepper_state, action_count, confidence_score}]
-     job_id                str
-     stepper_current_step  str   (the currently active step, or "" on dashboard)
+Required context:
+  stepper_chips         list[{id, label, meta, stepper_state, action_count, confidence_score}]
+  job_id                str
+  stepper_current_step  str (the currently active step, or "" on dashboard)
 
-   stepper_state values:
-     "running"       → blue pulsing  (job is actively processing this step)
-     "confirmed"     → green ✓       (confidence ≥ 70 % or found with no issues)
-     "needs-review"  → amber ⚠       (confidence < 70 % or has actionable items)
-     "not-started"   → grey          (status == "missing")
-   ──────────────────────────────────────────────────────────────────────── #}
-
+stepper_state values:
+  "running"      - blue pulsing (job is actively processing this step)
+  "confirmed"    - green check  (confidence >= 70% or found with no issues)
+  "needs-review" - amber warn   (confidence < 70% or has actionable items)
+  "not-started"  - grey         (status == "missing")
+{% endcomment %}
 <style>
 /* ── Stepper core ───────────────────────────────────────────────────────── */
 .stepper-wrap {
