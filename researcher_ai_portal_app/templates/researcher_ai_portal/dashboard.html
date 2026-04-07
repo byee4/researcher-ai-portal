@@ -453,7 +453,8 @@
       </div>
     </div>
 
-    {# ── Section 2: Next recommended action banner ────────── #}
+    {# ── Section 2: Next recommended action banner (id for JS live-update) ── #}
+    <div id="cc-top-action-banner">
     {% if actionable_items %}
       {% with top=actionable_items.0 %}
         <div style="margin-bottom: 20px; padding: 16px 20px;
@@ -487,31 +488,37 @@
         </div>
       </div>
     {% endif %}
+    </div>
 
-    {# ── Section 3: Actionable items list ─────────────────── #}
-    {% if actionable_items %}
-      <h2 class="mb-3">Issues to resolve <span class="tab-badge" style="background: var(--danger-soft); color: var(--danger);">{{ actionable_items|length }}</span></h2>
-      <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px;">
-        {% for item in actionable_items %}
-          <div class="action-item-card sev-{{ item.severity }}">
-            <div style="flex: 1;">
-              <p class="text-sm font-600" style="color: var(--text); margin-bottom: 2px;">{{ item.reason }}</p>
-              <p class="text-xs" style="color:
-                {% if item.severity == 'high' %}var(--danger){% elif item.severity == 'medium' %}var(--warning){% else %}var(--text-3){% endif %};">
-                {{ item.severity|title }} · +{{ item.confidence_impact|floatformat:1 }}% if resolved
-              </p>
-            </div>
-            <button class="btn btn-ghost btn-sm"
-                    style="flex-shrink: 0; white-space: nowrap;"
-                    data-action-tab="{{ item.fix_target_tab }}"
-                    data-action-field="{{ item.fix_target_field|default:'' }}"
-                    onclick="activateActionFromBtn(this)">
-              {{ item.fix_label }} →
-            </button>
+    {# ── Section 3: Actionable items list (id + inner id for live re-render) ── #}
+    <h2 id="cc-issues-header" class="mb-3"
+        {% if not actionable_items %}style="display:none;"{% endif %}>
+      Issues to resolve
+      <span id="cc-issues-count-badge" class="tab-badge"
+            style="background: var(--danger-soft); color: var(--danger);">
+        {{ actionable_items|length }}
+      </span>
+    </h2>
+    <div id="cc-actionable-items-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px;">
+      {% for item in actionable_items %}
+        <div class="action-item-card sev-{{ item.severity }}">
+          <div style="flex: 1;">
+            <p class="text-sm font-600" style="color: var(--text); margin-bottom: 2px;">{{ item.reason }}</p>
+            <p class="text-xs" style="color:
+              {% if item.severity == 'high' %}var(--danger){% elif item.severity == 'medium' %}var(--warning){% else %}var(--text-3){% endif %};">
+              {{ item.severity|title }} · +{{ item.confidence_impact|floatformat:1 }}% if resolved
+            </p>
           </div>
-        {% endfor %}
-      </div>
-    {% endif %}
+          <button class="btn btn-ghost btn-sm"
+                  style="flex-shrink: 0; white-space: nowrap;"
+                  data-action-tab="{{ item.fix_target_tab }}"
+                  data-action-field="{{ item.fix_target_field|default:'' }}"
+                  onclick="activateActionFromBtn(this)">
+            {{ item.fix_label }} →
+          </button>
+        </div>
+      {% endfor %}
+    </div>
 
     {# ── Section 4: Dataset readiness table ───────────────── #}
     {% if datasets %}
@@ -1069,14 +1076,208 @@
     if (btn) showTab(saved, btn);
   })();
 
-  // Handle URL hash deep-links: #fix-tab=editing&fix-field=#id-step-...
+  // Handle URL hash deep-links.
+  //
+  // Supported formats:
+  //   #fix-tab=editing&fix-field=#id-step-...
+  //     Classic format: directly specifies tab and CSS selector.
+  //
+  //   #fix-assay=<assay-slug>&step=<step-idx>&field=<field-key>
+  //     Structured format: derives the step editor CSS selector from
+  //     assay slug + step index + field key.
+  //     field-key can be: software | version | parameters | input-data | output-data
+  //
+  //   #fix-tab=confidence&poll=1
+  //     Triggers an immediate confidence poll from the API so the
+  //     Command Center is fresh after navigating from a bookmark.
+  //
   (function() {
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+
+    // Structured assay deep-link: #fix-assay=rna-seq&step=0&field=version
+    const assay  = params.get('fix-assay');
+    const sIdx   = params.get('step');
+    const fKey   = params.get('field');
+    if (assay && sIdx !== null && fKey) {
+      const fieldSel = `#id-step-${assay}-step-${sIdx}-${fKey}`;
+      activateAction({ fix_target_tab: 'editing', fix_target_field: fieldSel });
+      return; // Don't also process the classic format
+    }
+
+    // Classic format: #fix-tab=editing&fix-field=#id-step-...
     const tab = params.get('fix-tab');
     const field = params.get('fix-field');
     if (tab) {
       activateAction({ fix_target_tab: tab, fix_target_field: field });
     }
+
+    // Optional immediate confidence poll (use after saving from another page)
+    if (params.get('poll') === '1') {
+      fetch(`/api/v1/jobs/{{ job_id }}/confidence`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      }).then(r => r.ok ? r.json() : null).then(data => {
+        if (data) {
+          // Synthesise a saveResponse-shaped object for refreshConfidenceHint
+          // (defined in the Phase 2 script block below; call it after DOMContentLoaded)
+          window._pendingConfidencePoll = data;
+        }
+      }).catch(() => {});
+    }
+  })();
+
+  // Apply any pending confidence poll result (written above, consumed here after
+  // the Phase 2 script block has defined refreshConfidenceHint).
+  window.addEventListener('load', function() {
+    if (window._pendingConfidencePoll) {
+      const d = window._pendingConfidencePoll;
+      // refreshConfidenceHint is defined in the Phase 2 <script> block below
+      if (typeof window._refreshConfidenceHint === 'function') {
+        window._refreshConfidenceHint({
+          confidence: { overall: d.overall, assay_confidences: d.assay_confidences },
+          actionable_items: d.actionable_items,
+        });
+      }
+      window._pendingConfidencePoll = null;
+    }
+  });
+
+  // ── Phase 3: Rebuild progress overlay ───────────────────────────
+  //
+  // Intercepts the "Rebuild pipeline" form submit (action=rebuild_pipeline).
+  // Shows a full-page overlay that polls /api/v1/jobs/{job_id}/status every
+  // 1.5 s, displaying the current pipeline step + the last 5 log lines.
+  // When the job reaches "completed" or "failed" it reloads the page.
+  //
+  (function () {
+    const JOB_ID = '{{ job_id }}';
+    const STEP_LABELS = {
+      paper: 'Paper',
+      figures: 'Figures',
+      method: 'Methods',
+      datasets: 'Datasets',
+      software: 'Software',
+      pipeline: 'Pipeline',
+    };
+
+    // Create overlay DOM (hidden until needed)
+    const overlay = document.createElement('div');
+    overlay.id = 'rebuild-overlay';
+    overlay.style.cssText = [
+      'display:none', 'position:fixed', 'inset:0', 'z-index:9999',
+      'background:rgba(0,0,0,.6)', 'backdrop-filter:blur(3px)',
+      'align-items:center', 'justify-content:center',
+    ].join(';');
+    overlay.innerHTML = `
+      <div style="background:var(--surface);border-radius:var(--radius-lg);
+                  box-shadow:var(--shadow-lg);padding:32px 36px;min-width:360px;max-width:520px;width:90%;">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;">
+          <div id="rbo-spinner" style="width:28px;height:28px;border:3px solid var(--border-2);
+                border-top-color:var(--primary);border-radius:50%;
+                animation:spin 0.8s linear infinite;flex-shrink:0;"></div>
+          <div>
+            <p id="rbo-title" class="font-600" style="color:var(--text);margin:0;">Rebuilding pipeline…</p>
+            <p id="rbo-step" class="text-sm text-muted" style="margin:2px 0 0;">Starting…</p>
+          </div>
+        </div>
+        <div style="background:var(--surface-2);border-radius:var(--radius);padding:10px 12px;
+                    font-family:monospace;font-size:0.78rem;min-height:90px;max-height:140px;
+                    overflow-y:auto;color:var(--text-2);border:1px solid var(--border);">
+          <div id="rbo-logs">Waiting for first log entry…</div>
+        </div>
+        <p class="text-xs text-muted mt-3" style="text-align:center;">
+          Page will refresh automatically when complete.
+        </p>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    // Inject spinner keyframes once
+    if (!document.getElementById('_rbo-styles')) {
+      const sty = document.createElement('style');
+      sty.id = '_rbo-styles';
+      sty.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+      document.head.appendChild(sty);
+    }
+
+    let _pollTimer = null;
+
+    function showOverlay(startStep) {
+      overlay.style.display = 'flex';
+      document.getElementById('rbo-step').textContent =
+        'Starting: ' + (STEP_LABELS[startStep] || startStep || '…');
+      document.getElementById('rbo-logs').textContent = 'Waiting for first log entry…';
+    }
+
+    function stopPolling() {
+      if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    }
+
+    function formatLogLine(entry) {
+      if (typeof entry === 'string') return entry;
+      if (entry && entry.message) return entry.message;
+      return JSON.stringify(entry);
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch(`/api/v1/jobs/${JOB_ID}/status`, {
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin',
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update step label
+        const stepLabel = STEP_LABELS[data.current_step] || data.current_step || '';
+        const stageText = data.stage || stepLabel;
+        document.getElementById('rbo-step').textContent = stageText;
+
+        // Show last 5 log lines
+        const logs = Array.isArray(data.parse_logs) ? data.parse_logs : [];
+        const last5 = logs.slice(-5).map(formatLogLine).join('\n');
+        const logsEl = document.getElementById('rbo-logs');
+        logsEl.textContent = last5 || 'Running…';
+        logsEl.scrollTop = logsEl.scrollHeight;
+
+        // Terminal states
+        if (data.status === 'completed') {
+          stopPolling();
+          document.getElementById('rbo-title').textContent = '✓ Rebuild complete!';
+          document.getElementById('rbo-spinner').style.borderTopColor = '#16a34a';
+          document.getElementById('rbo-step').textContent = 'Refreshing…';
+          setTimeout(() => { window.location.replace(window.location.pathname + '#poll=1'); }, 900);
+        } else if (data.status === 'failed') {
+          stopPolling();
+          document.getElementById('rbo-title').textContent = '✗ Rebuild failed';
+          document.getElementById('rbo-spinner').style.borderTopColor = '#dc2626';
+          document.getElementById('rbo-spinner').style.animation = 'none';
+          document.getElementById('rbo-step').textContent = data.error || 'An error occurred.';
+          // Show a dismiss button
+          const dismissBtn = document.createElement('button');
+          dismissBtn.className = 'btn btn-ghost btn-sm';
+          dismissBtn.style.cssText = 'display:block;margin:14px auto 0;';
+          dismissBtn.textContent = 'Dismiss';
+          dismissBtn.onclick = () => { overlay.style.display = 'none'; };
+          overlay.querySelector('div > div').appendChild(dismissBtn);
+        }
+      } catch (_) { /* network hiccup — keep polling */ }
+    }
+
+    // Intercept all forms with action=rebuild_pipeline
+    document.addEventListener('submit', function (e) {
+      const form = e.target;
+      const actionInput = form.querySelector('input[name="action"]');
+      if (!actionInput || actionInput.value !== 'rebuild_pipeline') return;
+
+      const startStep = (form.querySelector('input[name="edited_step"]') || {}).value || 'method';
+      showOverlay(startStep);
+
+      // Let the form POST proceed normally (Django handles the rebuild);
+      // start polling immediately so we catch progress updates.
+      _pollTimer = setInterval(pollStatus, 1500);
+      // First poll after a brief delay for the server to start the job
+      setTimeout(pollStatus, 1200);
+    });
   })();
 </script>
 
@@ -2110,20 +2311,128 @@ if (root) {
     return res.json(); // ComponentSaveResponse
   }
 
-  /* ── Confidence mini-refresh after any successful PATCH ──── */
+  /* ── Phase 3: richer confidence refresh after any successful PATCH ──── */
   function refreshConfidenceHint(saveResponse) {
     const overall = saveResponse?.confidence?.overall;
     if (overall == null) return;
-    // Update confidence ring label (Phase 0 server-rendered element)
-    document.querySelectorAll('.conf-ring-label').forEach(el => {
-      el.textContent = Math.round(overall) + '%';
+
+    // 1. Update ring percentage labels and colours
+    const ringPct = Math.round(overall);
+    const ringColor = ringPct >= 80 ? '#16a34a' : ringPct >= 50 ? '#d97706' : '#dc2626';
+    document.querySelectorAll('.conf-ring-pct').forEach(el => {
+      el.textContent = ringPct + '%';
+      el.style.color = ringColor;
     });
-    // Update actionable items data block for Command Center re-reads
+    // Legacy fallback: elements with just conf-ring-label (no nested span)
+    document.querySelectorAll('.conf-ring-label').forEach(el => {
+      if (!el.querySelector('.conf-ring-pct')) {
+        el.textContent = ringPct + '%';
+        el.style.color = ringColor;
+      }
+    });
+
+    // 2. Update JSON data blocks for Command Center re-reads
     const ccData = document.getElementById('_cc-confidence');
     if (ccData) ccData.textContent = JSON.stringify(saveResponse.confidence);
     const ccActions = document.getElementById('_cc-actionable-items');
     if (ccActions) ccActions.textContent = JSON.stringify(saveResponse.actionable_items);
+
+    // 3. Refresh the Command Center HTML elements live
+    _refreshCommandCenterDOM(saveResponse.actionable_items || [], overall);
   }
+
+  /* ── Phase 3: re-render Command Center HTML from fresh actionable items ── */
+  function _refreshCommandCenterDOM(items, overall) {
+    // Update issues count badge in tab button
+    const ccTabBadge = document.querySelector('[onclick*="command-center"] .tab-badge');
+    if (ccTabBadge && items.length > 0) {
+      ccTabBadge.textContent = items.length;
+      ccTabBadge.style.background = 'var(--danger-soft)';
+      ccTabBadge.style.color = 'var(--danger)';
+    } else if (ccTabBadge) {
+      ccTabBadge.textContent = '✓';
+      ccTabBadge.style.background = 'var(--success-soft)';
+      ccTabBadge.style.color = 'var(--success)';
+    }
+
+    // Update "Next recommended action" banner
+    const bannerEl = document.getElementById('cc-top-action-banner');
+    if (bannerEl) {
+      if (items.length === 0) {
+        bannerEl.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;padding:16px 20px;
+                      border:1.5px solid var(--success-mid);background:var(--success-soft);
+                      border-radius:var(--radius);margin-bottom:20px;">
+            <span style="font-size:1.4rem;">🎉</span>
+            <div>
+              <p class="font-600" style="color:var(--success);">Pipeline ready</p>
+              <p class="text-sm text-muted">All tracked factors are resolved.</p>
+            </div>
+          </div>`;
+      } else {
+        const top = items[0];
+        const borderColor = top.severity === 'high' ? 'var(--danger-mid)' : top.severity === 'medium' ? 'var(--warning-mid)' : 'var(--border-2)';
+        const bgColor = top.severity === 'high' ? 'var(--danger-soft)' : top.severity === 'medium' ? 'var(--warning-soft)' : 'var(--surface-2)';
+        const impactColor = top.severity === 'high' ? 'var(--danger)' : top.severity === 'medium' ? 'var(--warning)' : 'var(--text-3)';
+        bannerEl.innerHTML = `
+          <div style="margin-bottom:20px;padding:16px 20px;border:1.5px solid ${borderColor};
+                      background:${bgColor};border-radius:var(--radius);
+                      display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <p class="text-xs font-600 text-muted mb-1" style="text-transform:uppercase;letter-spacing:.04em;">Next recommended action</p>
+              <p class="font-600" style="color:var(--text);margin-bottom:2px;">${_esc(top.reason)}</p>
+              <p class="text-xs" style="color:${impactColor};">+${(top.confidence_impact||0).toFixed(1)}% confidence if resolved</p>
+            </div>
+            <button class="btn btn-primary btn-sm"
+                    onclick="window.activateAction && window.activateAction(JSON.parse(document.getElementById('_cc-actionable-items').textContent)[0])">
+              ${_esc(top.fix_label)} →
+            </button>
+          </div>`;
+      }
+    }
+
+    // Show/hide issues header + update actionable items list
+    const issuesHeader = document.getElementById('cc-issues-header');
+    const listEl = document.getElementById('cc-actionable-items-list');
+    if (listEl) {
+      if (items.length === 0) {
+        listEl.innerHTML = '';
+        if (issuesHeader) issuesHeader.style.display = 'none';
+      } else {
+        if (issuesHeader) issuesHeader.style.display = '';
+        const countBadge = document.getElementById('cc-issues-count-badge');
+        if (countBadge) {
+          countBadge.textContent = items.length;
+          countBadge.style.background = 'var(--danger-soft)';
+          countBadge.style.color = 'var(--danger)';
+        }
+        listEl.innerHTML = items.map(item => {
+          const sevBg = item.severity === 'high' ? 'var(--danger-soft)' : item.severity === 'medium' ? 'var(--warning-soft)' : 'var(--surface-2)';
+          const sevBorder = item.severity === 'high' ? 'var(--danger-mid)' : item.severity === 'medium' ? 'var(--warning-mid)' : 'var(--border-2)';
+          const sevColor = item.severity === 'high' ? 'var(--danger)' : item.severity === 'medium' ? 'var(--warning)' : 'var(--text-3)';
+          return `<div class="action-item-card sev-${_esc(item.severity)}"
+                       style="background:${sevBg};border-color:${sevBorder};">
+            <div style="flex:1;">
+              <p class="text-sm font-600" style="color:var(--text);margin-bottom:2px;">${_esc(item.reason)}</p>
+              <p class="text-xs" style="color:${sevColor};">${_esc(item.severity||'').charAt(0).toUpperCase()+_esc(item.severity||'').slice(1)} · +${(item.confidence_impact||0).toFixed(1)}% if resolved</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" style="flex-shrink:0;white-space:nowrap;"
+                    onclick="window.activateAction && window.activateAction(${JSON.stringify(item).replace(/</g,'\\u003c')})">
+              ${_esc(item.fix_label)} →
+            </button>
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+
+  /* ── HTML-escape helper ──────────────────────────────────────── */
+  function _esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Export for cross-script access (hash deep-link poll handler)
+  window._refreshConfidenceHint = refreshConfidenceHint;
 
   /* ── Status indicator helpers ─────────────────────────────── */
   function setStatus(el, state) {

@@ -395,6 +395,41 @@ async def get_job_status(
 # ---------------------------------------------------------------------------
 
 
+async def get_confidence_for_job(
+    job_id: str | UUID, user_id: int
+) -> dict[str, Any] | None:
+    """Return computed confidence + actionable_items for a job.
+
+    Returns None if the job doesn't exist or doesn't belong to user_id.
+    Recomputes confidence from the current ComponentSnapshot rows — no cache.
+    """
+    @sync_to_async
+    def _fetch() -> dict[str, Any] | None:
+        from researcher_ai_portal_app.models import ComponentSnapshot, WorkflowJob
+        from researcher_ai_portal_app.confidence import (
+            compute_confidence,
+            compute_actionable_items,
+        )
+
+        try:
+            job = WorkflowJob.objects.only("id").get(id=job_id, user_id=user_id)
+        except WorkflowJob.DoesNotExist:
+            return None
+
+        components = {s.step: s.payload for s in ComponentSnapshot.objects.filter(job=job)}
+        confidence = compute_confidence(components)
+        actionable_items = compute_actionable_items(components, confidence)
+        return {
+            "job_id": str(job_id),
+            "overall": confidence.get("overall", 0.0),
+            "assay_confidences": confidence.get("assay_confidences", {}),
+            "validation_passed": confidence.get("validation_passed", True),
+            "actionable_items": actionable_items,
+        }
+
+    return await _fetch()
+
+
 async def patch_component_snapshot(
     job_id: str | UUID,
     user_id: int,

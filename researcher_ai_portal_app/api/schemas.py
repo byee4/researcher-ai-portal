@@ -208,3 +208,22 @@ class ComponentSaveResponse(BaseModel):
     payload: Any
     confidence: dict[str, Any]
     actionable_items: list[dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Lightweight confidence poll response
+# ---------------------------------------------------------------------------
+
+
+class ConfidenceResponse(BaseModel):
+    """Returned by GET /api/v1/jobs/{job_id}/confidence.
+
+    Lightweight endpoint for the React dashboard to refresh Command Center
+    data after PATCH saves without a full page reload.
+    """
+
+    job_id: str
+    overall: float
+    assay_confidences: dict[str, Any]
+    validation_passed: bool
+    actionable_items: list[dict[str, Any]]

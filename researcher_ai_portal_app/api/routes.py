@@ -1,4 +1,4 @@
-"""FastAPI router — Phase 1 + Phase 2 endpoints.
+"""FastAPI router — Phase 1 + Phase 2 + Phase 3 endpoints.
 
 All routes are prefixed with /api/v1/ by the ASGI router in asgi.py.
 
@@ -13,6 +13,10 @@ Phase 2 routes (visual builder core):
   GET  /api/v1/graphs/{job_id}          — retrieve React Flow graph state
   PUT  /api/v1/graphs/{job_id}          — save React Flow graph state
   GET  /api/v1/graphs/{job_id}/nodes/{node_id}  — single-node detail
+  PATCH /api/v1/jobs/{job_id}/components/{step}  — partial update + confidence refresh
+
+Phase 3 routes (confidence correction loops):
+  GET  /api/v1/jobs/{job_id}/confidence — lightweight confidence poll
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from .dependencies import get_current_user
 from .schemas import (
     ComponentPatchRequest,
     ComponentSaveResponse,
+    ConfidenceResponse,
     ErrorResponse,
     GraphNode,
     JobStatusResponse,
@@ -166,6 +171,47 @@ async def get_job_status(
             detail=f"Job '{job_id}' not found.",
         )
     return JobStatusResponse(**status_data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Lightweight confidence poll
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/jobs/{job_id}/confidence",
+    response_model=ConfidenceResponse,
+    summary="Lightweight confidence poll for the Command Center",
+    tags=["jobs"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+async def get_job_confidence(
+    job_id: str,
+    user: Annotated[object, Depends(get_current_user)],
+) -> ConfidenceResponse:
+    """Return the current confidence score + actionable items for a job.
+
+    Recomputes confidence from the live ComponentSnapshot rows so the Command
+    Center always shows fresh data after any PATCH save.  This is cheaper than
+    a full page reload and faster than waiting for the PATCH response cycle
+    when the client wants to refresh independently (e.g. after switching tabs).
+
+    Pair with the PATCH /components/{step} autosave: prefer the PATCH response
+    for immediate field-save feedback; use this endpoint to re-sync the full
+    Command Center after tab switches or bookmark loads.
+    """
+    data = await repository.get_confidence_for_job(
+        job_id=job_id, user_id=user.pk
+    )
+    if data is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+    return ConfidenceResponse(**data)
 
 
 # ---------------------------------------------------------------------------
