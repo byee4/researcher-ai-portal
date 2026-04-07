@@ -1945,6 +1945,15 @@ def dashboard(request, job_id: str):
             "figure_gt_form": figure_gt_form,
             "edited_step": _infer_last_edited_step(job),
             "rebuild_steps": invalidated_steps(job, _infer_last_edited_step(job)),
+            # Step metadata for the React Flow pipeline builder tab.
+            # Passed as a raw Python list so Django's json_script filter
+            # serialises it exactly once (pre-encoding via json.dumps would
+            # cause double-encoding, leaving STEP_META as a string in JS and
+            # crashing STEP_META.find() with a TypeError).
+            "step_rows_json": [
+                {"id": r["id"], "label": r["label"], "meta": r["meta"]}
+                for r in step_rows
+            ],
         }
     )
     return render(request, "researcher_ai_portal/dashboard.html", context)
