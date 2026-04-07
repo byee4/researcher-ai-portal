@@ -1487,7 +1487,12 @@ function ToolNode({ data, selected }) {
       onClick: () => data.onSelect && data.onSelect(data),
       style: {
         background:   selected ? '#eff6ff' : '#ffffff',
-        border:       `2px solid ${selected ? '#1d4ed8' : '#e2e8f0'}`,
+        border:       `2px solid ${
+          selected            ? '#1d4ed8'
+          : data._issueLevel === 'error'   ? '#ef4444'
+          : data._issueLevel === 'warning' ? '#f59e0b'
+          : '#e2e8f0'
+        }`,
         borderRadius: 12,
         padding:      '12px 14px',
         minWidth:     180,
@@ -1495,6 +1500,10 @@ function ToolNode({ data, selected }) {
         cursor:       'pointer',
         boxShadow:    selected
           ? '0 0 0 3px rgba(29,78,216,.18)'
+          : data._issueLevel === 'error'
+          ? '0 0 0 3px rgba(239,68,68,.15)'
+          : data._issueLevel === 'warning'
+          ? '0 0 0 3px rgba(245,158,11,.10)'
           : '0 2px 8px rgba(15,23,42,.07)',
         fontFamily: "'Inter', system-ui, sans-serif",
         transition: 'border-color .15s, box-shadow .15s',
@@ -1540,6 +1549,18 @@ function ToolNode({ data, selected }) {
       Object.keys(data.parameters || {}).length > 0 && React.createElement('div', {
         style: { marginTop: 6, fontSize: 10, color: '#94a3b8' },
       }, `${Object.keys(data.parameters).length} parameter${Object.keys(data.parameters).length !== 1 ? 's' : ''}`),
+
+      /* Phase 4 — Validation issue badge */
+      data._issueLevel && React.createElement('div', {
+        style: {
+          marginTop: 6, fontSize: 9, fontWeight: 700, lineHeight: 1.4,
+          color: data._issueLevel === 'error' ? '#dc2626' : '#b45309',
+          background: data._issueLevel === 'error' ? '#fef2f2' : '#fef3c7',
+          border: `1px solid ${data._issueLevel === 'error' ? '#fecaca' : '#fde68a'}`,
+          borderRadius: 3, padding: '2px 5px',
+        },
+        title: (data._issueMessages || []).join('\n') || data._issueLevel,
+      }, data._issueLevel === 'error' ? `✗ ${data._issueMessages?.[0] || 'Error'}` : `⚠ ${data._issueMessages?.[0] || 'Warning'}`),
 
       /* Confidence quality badges */
       (() => {
@@ -1900,6 +1921,14 @@ function PipelineBuilderInner() {
   const [saveStatus,   setSaveStatus]   = useState('idle');
   const [loadError,    setLoadError]    = useState('');
   const [jobStatus,    setJobStatus]    = useState(null);
+  /* Phase 4 — compile + execute + logs */
+  const [compileResult,  setCompileResult]  = useState(null);  // CompileResponse | null
+  const [compileLoading, setCompileLoading] = useState(false);
+  const [runDialogOpen,  setRunDialogOpen]  = useState(false);
+  const [logEntries,     setLogEntries]     = useState([]);
+  const logSincTsRef   = useRef(null);      // watermark for incremental log fetch
+  const logPollRef     = useRef(null);      // setTimeout handle for log poll loop
+  const logScrollRef   = useRef(null);      // ref for auto-scroll log panel
   const mountedRef     = useRef(true);
   const hydratedRef    = useRef(false);  /* true once initial graph load completes */
 
@@ -2139,6 +2168,98 @@ function PipelineBuilderInner() {
       });
   }, [allEdges, allNodes, getViewport]);
 
+  /* ── Phase 4: Dry Run (compile) ────────────────────────────── */
+  const handleDryRun = useCallback(async () => {
+    setCompileLoading(true);
+    setCompileResult(null);
+    try {
+      const res = await fetch(`/api/v1/graphs/${JOB_ID}/compile`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setCompileResult(data);
+      /* Build per-node issue level map and stamp it onto node data */
+      const issueMap = {};
+      for (const issue of (data.issues || [])) {
+        if (!issueMap[issue.node_id]) issueMap[issue.node_id] = { level: issue.severity, messages: [] };
+        if (issue.severity === 'error') issueMap[issue.node_id].level = 'error';
+        issueMap[issue.node_id].messages.push(issue.message);
+      }
+      setAllNodes(ns => ns.map(n => ({
+        ...n,
+        data: {
+          ...n.data,
+          _issueLevel:    issueMap[n.id]?.level    || null,
+          _issueMessages: issueMap[n.id]?.messages || [],
+        },
+      })));
+    } catch (err) {
+      console.error('Dry run failed:', err);
+      setCompileResult({ valid: false, execution_order: [], issues: [{ node_id: '', severity: 'error', message: `Request failed: ${err.message}` }] });
+    } finally {
+      setCompileLoading(false);
+    }
+  }, []);
+
+  /* ── Phase 4: Run Pipeline (execute) ───────────────────────── */
+  const handleRunPipeline = useCallback(async () => {
+    setRunDialogOpen(false);
+    setLogEntries([]);
+    logSincTsRef.current = null;
+    try {
+      const res = await fetch(`/api/v1/graphs/${JOB_ID}/execute`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.error('Execute failed:', err);
+      setLogEntries([{ ts: new Date().toISOString(), level: 'error', step: '', message: `Execute failed: ${err.message}` }]);
+    }
+  }, []);
+
+  /* ── Phase 4: incremental log polling ─────────────────────── */
+  useEffect(() => {
+    const ACTIVE = new Set(['queued', 'in_progress', 'running', 'pending']);
+    if (!jobStatus || !ACTIVE.has(jobStatus.status)) {
+      if (logPollRef.current) clearTimeout(logPollRef.current);
+      return;
+    }
+    let cancelled = false;
+    async function pollLogs() {
+      if (cancelled || !mountedRef.current) return;
+      try {
+        const qs = logSincTsRef.current ? `&since_ts=${encodeURIComponent(logSincTsRef.current)}` : '';
+        const res = await fetch(`/api/v1/jobs/${JOB_ID}/logs?limit=50${qs}`, { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.entries && data.entries.length > 0) {
+          setLogEntries(prev => [...prev, ...data.entries].slice(-200));
+          logSincTsRef.current = data.next_since_ts;
+        }
+        logPollRef.current = setTimeout(pollLogs, data.has_more ? 50 : 3000);
+      } catch {
+        logPollRef.current = setTimeout(pollLogs, 5000);
+      }
+    }
+    pollLogs();
+    return () => {
+      cancelled = true;
+      if (logPollRef.current) clearTimeout(logPollRef.current);
+    };
+  }, [jobStatus?.status]);
+
+  /* ── Phase 4: auto-scroll log panel ───────────────────────── */
+  useEffect(() => {
+    if (logScrollRef.current) logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
+  }, [logEntries]);
+
   const saveBtnLabel = { idle: 'Save layout', unsaved: '● Save changes', saving: 'Saving…', saved: '✓ Saved', error: '✗ Error' };
   const saveBtnColor = { idle: '#1d4ed8', unsaved: '#b45309', saving: '#6b7280', saved: '#16a34a', error: '#dc2626' };
 
@@ -2155,7 +2276,9 @@ function PipelineBuilderInner() {
     );
   }
 
-  return React.createElement('div', {
+  return React.createElement(React.Fragment, null,
+  /* ── Row: ReactFlow canvas + edit panel ──────────────────── */
+  React.createElement('div', {
     style: { display: 'flex', gap: 12, height: '100%', alignItems: 'stretch' },
   },
     /* ── React Flow canvas ──────────────────────────────────── */
@@ -2224,6 +2347,35 @@ function PipelineBuilderInner() {
             loadError && React.createElement('span', {
               style: { fontSize: 11, color: '#dc2626' },
             }, `⚠ ${loadError}`),
+            /* Phase 4 — Dry Run / Validate button */
+            React.createElement('button', {
+              onClick: handleDryRun,
+              disabled: compileLoading,
+              title: 'Validate pipeline DAG and check for issues',
+              style: {
+                padding: '6px 14px',
+                background: compileLoading ? '#6b7280'
+                  : compileResult === null   ? '#7c3aed'
+                  : compileResult.valid      ? '#16a34a'
+                  : '#dc2626',
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, cursor: compileLoading ? 'default' : 'pointer',
+              },
+            }, compileLoading ? 'Validating…'
+               : compileResult === null ? '⚡ Dry Run'
+               : compileResult.valid    ? '✓ Valid'
+               : `✗ ${compileResult.issues.filter(i => i.severity === 'error').length} error${compileResult.issues.filter(i => i.severity === 'error').length !== 1 ? 's' : ''}`),
+
+            /* Run Pipeline button — only shown after a passing dry run */
+            compileResult?.valid && React.createElement('button', {
+              onClick: () => setRunDialogOpen(true),
+              style: {
+                padding: '6px 14px', background: '#16a34a',
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              },
+            }, '▶ Run Pipeline'),
+
             React.createElement('button', {
               onClick: saveLayout,
               disabled: saveStatus === 'saving',
@@ -2269,7 +2421,139 @@ function PipelineBuilderInner() {
       onClose:  () => setSelectedNode(null),
       onUpdate: handleNodeUpdate,
     }),
-  );
+  ), // end row flex div
+
+  /* ── Phase 4: Compile results panel ────────────────────────── */
+  compileResult && React.createElement('div', {
+    style: {
+      marginTop: 10,
+      border: `1px solid ${compileResult.valid ? '#bbf7d0' : '#fecaca'}`,
+      background: compileResult.valid ? '#f0fdf4' : '#fef2f2',
+      borderRadius: 8, padding: '12px 16px',
+    },
+  },
+    React.createElement('div', {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
+    },
+      React.createElement('div', {
+        style: { fontWeight: 700, fontSize: 13, color: compileResult.valid ? '#166534' : '#991b1b', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+      },
+        compileResult.valid ? '✓ Graph valid' : '✗ Validation failed',
+        compileResult.execution_order.length > 0 && React.createElement('span', {
+          style: { fontSize: 11, fontWeight: 400, color: '#374151' },
+        }, `— ${compileResult.execution_order.length} node${compileResult.execution_order.length !== 1 ? 's' : ''} in execution order`),
+        compileResult.issues.filter(i => i.severity === 'warning').length > 0 && React.createElement('span', {
+          style: { fontSize: 11, fontWeight: 600, color: '#d97706', background: '#fef3c7', borderRadius: 4, padding: '1px 6px' },
+        }, `${compileResult.issues.filter(i => i.severity === 'warning').length} warning${compileResult.issues.filter(i => i.severity === 'warning').length !== 1 ? 's' : ''}`),
+      ),
+      React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        compileResult.valid && React.createElement('button', {
+          onClick: () => setRunDialogOpen(true),
+          style: {
+            padding: '6px 14px', background: '#16a34a', color: '#fff',
+            border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+          },
+        }, '▶ Run Pipeline'),
+        React.createElement('button', {
+          onClick: () => setCompileResult(null),
+          style: {
+            padding: '6px 10px', background: 'transparent', color: '#6b7280',
+            border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+          },
+        }, '✕'),
+      ),
+    ),
+    compileResult.issues.length > 0 && React.createElement('ul', {
+      style: { margin: '10px 0 0', paddingLeft: 18, fontSize: 12, color: '#374151' },
+    },
+      compileResult.issues.slice(0, 12).map((issue, i) =>
+        React.createElement('li', { key: i, style: { marginBottom: 3 } },
+          React.createElement('span', {
+            style: { fontWeight: 700, color: issue.severity === 'error' ? '#dc2626' : '#d97706', marginRight: 4 },
+          }, issue.severity === 'error' ? '[error]' : '[warn]'),
+          issue.node_id ? `${issue.node_id}: ` : '',
+          issue.message,
+        )
+      ),
+      compileResult.issues.length > 12 && React.createElement('li', {
+        style: { color: '#6b7280', fontStyle: 'italic', listStyle: 'none' },
+      }, `…and ${compileResult.issues.length - 12} more`),
+    ),
+    compileResult.valid && compileResult.execution_order.length > 0 && React.createElement('div', {
+      style: { marginTop: 10, padding: '8px 12px', background: '#fff', border: '1px solid #d1fae5', borderRadius: 6, fontSize: 11, fontFamily: 'monospace', color: '#374151', overflowX: 'auto', whiteSpace: 'nowrap' },
+    }, compileResult.execution_order.join(' → ')),
+  ),
+
+  /* ── Phase 4: Log panel ─────────────────────────────────────── */
+  (logEntries.length > 0 || (jobStatus && ['queued','in_progress','running','pending'].includes(jobStatus.status))) &&
+  React.createElement('div', {
+    style: { marginTop: 10, border: '1px solid #334155', borderRadius: 8, overflow: 'hidden', background: '#0f172a' },
+  },
+    React.createElement('div', {
+      style: { padding: '6px 12px', background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+    },
+      React.createElement('span', {
+        style: { fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.04em', display: 'flex', alignItems: 'center', gap: 6 },
+      },
+        '📋 Pipeline Logs',
+        jobStatus && ['queued','in_progress','running','pending'].includes(jobStatus.status) &&
+          React.createElement('span', {
+            style: { width: 6, height: 6, borderRadius: '50%', background: '#3b82f6', display: 'inline-block', animation: 'pulse 1.5s ease-in-out infinite' },
+          }),
+      ),
+      React.createElement('button', {
+        onClick: () => { setLogEntries([]); logSincTsRef.current = null; },
+        style: { background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 11, padding: '2px 6px' },
+      }, '✕ clear'),
+    ),
+    React.createElement('div', {
+      ref: logScrollRef,
+      style: { padding: '8px 12px', overflowY: 'auto', maxHeight: 180, fontFamily: 'monospace', fontSize: 10.5 },
+    },
+      logEntries.length === 0
+        ? React.createElement('span', { style: { color: '#475569' } }, 'Waiting for log output…')
+        : logEntries.map((e, i) =>
+            React.createElement('div', {
+              key: i,
+              style: { color: e.level === 'error' ? '#f87171' : e.level === 'warning' ? '#fbbf24' : '#94a3b8', lineHeight: 1.7 },
+            },
+              React.createElement('span', { style: { color: '#334155', marginRight: 6 } }, e.ts ? e.ts.slice(11, 19) : ''),
+              e.step && React.createElement('span', { style: { color: '#60a5fa', marginRight: 6 } }, `[${e.step}]`),
+              e.message,
+            )
+          ),
+    ),
+  ),
+
+  /* ── Phase 4: Run Pipeline confirmation dialog ──────────────── */
+  runDialogOpen && React.createElement('div', {
+    onClick: () => setRunDialogOpen(false),
+    style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 },
+  },
+    React.createElement('div', {
+      onClick: e => e.stopPropagation(),
+      style: { background: '#fff', borderRadius: 12, padding: '28px 32px', maxWidth: 480, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,.3)' },
+    },
+      React.createElement('h3', { style: { margin: '0 0 10px', fontSize: 17, fontWeight: 700, color: '#0f172a' } }, 'Run Pipeline?'),
+      React.createElement('p', { style: { margin: '0 0 16px', fontSize: 13, color: '#475569', lineHeight: 1.5 } },
+        `This will re-run all ${compileResult?.execution_order?.length || ''} pipeline steps for this job. Any existing extraction results will be overwritten.`
+      ),
+      compileResult?.execution_order?.length > 0 && React.createElement('div', {
+        style: { margin: '0 0 20px', padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 11, fontFamily: 'monospace', color: '#374151', overflowX: 'auto', whiteSpace: 'nowrap' },
+      }, compileResult.execution_order.join(' → ')),
+      React.createElement('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
+        React.createElement('button', {
+          onClick: () => setRunDialogOpen(false),
+          style: { padding: '8px 18px', background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13, cursor: 'pointer' },
+        }, 'Cancel'),
+        React.createElement('button', {
+          onClick: handleRunPipeline,
+          style: { padding: '8px 18px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' },
+        }, '▶ Run now'),
+      ),
+    ),
+  ), // end run dialog
+  ); // end React.Fragment
 }
 
 /* Wrap in ReactFlowProvider (required by useReactFlow hook) */

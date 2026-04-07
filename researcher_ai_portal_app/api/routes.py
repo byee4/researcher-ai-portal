@@ -1,4 +1,4 @@
-"""FastAPI router — Phase 1 + Phase 2 + Phase 3 endpoints.
+"""FastAPI router — Phase 1 + Phase 2 + Phase 3 + Phase 4 endpoints.
 
 All routes are prefixed with /api/v1/ by the ASGI router in asgi.py.
 
@@ -17,6 +17,11 @@ Phase 2 routes (visual builder core):
 
 Phase 3 routes (confidence correction loops):
   GET  /api/v1/jobs/{job_id}/confidence — lightweight confidence poll
+
+Phase 4 routes (graph compilation + execution + paginated logs):
+  POST /api/v1/graphs/{job_id}/compile  — DAG validation; returns ValidationIssue[]
+  POST /api/v1/graphs/{job_id}/execute  — 202 pipeline dispatch
+  GET  /api/v1/jobs/{job_id}/logs       — incremental log fetch (?since_ts&limit)
 """
 
 from __future__ import annotations
@@ -33,12 +38,16 @@ from .dependencies import get_current_user
 from .schemas import (
     ComponentPatchRequest,
     ComponentSaveResponse,
+    CompileResponse,
     ConfidenceResponse,
     ErrorResponse,
+    ExecuteRequest,
+    ExecuteResponse,
     GraphNode,
     JobStatusResponse,
     JobSummary,
     JobsListResponse,
+    LogsResponse,
     ParsePublicationRequest,
     ParsePublicationResponse,
     PingResponse,
@@ -277,6 +286,212 @@ async def get_graph(
         return WorkflowGraph(nodes=[], edges=[])
 
     return WorkflowGraph.model_validate(graph_data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Graph compilation + execution + paginated logs
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/graphs/{job_id}/compile",
+    response_model=CompileResponse,
+    summary="Validate the visual pipeline graph (Dry Run)",
+    tags=["graphs"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+async def compile_graph(
+    job_id: str,
+    user: Annotated[object, Depends(get_current_user)],
+) -> CompileResponse:
+    """Validate the stored React Flow graph as a directed acyclic graph.
+
+    Performs two checks:
+
+    1. **Topological sort** — detects directed cycles using Kahn's algorithm.
+       Any node that is part of a cycle receives an ``error``-severity
+       ``ValidationIssue``.  ``execution_order`` is empty when a cycle is
+       found.
+
+    2. **Field validation** — checks each node for missing name (error),
+       missing version (warning), and missing I/O definition (warning).
+
+    ``valid`` is ``True`` when no error-severity issues are present.  Warnings
+    do not block execution but are surfaced in the UI as amber node outlines.
+
+    The client should call this before ``POST /execute`` to confirm the graph
+    is executable, and use the returned ``node_id`` fields to highlight broken
+    nodes in the React Flow canvas.
+    """
+    result = await repository.compile_graph(job_id=job_id, user_id=user.pk)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+    return CompileResponse(**result)
+
+
+@router.post(
+    "/graphs/{job_id}/execute",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ExecuteResponse,
+    summary="Execute the compiled pipeline (202 Accepted)",
+    tags=["graphs"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def execute_pipeline(
+    job_id: str,
+    req: ExecuteRequest,
+    user: Annotated[object, Depends(get_current_user)],
+) -> ExecuteResponse:
+    """Dispatch the full pipeline for an existing job.
+
+    **Pre-flight compile check** — the graph is compiled before dispatch.
+    If any error-severity ``ValidationIssue`` is present the endpoint returns
+    422 with the compile result embedded in the ``extra`` field so the client
+    can surface the issues without a separate compile call.
+
+    On success (202) the pipeline runs in a background thread — the same
+    ``_run_full_pipeline_sync`` path used by ``POST /parse-publication``.
+    Poll ``GET /api/v1/jobs/{job_id}/status`` for progress and
+    ``GET /api/v1/jobs/{job_id}/logs`` for streaming output.
+
+    ``llm_api_key`` and ``llm_model`` default to environment variables if
+    omitted.  ``force_reparse`` bypasses cached step outputs.
+    """
+    # Verify the job exists and belongs to the authenticated user.
+    job = await repository.get_job_for_user(job_id=job_id, user_id=user.pk)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+
+    # Compile check — abort if there are error-severity issues.
+    compile_result = await repository.compile_graph(job_id=job_id, user_id=user.pk)
+    if compile_result and not compile_result["valid"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Pipeline graph has validation errors. Run /compile first to see issues.",
+        )
+
+    # Resolve LLM configuration — fall back to env vars when not provided.
+    from researcher_ai_portal_app.views import (
+        _infer_provider,
+        _validate_llm_api_key,
+        _validate_llm_model,
+    )
+
+    raw_model = req.llm_model or job.llm_model or os.environ.get("LLM_MODEL", "gpt-5.4")
+    try:
+        llm_model = _validate_llm_model(raw_model)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    raw_key = req.llm_api_key or os.environ.get("LLM_API_KEY", "")
+    try:
+        llm_api_key = _validate_llm_api_key(raw_key, _infer_provider(llm_model))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    # Reset job status so the frontend polling sees a fresh run.
+    from researcher_ai_portal_app.job_store import update_job
+    @sync_to_async
+    def _reset() -> None:
+        update_job(
+            str(job_id),
+            status="queued",
+            progress=0,
+            stage="Queued for re-execution",
+            current_step="paper",
+            error="",
+            parse_logs=[],
+        )
+
+    await _reset()
+
+    # Dispatch the pipeline in a background thread (identical to parse-publication).
+    pipeline_coro = sync_to_async(
+        _run_full_pipeline_sync, thread_sensitive=False
+    )(str(job_id), llm_api_key, llm_model, req.force_reparse)
+
+    task = asyncio.create_task(pipeline_coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return ExecuteResponse(job_id=str(job_id), status="queued")
+
+
+@router.get(
+    "/jobs/{job_id}/logs",
+    response_model=LogsResponse,
+    summary="Paginated incremental log fetch",
+    tags=["jobs"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+async def get_job_logs(
+    job_id: str,
+    user: Annotated[object, Depends(get_current_user)],
+    since_ts: str | None = None,
+    limit: int = 50,
+) -> LogsResponse:
+    """Return log entries for a job, optionally filtered to those after *since_ts*.
+
+    Supports incremental fetching to avoid downloading the full log on every
+    poll.  Typical client loop::
+
+        watermark = None
+        while job_running:
+            resp = GET /api/v1/jobs/{job_id}/logs?since_ts={watermark}&limit=50
+            display(resp.entries)
+            watermark = resp.next_since_ts
+            if resp.has_more:
+                continue   # fetch next page immediately
+            else:
+                sleep(3)   # wait before next poll
+
+    ``since_ts`` is an ISO 8601 UTC timestamp string (as returned in
+    ``next_since_ts``).  Entries are compared lexicographically, which is
+    correct for the UTC timestamps produced by ``job_events.append_job_log``.
+
+    ``limit`` is clamped to [1, 200].
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+
+    result = await repository.get_paginated_logs(
+        job_id=job_id, user_id=user.pk, since_ts=since_ts, limit=limit
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+    return LogsResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# (existing) Phase 2 — Graph CRUD continued
+# ---------------------------------------------------------------------------
 
 
 @router.put(

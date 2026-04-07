@@ -227,3 +227,83 @@ class ConfidenceResponse(BaseModel):
     assay_confidences: dict[str, Any]
     validation_passed: bool
     actionable_items: list[dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Graph compilation + execution + paginated logs
+# ---------------------------------------------------------------------------
+
+
+class ValidationIssue(BaseModel):
+    """A single issue found during graph DAG compilation.
+
+    Tied to a specific React Flow node ID so the frontend can outline the
+    broken node in red and show an inline tooltip.
+    """
+
+    node_id: str
+    severity: Literal["error", "warning"]
+    message: str
+    field: str | None = None
+
+
+class CompileResponse(BaseModel):
+    """Returned by POST /api/v1/graphs/{job_id}/compile.
+
+    ``valid`` is True when there are zero error-severity issues (warnings are
+    allowed).  ``execution_order`` is the topological sort of node IDs; it is
+    empty when a cycle is detected.  ``issues`` contains zero or more
+    ValidationIssue objects keyed to specific node IDs.
+    """
+
+    valid: bool
+    execution_order: list[str]
+    issues: list[ValidationIssue]
+
+
+class ExecuteRequest(BaseModel):
+    """Optional body for POST /api/v1/graphs/{job_id}/execute.
+
+    ``llm_api_key`` and ``llm_model`` default to environment variables if
+    omitted.  ``force_reparse`` bypasses any cached step outputs.
+    """
+
+    llm_api_key: str = ""
+    llm_model: str = ""
+    force_reparse: bool = False
+
+
+class ExecuteResponse(BaseModel):
+    """Returned by POST /api/v1/graphs/{job_id}/execute.
+
+    202 Accepted — the pipeline dispatches asynchronously.  Poll
+    GET /api/v1/jobs/{job_id}/status for progress and
+    GET /api/v1/jobs/{job_id}/logs for streaming log output.
+    """
+
+    job_id: str
+    status: str = "queued"
+
+
+class LogEntry(BaseModel):
+    """A single structured log line from the job event stream."""
+
+    ts: str          # ISO 8601 UTC timestamp
+    level: str       # "info" | "warning" | "error"
+    step: str        # pipeline step name, or "" for job-level events
+    message: str
+
+
+class LogsResponse(BaseModel):
+    """Returned by GET /api/v1/jobs/{job_id}/logs.
+
+    Supports incremental fetching: the client passes ``since_ts`` from the
+    previous response as the next request's query parameter so only new
+    entries are downloaded.  ``has_more`` is True when the result set was
+    truncated by ``limit``; the client should immediately fetch again with
+    ``since_ts=next_since_ts``.
+    """
+
+    entries: list[LogEntry]
+    next_since_ts: str      # watermark to pass as since_ts on the next poll
+    has_more: bool

@@ -430,6 +430,172 @@ async def get_confidence_for_job(
     return await _fetch()
 
 
+async def compile_graph(
+    job_id: str | UUID, user_id: int
+) -> dict[str, Any] | None:
+    """Validate the stored React Flow graph and return a CompileResponse dict.
+
+    Performs two passes:
+
+    **Pass 1 — topological sort (Kahn's algorithm)**
+      Detects directed cycles.  Each node in a cycle receives an error-severity
+      issue.  Nodes not involved in a cycle are returned in execution order.
+
+    **Pass 2 — field validation**
+      For each node in ``graph_data.nodes``:
+      - ``data.name`` absent or blank  → error  (node cannot be identified)
+      - ``data.version`` absent        → warning (reduces confidence)
+      - both ``data.inputs`` and ``data.outputs`` empty → warning
+
+    Returns None if the job doesn't exist or doesn't belong to user_id.
+    Returns a dict with keys ``valid``, ``execution_order``, ``issues``
+    matching the CompileResponse schema.
+    """
+    graph_data = await get_graph_state(job_id=job_id, user_id=user_id)
+    if graph_data is None:
+        return None  # job not found
+
+    nodes: list[dict[str, Any]] = graph_data.get("nodes") or []
+    edges: list[dict[str, Any]] = graph_data.get("edges") or []
+
+    if not nodes:
+        return {"valid": True, "execution_order": [], "issues": []}
+
+    node_ids = [n["id"] for n in nodes if isinstance(n.get("id"), str)]
+    node_id_set = set(node_ids)
+
+    # Build adjacency list and in-degree map for Kahn's algorithm.
+    adjacency: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    in_degree: dict[str, int] = {nid: 0 for nid in node_ids}
+
+    for edge in edges:
+        src = edge.get("source") or edge.get("source_handle", "")
+        tgt = edge.get("target") or edge.get("target_handle", "")
+        # Normalise: source/target can be node IDs directly.
+        if src not in node_id_set or tgt not in node_id_set:
+            continue
+        adjacency[src].append(tgt)
+        in_degree[tgt] += 1
+
+    # Kahn's BFS topological sort.
+    from collections import deque
+    queue: deque[str] = deque(nid for nid in node_ids if in_degree[nid] == 0)
+    execution_order: list[str] = []
+    while queue:
+        nid = queue.popleft()
+        execution_order.append(nid)
+        for successor in adjacency[nid]:
+            in_degree[successor] -= 1
+            if in_degree[successor] == 0:
+                queue.append(successor)
+
+    cycle_nodes = node_id_set - set(execution_order)
+
+    issues: list[dict[str, Any]] = []
+
+    # Cycle errors.
+    for nid in cycle_nodes:
+        issues.append({
+            "node_id": nid,
+            "severity": "error",
+            "message": "Node is part of a directed cycle — pipeline cannot be ordered",
+            "field": None,
+        })
+
+    # Field validation.
+    for node in nodes:
+        nid = node.get("id")
+        if not isinstance(nid, str):
+            continue
+        data = node.get("data") or {}
+        name = str(data.get("name") or "").strip()
+        version = str(data.get("version") or "").strip()
+        inputs = data.get("inputs") or []
+        outputs = data.get("outputs") or []
+
+        if not name:
+            issues.append({
+                "node_id": nid,
+                "severity": "error",
+                "message": "Node has no name — each tool must have a software name",
+                "field": "name",
+            })
+        if not version:
+            issues.append({
+                "node_id": nid,
+                "severity": "warning",
+                "message": "Version not specified — adding a version improves confidence",
+                "field": "version",
+            })
+        if not inputs and not outputs:
+            issues.append({
+                "node_id": nid,
+                "severity": "warning",
+                "message": "No inputs or outputs defined — connect data flow edges or specify I/O",
+                "field": "inputs",
+            })
+
+    has_errors = any(i["severity"] == "error" for i in issues)
+    return {
+        "valid": not has_errors,
+        "execution_order": execution_order,
+        "issues": issues,
+    }
+
+
+async def get_paginated_logs(
+    job_id: str | UUID,
+    user_id: int,
+    since_ts: str | None,
+    limit: int,
+) -> dict[str, Any] | None:
+    """Return a paginated slice of the job's parse_logs after *since_ts*.
+
+    Supports incremental fetching: the client stores the ``next_since_ts``
+    watermark from the previous response and passes it as ``since_ts`` on the
+    next poll so only new entries are downloaded.
+
+    Returns None if the job doesn't exist or doesn't belong to user_id.
+
+    ``since_ts`` must be an ISO 8601 string (or None to start from the
+    beginning).  Comparison is lexicographic which is correct for UTC
+    timestamps in the "YYYY-MM-DDTHH:MM:SS…Z" form produced by job_events.py.
+    """
+    status_data = await get_job_status(job_id=job_id, user_id=user_id)
+    if status_data is None:
+        return None
+
+    all_logs: list[dict[str, Any]] = status_data.get("parse_logs") or []
+
+    # Filter to entries strictly after since_ts.
+    if since_ts:
+        filtered = [e for e in all_logs if isinstance(e, dict) and e.get("ts", "") > since_ts]
+    else:
+        filtered = [e for e in all_logs if isinstance(e, dict)]
+
+    has_more = len(filtered) > limit
+    page = filtered[:limit]
+
+    if page:
+        next_since_ts = page[-1].get("ts", since_ts or "")
+    else:
+        next_since_ts = since_ts or ""
+
+    return {
+        "entries": [
+            {
+                "ts":      e.get("ts", ""),
+                "level":   e.get("level", "info"),
+                "step":    e.get("step", ""),
+                "message": e.get("message", ""),
+            }
+            for e in page
+        ],
+        "next_since_ts": next_since_ts,
+        "has_more": has_more,
+    }
+
+
 async def patch_component_snapshot(
     job_id: str | UUID,
     user_id: int,
