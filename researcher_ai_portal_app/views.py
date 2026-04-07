@@ -1168,6 +1168,14 @@ def _run_step(
             _log_job_event(job_id, "Running methods parser", step=step)
             rag_mode = str(os.environ.get("RESEARCHER_AI_RAG_MODE", "per_job") or "per_job").strip().lower()
             rag_base = str(os.environ.get("RESEARCHER_AI_RAG_BASE_DIR", "") or "").strip()
+            n_sections = len(paper.sections or [])
+            n_figs = len(figures or [])
+            _log_job_event(
+                job_id,
+                f"Indexing {n_sections} paper sections + {n_figs} figure captions into RAG store",
+                step=step,
+            )
+            update_job(job_id, stage="Methods: Building RAG index")
             if rag_mode == "shared":
                 if rag_base:
                     shared_dir = Path(rag_base).expanduser().resolve()
@@ -1175,6 +1183,8 @@ def _run_step(
                     shared_dir = (DJANGO_ROOT / ".rag_chroma").resolve()
                 shared_dir.mkdir(parents=True, exist_ok=True)
                 parser = mods["MethodsParser"](llm_model=model, rag_persist_dir=str(shared_dir))
+                update_job(job_id, stage="Methods: Sending LLM request (may take 3–10 min)")
+                _log_job_event(job_id, f"Sending methods extraction request to {model}…", step=step)
                 method = parser.parse(paper, figures=figures, computational_only=True)
             else:
                 temp_parent = Path(rag_base).expanduser().resolve() if rag_base else None
@@ -1185,7 +1195,12 @@ def _run_step(
                     dir=str(temp_parent) if temp_parent is not None else None,
                 ) as rag_tmp_dir:
                     parser = mods["MethodsParser"](llm_model=model, rag_persist_dir=rag_tmp_dir)
+                    update_job(job_id, stage="Methods: Sending LLM request (may take 3–10 min)")
+                    _log_job_event(job_id, f"Sending methods extraction request to {model}…", step=step)
                     method = parser.parse(paper, figures=figures, computational_only=True)
+            n_assays = len((method.assay_graph.assays if hasattr(method, "assay_graph") and method.assay_graph else []) or [])
+            _log_job_event(job_id, f"LLM response received — {n_assays} assay(s) extracted", step=step)
+            update_job(job_id, stage="Methods: Persisting results")
             _persist_component(job_id, "method", method.model_dump(mode="json"), "parsed")
             _log_job_event(job_id, "Methods parsing complete", step=step)
             return
@@ -1221,35 +1236,55 @@ def _run_step(
                 ]
             )
             accessions = _collect_accessions(combined)
-            _log_job_event(job_id, f"Found {len(accessions)} accession candidates", step=step)
+            capped = accessions[:25]
+            _log_job_event(job_id, f"Found {len(accessions)} accession candidates; resolving up to {len(capped)}", step=step)
             datasets = []
-            for acc in accessions[:25]:
-                if acc.startswith(("GSE", "GSM", "GDS", "GPL")):
-                    ds = geo.parse(acc)
-                elif acc.startswith(("SRP", "SRX", "SRR", "ERP", "ERR", "PRJNA", "PRJEB")):
-                    ds = sra.parse(acc)
-                else:
-                    ds = None
-                if ds is not None:
-                    datasets.append(ds.model_dump(mode="json"))
+            for idx, acc in enumerate(capped, 1):
+                update_job(job_id, stage=f"Datasets: Resolving {acc} ({idx}/{len(capped)})")
+                _log_job_event(job_id, f"Resolving {acc} ({idx}/{len(capped)})", step=step)
+                try:
+                    if acc.startswith(("GSE", "GSM", "GDS", "GPL")):
+                        ds = geo.parse(acc)
+                    elif acc.startswith(("SRP", "SRX", "SRR", "ERP", "ERR", "PRJNA", "PRJEB")):
+                        ds = sra.parse(acc)
+                    else:
+                        ds = None
+                    if ds is not None:
+                        datasets.append(ds.model_dump(mode="json"))
+                        _log_job_event(job_id, f"Resolved {acc} → {getattr(ds, 'title', acc)[:60]}", step=step)
+                    else:
+                        _log_job_event(job_id, f"Skipped {acc} (unrecognised prefix)", step=step)
+                except Exception as ds_exc:
+                    _log_job_event(job_id, f"Failed to resolve {acc}: {ds_exc}", level="warning", step=step)
             _persist_component(job_id, "datasets", datasets, "parsed")
-            _log_job_event(job_id, f"Dataset parsing complete: {len(datasets)} datasets", step=step)
+            _log_job_event(job_id, f"Dataset parsing complete: {len(datasets)} datasets resolved", step=step)
             return
 
         datasets = _typed_component(job, "datasets", mods) or []
         if step == "software":
             _log_job_event(job_id, "Running software parser", step=step)
+            update_job(job_id, stage=f"Software: Sending LLM request to {model}…")
+            _log_job_event(job_id, f"Extracting software tools via LLM ({model})", step=step)
             parser = mods["SoftwareParser"](llm_model=model)
             software = parser.parse_from_method(method) if method else []
             _persist_component(job_id, "software", [s.model_dump(mode="json") for s in software], "parsed")
-            _log_job_event(job_id, f"Software parsing complete: {len(software)} entries", step=step)
+            _log_job_event(job_id, f"Software parsing complete: {len(software)} tool(s) identified", step=step)
             return
 
         software = _typed_component(job, "software", mods) or []
         if step == "pipeline":
             _log_job_event(job_id, "Building pipeline from parsed components", step=step)
+            update_job(job_id, stage=f"Pipeline: Sending LLM request to {model}…")
+            _log_job_event(
+                job_id,
+                f"Assembling execution graph from {len(software)} tool(s), "
+                f"{len(datasets)} dataset(s) via LLM",
+                step=step,
+            )
             builder = mods["PipelineBuilder"](llm_model=model)
             pipeline = builder.build(method, datasets, software, figures)
+            n_steps = len((pipeline.config.steps if hasattr(pipeline, "config") and pipeline.config else []) or [])
+            _log_job_event(job_id, f"LLM response received — {n_steps} pipeline step(s)", step=step)
             _persist_component(job_id, "pipeline", pipeline.model_dump(mode="json"), "parsed")
             _log_job_event(job_id, "Pipeline build complete", step=step)
             return
@@ -1260,6 +1295,53 @@ def _run_step(
 def _progress_for_step(step: str) -> int:
     idx = STEP_ORDER.index(step)
     return int(round((idx / (len(STEP_ORDER) - 1)) * 100))
+
+
+def _run_all_steps_async(
+    job_id: str,
+    *,
+    llm_api_key: str,
+    llm_model: str,
+    force_reparse: bool = False,
+) -> None:
+    """Run all parsing steps in sequence.
+
+    Designed to execute in a daemon thread started by ``start_parse``.
+    Progress, stage, and log events are written to the job store so the
+    ``/jobs/<id>/status/`` endpoint can stream them to the progress page.
+    """
+    try:
+        for step in STEP_ORDER:
+            # Bail out if the job was explicitly failed or deleted externally
+            job = get_job(job_id)
+            if job is None:
+                return
+            if str(job.get("status") or "") == "failed":
+                return
+            _dispatch_workflow_step(
+                job_id,
+                step,
+                llm_api_key=llm_api_key,
+                llm_model=llm_model,
+                force_reparse=force_reparse,
+            )
+        # All six steps finished successfully
+        update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            stage="All steps complete — ready for review",
+        )
+        _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
+    except Exception as exc:
+        # _dispatch_workflow_step already marks the job as failed and logs the
+        # step-level error; log an extra top-level note for clarity.
+        _log_job_event(
+            job_id,
+            f"Pipeline run aborted: {exc}",
+            level="error",
+            step="",
+        )
 
 
 def _build_step_chips_enhanced(
@@ -1575,22 +1657,25 @@ def start_parse(request):
         current_step="paper",
     )
     _log_job_event(job_id, f"Parse job created for {source_type}: {input_value}", step="paper")
-    try:
-        update_job(job_id, user=request.user, stage=f"Running {STEP_LABELS['paper']}", current_step="paper")
-        _log_job_event(job_id, "Starting Paper Parser", step="paper")
-        _dispatch_workflow_step(
-            job_id,
-            "paper",
-            llm_api_key=llm_api_key,
-            llm_model=llm_model,
-            force_reparse=force_reparse,
-        )
-    except Exception as exc:  # pragma: no cover - user/network-driven
-        update_job(job_id, user=request.user, status="failed", error=str(exc), stage=f"{STEP_LABELS['paper']} failed")
-        _log_job_event(job_id, f"Paper Parser failed: {exc}", step="paper", level="error")
-    # Phase 5: redirect to the progress/completion page instead of jumping
-    # directly to the workflow step.  The page polls for status and shows the
-    # completion panel (with colour-coded stepper + CTA) once parsing finishes.
+    _log_job_event(job_id, f"Starting full pipeline parse with {llm_model}", step="paper")
+
+    # Launch all six parsing steps in a background daemon thread so the HTTP
+    # response returns immediately and the user sees live progress on the
+    # parse_progress page.
+    thread = threading.Thread(
+        target=_run_all_steps_async,
+        kwargs={
+            "job_id": job_id,
+            "llm_api_key": llm_api_key,
+            "llm_model": llm_model,
+            "force_reparse": force_reparse,
+        },
+        daemon=True,
+        name=f"parse-{job_id[:8]}",
+    )
+    thread.start()
+
+    # Redirect immediately to the live progress page.
     return redirect("parse_progress", job_id=job_id)
 
 
@@ -1618,7 +1703,7 @@ def parse_progress(request, job_id: str):
     if job is None:
         raise Http404("Unknown job id")
 
-    # Build the stage list for the progress-bar indicators
+    # Build the stage list for the stepper indicators
     stages = [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER]
 
     return render(
@@ -1627,8 +1712,10 @@ def parse_progress(request, job_id: str):
         {
             "job_id": job_id,
             "stages": stages,
-            # completion_steps mirrors stages for the JS-powered completion stepper
             "completion_steps": stages,
+            # JSON blobs consumed by progress.html JS
+            "step_order_json": json.dumps(STEP_ORDER),
+            "step_labels_json": json.dumps(STEP_LABELS),
         },
     )
 
