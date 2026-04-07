@@ -336,6 +336,63 @@ python manage.py migrate   # apply any new migrations
 
 ---
 
+## Redeploying after Phase 2
+
+Phase 2 adds a new database column (`graph_data` on `WorkflowJob`) and new API endpoints. The steps below apply to any environment being upgraded from Phase 1.
+
+### Docker (recommended)
+
+```bash
+# 1. Pull or copy the updated code into place (git pull, rsync, etc.)
+
+# 2. Rebuild the image and restart containers
+FORCE_BUILD=1 ./run_portal.sh
+
+# That's it — scripts/start_web.sh runs migrate automatically before
+# starting Gunicorn, so the new migration (0003_workflowjob_graph_data)
+# is applied inside the container on startup.
+```
+
+Verify the new endpoints are live:
+
+```bash
+curl http://localhost:8000/api/v1/ping
+# → {"status":"ok","framework":"fastapi","version":"..."}
+
+curl -s http://localhost:8000/api/v1/docs | grep -o "parse-publication"
+# → parse-publication  (confirms the Phase 2 routes registered correctly)
+```
+
+### Native Python
+
+```bash
+# 1. Pull updated code
+git pull
+
+# 2. No new Python packages needed for Phase 2 (fastapi/uvicorn already in requirements.txt)
+
+# 3. Apply the new migration
+python manage.py migrate
+
+# 4. Restart the server (kill existing uvicorn if running, then:)
+uvicorn researcher_ai_portal.asgi:application --reload --host 0.0.0.0 --port 8000
+```
+
+### What changed on disk
+
+| Path | Change |
+|------|--------|
+| `researcher_ai_portal_app/models.py` | `graph_data = models.JSONField(...)` added to `WorkflowJob` |
+| `researcher_ai_portal_app/migrations/0003_workflowjob_graph_data.py` | New migration — **must be applied** |
+| `researcher_ai_portal_app/api/schemas.py` | Phase 2 Pydantic types added |
+| `researcher_ai_portal_app/api/repository.py` | `get_graph_state`, `get_component_snapshot`, `get_job_status` added |
+| `researcher_ai_portal_app/api/routes.py` | Five new endpoints added |
+| `researcher_ai_portal_app/api/graph_layout.py` | New file — auto-layout utility |
+
+No existing Django URL patterns, views, or templates were modified. Rollback is safe: reverting these files and running `python manage.py migrate researcher_ai_portal_app 0002` removes the column and restores Phase 1.
+
+---
+
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'researcher_ai'`**
@@ -352,3 +409,12 @@ Increase `--timeout` in `scripts/start_web.sh` and the `proxy_read_timeout` in n
 
 **FastAPI docs not loading at `/api/v1/docs`**
 Confirm the server is started with `researcher_ai_portal.asgi:application`, not the legacy `wsgi:application`. The WSGI entry point does not include FastAPI.
+
+**`POST /api/v1/parse-publication` returns 500 with a migration error**
+The Phase 2 migration hasn't been applied. Run `python manage.py migrate` (native) or `FORCE_BUILD=1 ./run_portal.sh` (Docker) and retry.
+
+**`GET /api/v1/graphs/{job_id}` returns an empty graph after parsing**
+The background pipeline thread may still be running. Check `GET /api/v1/jobs/{job_id}/status` — wait for `status: "completed"` before fetching the graph.
+
+**Pipeline background thread silently fails**
+Check `GET /api/v1/jobs/{job_id}/status` for `status: "failed"` and the `error` field. Common causes: missing LLM API key (`llm_api_key` field in the request body or `LLM_API_KEY` env var), or researcher-ai not installed.

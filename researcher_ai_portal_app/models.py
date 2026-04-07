@@ -36,6 +36,9 @@ class WorkflowJob(models.Model):
     supplementary_figure_ids = models.JSONField(default=list)
     parse_logs = models.JSONField(default=list)
 
+    # Visual builder — React Flow graph state (nodes, edges, viewport JSON)
+    graph_data = models.JSONField(default=dict, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["user", "-created_at"])]

@@ -8,7 +8,7 @@ A Django portal that wraps the [`researcher-ai`](https://github.com/byee4/resear
 2. Run a six-step LLM-powered parsing pipeline (Paper → Figures → Method → Datasets → Software → Pipeline).
 3. Let the user inspect, edit, and correct each parsed component through a web UI.
 4. Render an interactive assay DAG, figure gallery, and confidence dashboard.
-5. Expose a FastAPI layer under `/api/v1/` for the upcoming visual pipeline builder.
+5. Expose a FastAPI layer under `/api/v1/` for the visual pipeline builder — submit publications, poll status, and read/write React Flow graph state via JSON API.
 
 Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API keys are entered per-session and never stored in the database.
 
@@ -82,7 +82,19 @@ python -m pytest researcher_ai_portal_app/tests -q
 
 ## API reference
 
-Interactive API docs are available at **http://localhost:8000/api/v1/docs** when the server is running.
+Interactive Swagger docs are available at **http://localhost:8000/api/v1/docs** when the server is running.
+
+### Phase 2 endpoints (visual builder)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/parse-publication` | Submit a publication; returns `202` with a `job_id`. Runs all six pipeline steps in the background. |
+| `GET` | `/api/v1/jobs/{job_id}/status` | Poll parsing progress. Returns `status`, `progress` (0–100), `stage`, and `parse_logs`. |
+| `GET` | `/api/v1/graphs/{job_id}` | Retrieve the auto-generated React Flow graph once parsing completes. |
+| `PUT` | `/api/v1/graphs/{job_id}` | Persist the graph after the user rearranges nodes. |
+| `GET` | `/api/v1/graphs/{job_id}/nodes/{node_id}` | Full parsed payload for a single pipeline step. |
+
+All endpoints require the Django session cookie (`credentials: "include"` from the browser, or `--cookie sessionid=...` from curl).
 
 ---
 
