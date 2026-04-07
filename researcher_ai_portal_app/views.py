@@ -1827,49 +1827,12 @@ def dashboard(request, job_id: str):
             except Exception as exc:
                 update_job(job_id, user=request.user, error=f"Dashboard ground-truth injection failed: {exc}")
             return redirect("dashboard", job_id=job_id)
-        if action == "save_structured_step":
-            try:
-                assay_name = str(request.POST.get("assay_name") or "").strip()
-                step_index = int(str(request.POST.get("step_index") or "0"))
-                software = str(request.POST.get("software") or "").strip()
-                software_version = str(request.POST.get("software_version") or "").strip()
-                input_data = str(request.POST.get("input_data") or "").strip()
-                output_data = str(request.POST.get("output_data") or "").strip()
-                raw_params = str(request.POST.get("parameters_json") or "").strip()
-                params = json.loads(raw_params) if raw_params else {}
-                if not isinstance(params, dict):
-                    raise ValueError("Parameters JSON must be an object.")
-
-                method_payload = dict(((job.get("components") or {}).get("method") or {}))
-                assay_graph = dict(method_payload.get("assay_graph") or {})
-                assays = list(assay_graph.get("assays") or [])
-                target = None
-                for assay in assays:
-                    if str(assay.get("name") or "").strip() == assay_name:
-                        target = assay
-                        break
-                if target is None:
-                    raise ValueError(f"Assay '{assay_name}' not found.")
-                steps = list(target.get("steps") or [])
-                if step_index < 0 or step_index >= len(steps):
-                    raise ValueError("Invalid step index.")
-                step = dict(steps[step_index] or {})
-                step["software"] = software
-                step["software_version"] = software_version
-                step["input_data"] = input_data
-                step["output_data"] = output_data
-                step["parameters"] = params
-                steps[step_index] = step
-                target["steps"] = steps
-                assay_graph["assays"] = assays
-                method_payload["assay_graph"] = assay_graph
-
-                mods = _import_runtime_modules()
-                validated = _validate_component_json("method", method_payload, mods)
-                _persist_component(job_id, "method", validated, "corrected_structured_dashboard")
-            except Exception as exc:
-                update_job(job_id, user=request.user, error=f"Structured step edit failed: {exc}")
-            return redirect("dashboard", job_id=job_id)
+        # NOTE: save_structured_step (legacy Django form POST) was removed in
+        # Phase 2 when the Step Editing tab was migrated to PATCH autosave via
+        # PATCH /api/v1/jobs/{job_id}/components/method.  All structured-step
+        # mutations now go through the FastAPI endpoint, which re-validates via
+        # _validate_component_json and recomputes confidence in a single round
+        # trip.  No Django form POST is needed or accepted for this action.
         if action == "rebuild_pipeline":
             try:
                 edited_step = str(request.POST.get("edited_step") or _infer_last_edited_step(job)).strip()
