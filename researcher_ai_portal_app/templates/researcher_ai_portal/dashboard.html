@@ -289,6 +289,26 @@
     </div>
   </div>
 
+  <!-- ── Journey stepper (Phase 5) ────────────────────────── -->
+  {% include "researcher_ai_portal/_stepper.html" %}
+
+  {# ── Completion banner: shown only when pipeline is fully ready ── #}
+  {% if summary.overall_confidence >= 90 and not actionable_items and summary.status_counts.missing == 0 %}
+  <div class="alert" style="background: var(--success-soft); border: 1.5px solid var(--success);
+                             border-radius: var(--radius); padding: 14px 20px; margin-bottom: 18px;
+                             display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+    <span style="font-size: 1.25rem; flex-shrink: 0;">🎉</span>
+    <div style="flex: 1; min-width: 180px;">
+      <p style="font-weight: 700; color: var(--success); margin-bottom: 2px;">Pipeline fully ready!</p>
+      <p class="text-sm text-muted">All components parsed and confirmed — confidence {{ summary.overall_confidence|floatformat:0 }}%. You can now compile and run this pipeline.</p>
+    </div>
+    <a href="#tab-pipeline" onclick="showTab('pipeline', document.querySelector('[onclick*=pipeline]'))"
+       class="btn btn-success btn-sm" style="white-space: nowrap; flex-shrink: 0;">
+      ▶ Compile &amp; Run →
+    </a>
+  </div>
+  {% endif %}
+
   <!-- ── Tab bar ────────────────────────────────────────────── -->
   <div style="display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 22px;
               overflow-x: auto; -webkit-overflow-scrolling: touch;">

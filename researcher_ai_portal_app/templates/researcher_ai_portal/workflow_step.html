@@ -16,51 +16,8 @@
 {% block content %}
 <div class="page">
 
-  <!-- ── Step pipeline nav ─────────────────────────────────── -->
-  <div class="card card-sm mb-4" style="padding: 14px 20px;">
-    <div style="display: flex; align-items: flex-start; gap: 0; position: relative;">
-      <!-- connector line behind the dots -->
-      <div style="position: absolute; top: 13px; left: 20px; right: 60px; height: 2px; background: var(--border-2); z-index: 0;"></div>
-
-      <!-- Workflow steps -->
-      {% for chip in step_chips %}
-        <a href="{% url 'workflow_step' job_id=job_id step=chip.id %}"
-           style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px;
-                  text-decoration: none; position: relative; z-index: 1;">
-          <div style="position: relative; width: 28px; height: 28px;">
-            <div style="width: 28px; height: 28px; border-radius: 50%;
-                        background: {% if chip.id == step %}var(--primary){% elif chip.meta.status == "found" %}var(--success-soft){% elif chip.meta.status == "inferred" %}var(--warning-soft){% else %}var(--surface){% endif %};
-                        border: 2px solid {% if chip.id == step %}var(--primary){% elif chip.meta.status == "found" %}var(--success){% elif chip.meta.status == "inferred" %}var(--warning){% else %}var(--border-2){% endif %};
-                        color: {% if chip.id == step %}white{% elif chip.meta.status == "found" %}var(--success){% elif chip.meta.status == "inferred" %}var(--warning){% else %}var(--text-3){% endif %};
-                        box-shadow: {% if chip.id == step %}0 0 0 4px var(--primary-soft){% else %}none{% endif %};
-                        display: flex; align-items: center; justify-content: center;
-                        font-size: 0.7rem; font-weight: 700; transition: all .2s;">
-              {% if chip.meta.status == "found" and chip.id != step %}✓
-              {% else %}{{ forloop.counter }}{% endif %}
-            </div>
-          </div>
-          <span style="font-size: 0.7rem;
-                       font-weight: {% if chip.id == step %}700{% elif chip.meta.status == "found" or chip.meta.status == "inferred" %}600{% else %}500{% endif %};
-                       color: {% if chip.id == step %}var(--primary){% elif chip.meta.status == "found" %}var(--success){% elif chip.meta.status == "inferred" %}var(--warning){% else %}var(--text-3){% endif %};
-                       white-space: nowrap; transition: color .2s;">
-            {{ chip.label }}
-          </span>
-        </a>
-      {% endfor %}
-
-      <!-- Dashboard endpoint node -->
-      <a href="{% url 'dashboard' job_id=job_id %}"
-         style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 5px;
-                text-decoration: none; position: relative; z-index: 1; margin-left: 4px;">
-        <div style="width: 28px; height: 28px; border-radius: 50%;
-                    background: var(--teal-soft); border: 2px solid var(--teal); color: var(--teal);
-                    display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700;">
-          ⊞
-        </div>
-        <span style="font-size: 0.7rem; font-weight: 600; color: var(--teal); white-space: nowrap;">Dashboard</span>
-      </a>
-    </div>
-  </div>
+  <!-- ── Step pipeline nav (shared stepper partial) ───────── -->
+  {% include "researcher_ai_portal/_stepper.html" %}
 
   <!-- ── Overall progress bar ──────────────────────────────── -->
   <div class="progress-track mb-1">

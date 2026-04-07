@@ -72,15 +72,64 @@
     <!-- Error area -->
     <div id="error-area" style="display: none;" class="alert alert-error mb-4"></div>
 
-    <div class="flex items-center gap-3">
+    <!-- In-progress footer -->
+    <div id="in-progress-footer" class="flex items-center gap-3">
       <div id="spinner" style="width: 18px; height: 18px; border: 2px solid var(--border-2);
-                                border-top-color: var(--primary); border-radius: 50;
+                                border-top-color: var(--primary); border-radius: 50%;
                                 animation: spin 0.8s linear infinite; flex-shrink: 0;"></div>
       <p class="text-sm text-muted">This may take a minute or two depending on paper complexity and LLM latency.</p>
     </div>
 
-    <hr class="section-divider" />
-    <a class="btn btn-ghost btn-sm" href="{% url 'home' %}">← Cancel and start over</a>
+    <!-- Completion panel (hidden until parsing finishes) -->
+    <div id="completion-panel" style="display: none;">
+      <hr class="section-divider" />
+      <div style="display: flex; align-items: flex-start; gap: 12px; padding: 14px 0 6px;">
+        <div style="width: 36px; height: 36px; background: var(--success-soft); border: 1.5px solid var(--success);
+                    border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+                    font-size: 1.1rem;">✓</div>
+        <div>
+          <p style="font-weight: 700; color: var(--success); margin-bottom: 3px;">Parsing complete!</p>
+          <p class="text-sm text-muted">All pipeline steps have been extracted. Review each step on the dashboard.</p>
+        </div>
+      </div>
+
+      <!-- Stepper summary — dots populated by JS on completion -->
+      <div id="completion-stepper"
+           style="display: flex; align-items: flex-start; gap: 0; position: relative; margin: 18px 0 20px; padding: 14px 20px;
+                  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">
+        <div style="position: absolute; top: 27px; left: 28px; right: 56px; height: 2px; background: var(--border-2); z-index: 0;"></div>
+        {% for s in completion_steps %}
+          <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; position: relative; z-index: 1;">
+            <div class="completion-dot" data-step="{{ s.id }}"
+                 style="width: 28px; height: 28px; border-radius: 50%;
+                        background: var(--surface); border: 2px solid var(--border-2); color: var(--text-3);
+                        display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; transition: all .3s;">
+              {{ forloop.counter }}
+            </div>
+            <span class="completion-label text-xs font-600 text-muted" data-step="{{ s.id }}"
+                  style="white-space: nowrap; transition: color .3s;">{{ s.label }}</span>
+          </div>
+        {% endfor %}
+        <!-- Dashboard dot -->
+        <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 5px; position: relative; z-index: 1; margin-left: 4px;">
+          <div style="width: 28px; height: 28px; border-radius: 50%;
+                      background: var(--teal-soft); border: 2px solid var(--teal); color: var(--teal);
+                      display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700;">⊞</div>
+          <span class="text-xs font-600" style="color: var(--teal); white-space: nowrap;">Dashboard</span>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <a id="review-cta-btn" href="{{ dashboardUrl }}"
+           class="btn btn-primary" style="flex: 1; min-width: 160px; justify-content: center;">
+          Review pipeline →
+        </a>
+        <a href="{% url 'home' %}" class="btn btn-ghost btn-sm" style="align-self: center;">Start over</a>
+      </div>
+    </div>
+
+    <hr class="section-divider" id="cancel-divider" />
+    <a id="cancel-link" class="btn btn-ghost btn-sm" href="{% url 'home' %}">← Cancel and start over</a>
   </div>
 
 </div>
@@ -105,12 +154,18 @@
 </style>
 
 <script>
-  const statusUrl   = "{% url 'job_status' job_id=job_id %}";
+  const statusUrl    = "{% url 'job_status' job_id=job_id %}";
   const dashboardUrl = "{% url 'dashboard' job_id=job_id %}";
-  const bar    = document.getElementById("progress-bar");
-  const stageEl = document.getElementById("stage");
-  const errBox  = document.getElementById("error-area");
-  const spinner  = document.getElementById("spinner");
+  const bar          = document.getElementById("progress-bar");
+  const stageEl      = document.getElementById("stage");
+  const errBox       = document.getElementById("error-area");
+  const spinner      = document.getElementById("spinner");
+  const inProgFoot   = document.getElementById("in-progress-footer");
+  const completionPanel = document.getElementById("completion-panel");
+  const cancelDivider   = document.getElementById("cancel-divider");
+  const cancelLink      = document.getElementById("cancel-link");
+  const reviewCtaBtn    = document.getElementById("review-cta-btn");
+  if (reviewCtaBtn) reviewCtaBtn.href = dashboardUrl;
 
   // Map stage label text → stage step element
   const stageMap = {
@@ -128,6 +183,51 @@
     "pipeline":       "pipeline",
   };
 
+  // Component status colours for the completion stepper dots
+  const stateStyle = {
+    "found":     { bg: "var(--success-soft)", border: "var(--success)", color: "var(--success)", icon: "✓" },
+    "inferred":  { bg: "var(--warning-soft)", border: "var(--warning)", color: "var(--warning)", icon: "~" },
+    "missing":   { bg: "var(--surface)",      border: "var(--border-2)", color: "var(--text-3)", icon: null },
+  };
+
+  function applyCompletionStepper(componentMeta) {
+    if (!componentMeta) return;
+    document.querySelectorAll(".completion-dot").forEach(dot => {
+      const stepId = dot.dataset.step;
+      const meta = componentMeta[stepId] || {};
+      const status = meta.status || "missing";
+      const style = stateStyle[status] || stateStyle["missing"];
+      dot.style.background = style.bg;
+      dot.style.borderColor = style.border;
+      dot.style.color = style.color;
+      if (style.icon) dot.textContent = style.icon;
+    });
+    document.querySelectorAll(".completion-label").forEach(label => {
+      const stepId = label.dataset.step;
+      const meta = componentMeta[stepId] || {};
+      const status = meta.status || "missing";
+      if (status === "found") { label.style.color = "var(--success)"; }
+      else if (status === "inferred") { label.style.color = "var(--warning)"; }
+    });
+  }
+
+  function showCompletionPanel(data) {
+    if (spinner) spinner.style.display = "none";
+    if (inProgFoot) inProgFoot.style.display = "none";
+    if (cancelDivider) cancelDivider.style.display = "none";
+    if (cancelLink) cancelLink.style.display = "none";
+    if (completionPanel) completionPanel.style.display = "";
+    // Mark all stage steps as done
+    document.querySelectorAll(".stage-step").forEach(s => {
+      s.removeAttribute("data-active");
+      s.setAttribute("data-done", "true");
+    });
+    // Colour-code stepper dots from component_meta if available
+    if (data && data.component_meta) {
+      applyCompletionStepper(data.component_meta);
+    }
+  }
+
   function markStages(activeStageId, pct) {
     const steps = document.querySelectorAll(".stage-step");
     const stageIds = Array.from(steps).map(s => s.dataset.stage);
@@ -138,7 +238,6 @@
       if (i < activeIdx) step.setAttribute("data-done", "true");
       else if (i === activeIdx) step.setAttribute("data-active", "true");
     });
-    // If 100%, mark all done
     if (pct >= 100) steps.forEach(s => { s.removeAttribute("data-active"); s.setAttribute("data-done", "true"); });
   }
 
@@ -156,12 +255,13 @@
       if (mappedStage) markStages(mappedStage, pct);
 
       if (data.status === "completed") {
-        spinner.style.display = "none";
-        window.location.assign(dashboardUrl);
-        return;
+        bar.style.width = "100%";
+        bar.textContent = "100%";
+        showCompletionPanel(data);
+        return;  // stop polling — completion panel is shown
       }
       if (data.status === "failed") {
-        spinner.style.display = "none";
+        if (spinner) spinner.style.display = "none";
         errBox.style.display = "";
         errBox.textContent = data.error || "Workflow failed.";
         return;

@@ -1262,6 +1262,63 @@ def _progress_for_step(step: str) -> int:
     return int(round((idx / (len(STEP_ORDER) - 1)) * 100))
 
 
+def _build_step_chips_enhanced(
+    job: dict[str, Any],
+    step_confidence_scores: dict[str, float | None] | None = None,
+    step_action_counts: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return per-step stepper chips with derived presentation state.
+
+    Each chip has::
+
+        {
+            "id":               str,    # step key
+            "label":            str,    # human label
+            "meta":             dict,   # component_meta entry
+            "stepper_state":    str,    # "running" | "confirmed" | "needs-review" | "not-started"
+            "action_count":     int,    # actionable items targeting this step
+            "confidence_score": float | None,  # None if not applicable
+        }
+    """
+    meta_map = job.get("component_meta") or {}
+    current_step = job.get("current_step") or ""
+    job_status = job.get("status") or ""
+    scores = step_confidence_scores or {}
+    counts = step_action_counts or {}
+    chips = []
+    for s in STEP_ORDER:
+        meta = meta_map.get(s) or {"status": "missing", "source": "none", "missing": []}
+        status = meta.get("status") or "missing"
+        conf = scores.get(s)
+        action_count = counts.get(s, 0)
+
+        if job_status == "in_progress" and current_step == s:
+            stepper_state = "running"
+        elif status == "missing":
+            stepper_state = "not-started"
+        elif conf is not None and conf < 70.0:
+            stepper_state = "needs-review"
+        elif status in ("found", "inferred") and conf is None:
+            # Non-method steps: found/inferred → confirmed; action items → needs-review
+            stepper_state = "needs-review" if action_count > 0 else "confirmed"
+        elif conf is not None and conf >= 70.0:
+            stepper_state = "confirmed"
+        else:
+            stepper_state = "not-started"
+
+        chips.append(
+            {
+                "id": s,
+                "label": STEP_LABELS[s],
+                "meta": meta,
+                "stepper_state": stepper_state,
+                "action_count": action_count,
+                "confidence_score": conf,
+            }
+        )
+    return chips
+
+
 def _humanize_step_error(exc: Exception) -> str:
     text = str(exc or "").strip()
     lower = text.lower()
@@ -1531,7 +1588,10 @@ def start_parse(request):
     except Exception as exc:  # pragma: no cover - user/network-driven
         update_job(job_id, user=request.user, status="failed", error=str(exc), stage=f"{STEP_LABELS['paper']} failed")
         _log_job_event(job_id, f"Paper Parser failed: {exc}", step="paper", level="error")
-    return redirect("workflow_step", job_id=job_id, step="paper")
+    # Phase 5: redirect to the progress/completion page instead of jumping
+    # directly to the workflow step.  The page polls for status and shows the
+    # completion panel (with colour-coded stepper + CTA) once parsing finishes.
+    return redirect("parse_progress", job_id=job_id)
 
 
 @login_required
@@ -1542,6 +1602,35 @@ def job_progress(request, job_id: str):
         raise Http404("Unknown job id")
     step = job.get("current_step", "paper")
     return redirect("workflow_step", job_id=job_id, step=step)
+
+
+@login_required
+@require_GET
+def parse_progress(request, job_id: str):
+    """Render the parsing-progress / completion page for a job.
+
+    On load the page immediately polls the job status endpoint.  If parsing is
+    already done (synchronous flow) it shows the completion panel with a
+    colour-coded stepper and "Review pipeline →" CTA.  If still running it
+    animates the stage indicators until done.
+    """
+    job = get_job(job_id, user=request.user)
+    if job is None:
+        raise Http404("Unknown job id")
+
+    # Build the stage list for the progress-bar indicators
+    stages = [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER]
+
+    return render(
+        request,
+        "researcher_ai_portal/progress.html",
+        {
+            "job_id": job_id,
+            "stages": stages,
+            # completion_steps mirrors stages for the JS-powered completion stepper
+            "completion_steps": stages,
+        },
+    )
 
 
 @login_required
@@ -1559,6 +1648,8 @@ def job_status(request, job_id: str):
         "current_step": job.get("current_step", "paper"),
         "figure_parse_current": job.get("figure_parse_current", 0),
         "figure_parse_total": job.get("figure_parse_total", 0),
+        # Phase 5: include component_meta for the progress page completion stepper
+        "component_meta": job.get("component_meta") or {},
     }
     payload = merge_logs(payload, job_id)
     return JsonResponse(payload)
@@ -1752,6 +1843,35 @@ def workflow_step(request, job_id: str, step: str):
             initial={"figure_id": figure_ids_for_ui[0] if figure_ids_for_ui else "Figure 1"},
         )
 
+    # Phase 5: compute confidence to colour-code stepper circles.
+    # Done after the job reload so we reflect the latest component state.
+    _step_conf_result = compute_confidence(_job_result_from_components(job))
+    _step_assay_confidences = _step_conf_result.get("assay_confidences") or {}
+    _step_confidence_scores: dict[str, float | None] = {}
+    for _s in STEP_ORDER:
+        if _s == "method" and _step_assay_confidences:
+            _step_confidence_scores[_s] = round(
+                sum(v.get("overall", 50.0) for v in _step_assay_confidences.values())
+                / len(_step_assay_confidences),
+                1,
+            )
+        else:
+            _step_confidence_scores[_s] = None
+    _step_action_items = compute_actionable_items(_job_result_from_components(job), _step_conf_result)
+    _step_action_counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
+    _tab_to_step = {
+        "editing": "method",
+        "datasets": "datasets",
+        "figures": "figures",
+        "advanced": "pipeline",
+    }
+    for _item in _step_action_items:
+        _mapped = _tab_to_step.get(_item["fix_target_tab"])
+        if _mapped:
+            _step_action_counts[_mapped] = _step_action_counts.get(_mapped, 0) + 1
+
+    stepper_chips = _build_step_chips_enhanced(job, _step_confidence_scores, _step_action_counts)
+
     return render(
         request,
         "researcher_ai_portal/workflow_step.html",
@@ -1762,16 +1882,9 @@ def workflow_step(request, job_id: str, step: str):
             "step_label": STEP_LABELS[step],
             "step_order": STEP_ORDER,
             "step_labels": STEP_LABELS,
-            "step_chips": [
-                {
-                    "id": s,
-                    "label": STEP_LABELS[s],
-                    "meta": (job.get("component_meta") or {}).get(
-                        s, {"status": "missing", "source": "none", "missing": []}
-                    ),
-                }
-                for s in STEP_ORDER
-            ],
+            "step_chips": stepper_chips,
+            "stepper_chips": stepper_chips,
+            "stepper_current_step": step,
             "component_meta": component_meta,
             "form": form,
             "figure_gt_form": figure_gt_form,
@@ -1995,6 +2108,13 @@ def dashboard(request, job_id: str):
             "confidence_json": context.get("confidence") or {},
             "step_confidence_scores": context.get("step_confidence_scores") or {},
             "step_action_counts": context.get("step_action_counts") or {},
+            # ── Phase 5: Journey stepper ────────────────────────────────
+            "stepper_chips": _build_step_chips_enhanced(
+                job,
+                context.get("step_confidence_scores"),
+                context.get("step_action_counts"),
+            ),
+            "stepper_current_step": "",  # Dashboard has no "current" step
         }
     )
     return render(request, "researcher_ai_portal/dashboard.html", context)
