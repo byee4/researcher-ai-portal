@@ -20,12 +20,31 @@ python -m pip install -e /Users/brianyee/Documents/work/01_active/researcher-ai/
 python -m pip install dpd-static-support
 ```
 
-Optional: define Django/env overrides in workspace `.env`.
+Redis is required. Start it first:
+
+```bash
+docker run --name researcher-ai-portal-redis -p 6379:6379 -d redis:7-alpine
+redis-cli -h 127.0.0.1 -p 6379 ping
+```
+
+Expected response: `PONG`.
+
+## 1.1) One-command Docker deploy
+
+```bash
+cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
+chmod +x run_portal.sh
+./run_portal.sh
+```
+
+This deploys Postgres, Redis, web, and worker containers and installs local `researcher-ai` into the image build.
+The deploy script prebuilds a `researcher-ai` wheel and installs that wheel in Docker for faster and deterministic rebuilds.
 
 ## 2) Start Django Portal (Phase 0 MVP)
 
 ```bash
 cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
+export REDIS_URL=redis://localhost:6379/0
 python manage.py migrate
 python manage.py runserver 0.0.0.0:8000
 ```
@@ -40,8 +59,7 @@ celery -A researcher_ai_portal worker -l info
 ```
 
 Notes:
-- Redis-backed cache/broker are used when `REDIS_URL` / Celery env vars are configured.
-- Local-memory cache fallback is enabled for lightweight local development.
+- Redis-backed cache/broker are required (`REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`).
 
 ## 3) Run a Parse Job in UI
 

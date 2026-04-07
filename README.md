@@ -1,13 +1,13 @@
 # researcher-ai-portal
 
-Django portal for running the researcher-ai parsing workflow with per-user jobs, durable ORM state, and async step execution.
+Django portal for running the researcher-ai parsing workflow with per-user jobs, durable ORM state, and serial step execution.
 
 ## MVP Status (Phase 6)
 
 - Job state moved from in-memory dicts to Django ORM (`WorkflowJob`, `ComponentSnapshot`, `PaperCache`).
-- Parse steps run asynchronously via Celery task entrypoints.
-- Progress polling reads cache first, then falls back to durable DB snapshots.
-- LLM API keys are stored in session and passed to tasks (not persisted in DB).
+- Parse steps run serially in-process for easier live progress tracking.
+- Progress and parser logs are read directly from durable DB snapshots.
+- LLM API keys are stored in session and passed to parser calls (not persisted in DB).
 - Dashboard now includes an assay DAG view (`dash-cytoscape`) rendered through `django-plotly-dash`.
 - Confidence scoring is computed from parsed method/figure/dataset/pipeline components and surfaced in dashboard context.
 - Dashboard now includes a Figure Gallery section with proxied image previews and source links.
@@ -16,6 +16,52 @@ Django portal for running the researcher-ai parsing workflow with per-user jobs,
 - Dashboard now includes a DAG-aware rebuild trigger that invalidates and reruns only downstream steps.
 
 ## Run Locally (MVP)
+
+Redis and Celery are not required in serial parser mode.
+
+### Option A: One-command Docker Deploy (Recommended)
+
+```bash
+cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
+chmod +x run_portal.sh
+./run_portal.sh
+```
+
+This launches:
+- `db` (Postgres)
+- `web` (Django + Gunicorn, serial parser mode)
+
+`run_portal.sh` vendors the local `researcher-ai` package and prebuilds a wheel,
+then installs that exact wheel in Docker for faster, more deterministic builds.
+Default source path:
+`/Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai`
+
+Override source path if needed:
+
+```bash
+RESEARCHER_AI_SRC=/absolute/path/to/researcher-ai ./run_portal.sh
+```
+
+Force image rebuild when dependencies change:
+
+```bash
+FORCE_BUILD=1 ./run_portal.sh
+```
+
+### Option B: Native (Conda) Run
+
+Use the helper scripts:
+
+```bash
+cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
+./scripts/setup_portal_local.sh
+./scripts/run_portal_local.sh
+```
+
+`setup_portal_local.sh` installs portal requirements + local `researcher-ai`, writes `.env` defaults, and runs migrations.
+`run_portal_local.sh` runs migrations and launches Django in serial parser mode.
+
+Manual alternative:
 
 ```bash
 cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
@@ -27,15 +73,6 @@ python -m pip install -r requirements.txt
 python manage.py migrate
 python manage.py runserver 0.0.0.0:8000
 ```
-
-Optional async worker (recommended for full Phase 0 behavior):
-
-```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
-celery -A researcher_ai_portal worker -l info
-```
-
-If Redis is unavailable, Django cache falls back to local memory for development.
 
 Optional dependency for full DAG canvas:
 

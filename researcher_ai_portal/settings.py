@@ -138,32 +138,18 @@ PLOTLY_COMPONENTS = [
     'dpd_static_support',
 ]
 
-REDIS_URL = os.environ.get("REDIS_URL", "").strip()
-if REDIS_URL:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": REDIS_URL,
-        }
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "researcher-ai-portal-local-cache",
     }
-else:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "researcher-ai-portal-local-cache",
-        }
-    }
+}
 
 SESSION_ENGINE = os.environ.get(
     "SESSION_ENGINE",
-    "django.contrib.sessions.backends.cache",
+    "django.contrib.sessions.backends.db",
 )
 SESSION_CACHE_ALIAS = "default"
-
-CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", REDIS_URL or "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", REDIS_URL or "redis://localhost:6379/0")
-CELERY_TASK_ALWAYS_EAGER = _env_bool("CELERY_TASK_ALWAYS_EAGER", False)
-CELERY_TASK_EAGER_PROPAGATES = _env_bool("CELERY_TASK_EAGER_PROPAGATES", True)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

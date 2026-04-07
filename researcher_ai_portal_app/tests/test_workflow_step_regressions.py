@@ -91,3 +91,53 @@ def test_preview_panel_filters_to_expanded_figures_only():
     assert "row.entries" in text
     assert "entry.proxy_url" in text
     assert "data-figure-key" in text
+
+
+def test_workflow_step_autopoll_only_when_stage_is_running():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "workflow_step.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert "const initialStage =" in text
+    assert "/^Running\\b/.test(initialStage)" in text
+
+
+def test_workflow_step_template_shows_live_heartbeat_feedback():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "workflow_step.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'id="step-heartbeat-text"' in text
+    assert "Running. Temporary network issue; retrying status check…" in text
+    assert "Still running (" in text
+
+
+def test_figure_parser_updates_stage_before_each_figure_parse():
+    views_path = Path(__file__).resolve().parents[1] / "views.py"
+    text = views_path.read_text(encoding="utf-8")
+    assert 'stage=f"Starting {fig_id} ({idx}/{total})"' in text
+
+
+def test_workflow_step_template_includes_worker_log_sidebar():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "workflow_step.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'id="worker-log-list"' in text
+    assert 'id="worker-log-meta"' in text
+    assert "renderLogs(data.logs);" in text
+
+
+def test_job_status_merges_cached_logs():
+    views_path = Path(__file__).resolve().parents[1] / "views.py"
+    text = views_path.read_text(encoding="utf-8")
+    assert "payload = merge_logs(payload, job_id)" in text

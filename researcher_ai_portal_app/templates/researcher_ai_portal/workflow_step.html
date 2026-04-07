@@ -65,13 +65,15 @@
   <div class="progress-track mb-1">
     <div id="step-progress-bar" class="progress-fill" style="width: {{ progress }}%;"></div>
   </div>
-  <p class="text-xs text-muted mb-4" style="text-align: right;">{{ progress }}% complete</p>
+  <p id="step-progress-text" class="text-xs text-muted" style="text-align: right;">{{ progress }}% complete</p>
+  <p id="step-stage-text" class="text-xs text-muted mb-4" style="text-align: right;">{{ job.stage|default:"Ready" }}</p>
+  <p id="step-heartbeat-text" class="text-xs text-muted mb-4" style="text-align: right;">Idle</p>
 
   <!-- ── Alerts ────────────────────────────────────────────── -->
   {% if error %}<div class="alert alert-error mb-3">{{ error }}</div>{% endif %}
   {% if info  %}<div class="alert alert-success mb-3">{{ info }}</div>{% endif %}
 
-  <div style="display: grid; grid-template-columns: 250px 1fr; gap: 20px; align-items: start;">
+  <div style="display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 20px; align-items: start;">
 
     <!-- ── Left sidebar ───────────────────────────────────── -->
     <div style="display: flex; flex-direction: column; gap: 12px;">
@@ -109,16 +111,16 @@
         <div class="card card-sm">
           <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">Figure parsing</p>
           <div class="progress-track mb-1">
-            <div class="progress-fill" style="width: {{ figure_parse_percent }}%; background: linear-gradient(90deg, var(--teal), #06b6d4);"></div>
+            <div id="figure-progress-bar" class="progress-fill" style="width: {{ figure_parse_percent }}%; background: linear-gradient(90deg, var(--teal), #06b6d4);"></div>
           </div>
-          <p class="text-xs text-muted">
-            <strong style="color: var(--text);">{{ figure_parse_current }}</strong> /
-            <strong style="color: var(--text);">{{ figure_parse_total }}</strong> figures
+          <p id="figure-progress-text" class="text-xs text-muted">
+            <strong id="figure-progress-current" style="color: var(--text);">{{ figure_parse_current }}</strong> /
+            <strong id="figure-progress-total" style="color: var(--text);">{{ figure_parse_total }}</strong> figures
           </p>
         </div>
         {% if supplementary_figure_ids %}
           <div class="card card-sm" style="background: var(--warning-soft); border-color: var(--warning-mid);">
-            <p class="text-xs font-600" style="color: var(--warning); margin-bottom: 5px;">Supplementary (deferred)</p>
+            <p class="text-xs font-600" style="color: var(--warning); margin-bottom: 5px;">Supplementary figures (deferred)</p>
             {% for sid in supplementary_figure_ids %}
               <div class="text-xs" style="color: var(--warning);">• {{ sid }}</div>
             {% endfor %}
@@ -137,7 +139,7 @@
               ▶ Run {{ step_label }}
             </button>
           {% else %}
-            <button name="step_action" value="run" class="btn btn-primary w-full" style="justify-content: center;">
+            <button id="run-step-btn" name="step_action" value="run" type="button" class="btn btn-primary w-full" style="justify-content: center;">
               ▶ Run {{ step_label }}
             </button>
           {% endif %}
@@ -162,6 +164,15 @@
         </form>
       </div>
 
+      <!-- Worker log -->
+      <div class="card card-sm" style="max-height: 320px; overflow: hidden; display: flex; flex-direction: column;">
+        <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">Worker log</p>
+        <p id="worker-log-meta" class="text-xs text-muted mb-2">Waiting for parser events…</p>
+        <div id="worker-log-list" style="overflow: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 6px;">
+          <div class="text-xs text-muted">No events yet.</div>
+        </div>
+      </div>
+
       <a class="text-xs text-muted" href="{% url 'home' %}" style="text-align: center; display: block;">Start over</a>
     </div>
 
@@ -176,6 +187,30 @@
         {% with gt_form_prefix="gt_figures" %}
           {% include "researcher_ai_portal/_figure_cards.html" %}
         {% endwith %}
+
+        <details class="accordion">
+          <summary>Figure Image Preview</summary>
+          <div class="accordion-body" style="margin-top: 10px;">
+            {% if figure_media_rows %}
+              {% for row in figure_media_rows %}
+                <details class="accordion" data-figure-key="{{ row.figure_key }}" style="margin-bottom: 6px;">
+                  <summary>{{ row.figure_id }}</summary>
+                  <div class="accordion-body">
+                    {% if row.entries %}
+                      {% for entry in row.entries %}
+                        <a href="{{ entry.proxy_url }}" target="_blank" rel="noopener">{{ entry.proxy_url }}</a>
+                      {% endfor %}
+                    {% else %}
+                      <p class="text-xs text-muted">No previews available.</p>
+                    {% endif %}
+                  </div>
+                </details>
+              {% endfor %}
+            {% else %}
+              <p class="text-xs text-muted">Run figure parsing to populate preview links.</p>
+            {% endif %}
+          </div>
+        </details>
       {% endif %}
 
       <!-- JSON editor -->
@@ -188,6 +223,7 @@
       </div>
 
     </div>
+
   </div>
 
 </div>
@@ -208,32 +244,174 @@
   }
   .accordion .form-group input:focus,
   .accordion .form-group select:focus { border-color: var(--primary); }
+  @media (max-width: 900px) {
+    .page > div[style*="grid-template-columns: 250px minmax(0, 1fr)"] {
+      grid-template-columns: 1fr;
+    }
+  }
 </style>
 
-{% if step == "figures" %}
 <script>
   (function () {
     const form    = document.getElementById("step-form");
     const runBtn  = document.getElementById("run-step-btn");
     const stepBar = document.getElementById("step-progress-bar");
+    const stepText = document.getElementById("step-progress-text");
+    const stageText = document.getElementById("step-stage-text");
+    const figureBar = document.getElementById("figure-progress-bar");
+    const figureCurrent = document.getElementById("figure-progress-current");
+    const figureTotal = document.getElementById("figure-progress-total");
+    const workerLogMeta = document.getElementById("worker-log-meta");
+    const workerLogList = document.getElementById("worker-log-list");
     if (!form || !runBtn || !stepBar) return;
 
     const statusUrl = "{{ status_url }}";
+    const thisStep = "{{ step }}";
+    const initialStatus = "{{ job.status|default:'in_progress'|escapejs }}";
+    const initialCurrentStep = "{{ job.current_step|default:''|escapejs }}";
+    const initialStage = "{{ job.stage|default:''|escapejs }}";
+    const heartbeatText = document.getElementById("step-heartbeat-text");
     let running = false;
     let pollTimer = null;
+    let heartbeatTimer = null;
+    let runStartedAtMs = null;
+    let lastPollOkAtMs = null;
+    let stallShown = false;
+
+    function fmtDuration(ms) {
+      const sec = Math.max(0, Math.floor(ms / 1000));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    function renderHeartbeat() {
+      if (!heartbeatText) return;
+      if (!running || runStartedAtMs === null) {
+        heartbeatText.textContent = "Idle";
+        return;
+      }
+      const now = Date.now();
+      const elapsed = fmtDuration(now - runStartedAtMs);
+      const sincePoll = lastPollOkAtMs ? now - lastPollOkAtMs : null;
+      if (sincePoll !== null && sincePoll > 15000) {
+        heartbeatText.textContent = `Still running (${elapsed}). Waiting for status refresh…`;
+        stallShown = true;
+        return;
+      }
+      stallShown = false;
+      heartbeatText.textContent = `Running (${elapsed}). Last update ${sincePoll === null ? "just now" : `${Math.max(0, Math.floor(sincePoll / 1000))}s ago`}.`;
+    }
+
+    function startHeartbeat() {
+      if (runStartedAtMs === null) runStartedAtMs = Date.now();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(renderHeartbeat, 1000);
+      renderHeartbeat();
+    }
+
+    function stopHeartbeat(finalText) {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      running = false;
+      if (heartbeatText && finalText) heartbeatText.textContent = finalText;
+    }
+
+    function escapeHtml(s) {
+      return String(s || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function levelColor(level) {
+      const v = String(level || "").toLowerCase();
+      if (v === "error") return "var(--danger)";
+      if (v === "warning" || v === "warn") return "var(--warning)";
+      return "var(--text-3)";
+    }
+
+    function renderLogs(logs) {
+      if (!workerLogList || !workerLogMeta) return;
+      const items = Array.isArray(logs) ? logs : [];
+      const recent = items.slice(-120);
+      workerLogMeta.textContent = recent.length
+        ? `${recent.length} event${recent.length === 1 ? "" : "s"} captured`
+        : "Waiting for worker events…";
+      if (!recent.length) {
+        workerLogList.innerHTML = '<div class="text-xs text-muted">No events yet.</div>';
+        return;
+      }
+      const html = recent.map((row) => {
+        const ts = row && row.ts ? new Date(row.ts) : null;
+        const when = ts && !Number.isNaN(ts.valueOf()) ? ts.toLocaleTimeString() : "--:--:--";
+        const step = row && row.step ? String(row.step).toUpperCase() : "";
+        const msg = row && row.message ? String(row.message) : "";
+        const level = row && row.level ? String(row.level).toLowerCase() : "info";
+        return `
+          <div style="border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; background: var(--surface);">
+            <div style="display: flex; justify-content: space-between; gap: 8px;">
+              <span class="text-xs" style="color: ${levelColor(level)}; font-weight: 600;">${escapeHtml(level)}</span>
+              <span class="text-xs text-muted">${escapeHtml(when)}</span>
+            </div>
+            <div class="text-xs text-muted" style="margin-top: 2px;">${escapeHtml(step)}</div>
+            <div class="text-xs" style="color: var(--text); margin-top: 4px; white-space: pre-wrap;">${escapeHtml(msg)}</div>
+          </div>
+        `;
+      }).join("");
+      workerLogList.innerHTML = html;
+      workerLogList.scrollTop = workerLogList.scrollHeight;
+    }
 
     async function pollStatus() {
       try {
         const res = await fetch(statusUrl, { credentials: "same-origin" });
         if (!res.ok) return;
+        lastPollOkAtMs = Date.now();
         const data = await res.json();
-        stepBar.style.width = Math.max(0, Math.min(100, data.progress || 0)) + "%";
+        const pct = Math.max(0, Math.min(100, Number(data.progress || 0)));
+        stepBar.style.width = pct + "%";
+        if (stepText) stepText.textContent = pct + "% complete";
+        if (stageText) stageText.textContent = String(data.stage || "Running");
         const cur   = Number(data.figure_parse_current || 0);
         const total = Number(data.figure_parse_total   || 0);
         const figPct = total > 0 ? Math.round((cur / total) * 100) : 0;
-        const miniBar = document.querySelector('.progress-fill[style*="teal"]');
-        if (miniBar) miniBar.style.width = figPct + "%";
-      } catch (e) { /* noop */ }
+        if (figureBar) figureBar.style.width = figPct + "%";
+        if (figureCurrent) figureCurrent.textContent = String(cur);
+        if (figureTotal) figureTotal.textContent = String(total);
+        renderLogs(data.logs);
+        renderHeartbeat();
+        if (!running) return;
+        if (data.status === "failed") {
+          if (pollTimer) clearInterval(pollTimer);
+          stopHeartbeat("Parse failed. Reloading…");
+          window.location.reload();
+          return;
+        }
+        // Serial parser mode: when the stage flips to Completed for this step,
+        // immediately reload so parsed component JSON/cards are rendered.
+        if (
+          String(data.current_step || "") === thisStep &&
+          String(data.stage || "").startsWith("Completed ")
+        ) {
+          if (pollTimer) clearInterval(pollTimer);
+          stopHeartbeat("Step complete. Reloading…");
+          window.location.reload();
+          return;
+        }
+        if (data.status === "step_complete" && String(data.current_step || "") === thisStep) {
+          if (pollTimer) clearInterval(pollTimer);
+          stopHeartbeat("Step complete. Reloading…");
+          window.location.reload();
+        }
+      } catch (e) {
+        if (heartbeatText && running && !stallShown) {
+          heartbeatText.textContent = "Running. Temporary network issue; retrying status check…";
+        }
+        if (workerLogMeta && running) {
+          workerLogMeta.textContent = "Polling issue detected; retrying…";
+        }
+      }
     }
 
     runBtn.addEventListener("click", async function (e) {
@@ -242,20 +420,50 @@
       running = true;
       runBtn.disabled = true;
       runBtn.textContent = "Running…";
+      runStartedAtMs = Date.now();
+      lastPollOkAtMs = Date.now();
+      startHeartbeat();
       const fd = new FormData(form);
       fd.set("step_action", "run");
       pollTimer = setInterval(pollStatus, 1200);
       await pollStatus();
       try {
-        await fetch(form.getAttribute("action") || window.location.href,
-                    { method: "POST", body: fd, credentials: "same-origin" });
-      } finally {
+        await fetch(form.getAttribute("action") || window.location.href, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        // Serial mode: POST returns only after parse work completes.
         if (pollTimer) clearInterval(pollTimer);
-        await pollStatus();
+        stopHeartbeat("Step complete. Reloading…");
+        window.location.reload();
+        return;
+      } catch (err) {
+        if (pollTimer) clearInterval(pollTimer);
+        stopHeartbeat("Request failed. Reloading…");
         window.location.reload();
       }
     });
+
+    // If this page is opened while a step is already running (e.g. after /parse/start/ redirect),
+    // begin polling immediately so progress bars update without an extra click.
+    if (
+      initialStatus === "in_progress" &&
+      initialCurrentStep === thisStep &&
+      /^Running\b/.test(initialStage)
+    ) {
+      running = true;
+      runBtn.disabled = true;
+      runBtn.textContent = "Running…";
+      runStartedAtMs = Date.now();
+      lastPollOkAtMs = Date.now();
+      startHeartbeat();
+      pollTimer = setInterval(pollStatus, 1200);
+      pollStatus();
+    } else {
+      renderHeartbeat();
+      renderLogs([]);
+    }
   })();
 </script>
-{% endif %}
 {% endblock %}

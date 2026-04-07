@@ -34,6 +34,7 @@ class WorkflowJob(models.Model):
     figure_parse_total = models.IntegerField(default=0)
     figure_parse_current = models.IntegerField(default=0)
     supplementary_figure_ids = models.JSONField(default=list)
+    parse_logs = models.JSONField(default=list)
 
     class Meta:
         ordering = ["-created_at"]

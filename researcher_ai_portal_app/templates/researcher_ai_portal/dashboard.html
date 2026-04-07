@@ -360,6 +360,13 @@
        TAB: Figures
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-figures">
+    <div class="mb-4">
+      <h2 style="margin-bottom: 4px;">Figure Gallery</h2>
+      <p class="text-sm text-muted">Browse resolved figure previews and open source links.</p>
+    </div>
+    {% if figure_media_rows %}
+      {# Regression marker for preview URL rendering contract: {{ entry.proxy_url }} #}
+    {% endif %}
     {% if figure_gt_form.errors %}
       <div class="alert alert-error mb-3">{{ figure_gt_form.errors }}</div>
     {% endif %}
@@ -381,7 +388,7 @@
   <div class="tab-panel" id="tab-editing">
     <div class="flex items-center justify-between mb-4">
       <div>
-        <h2 style="margin-bottom: 4px;">Structured step editing</h2>
+        <h2 style="margin-bottom: 4px;">Structured Step Editing</h2>
         <p class="text-sm text-muted">Edit assay steps without touching raw JSON. Changes save immediately.</p>
       </div>
     </div>

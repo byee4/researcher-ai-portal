@@ -15,7 +15,6 @@ from urllib.parse import quote, urljoin, urlparse
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.core.cache import cache
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -25,6 +24,7 @@ from .confidence import compute_confidence
 from .dag_app import build_dag_app
 from .dashboards import build_dashboard_app
 from .forms import ComponentJSONForm, FigureGroundTruthForm
+from .job_events import append_job_log, merge_logs
 from .models import PaperCache, WorkflowJob
 from .job_store import create_job, get_job, update_job
 
@@ -83,8 +83,12 @@ _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
 
 
-def _progress_cache_key(job_id: str) -> str:
-    return f"job_progress:{job_id}"
+def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
+    try:
+        append_job_log(job_id, message, step=step, level=level)
+    except Exception:
+        # Best-effort logging only; never break parsing on diagnostics.
+        return
 
 
 def invalidated_steps(job: dict[str, Any], edited_step: str) -> list[str]:
@@ -950,6 +954,7 @@ def _run_step(
     with _llm_env(job):
         model = job.get("llm_model")
         if step == "paper":
+            _log_job_event(job_id, "Initializing paper parser", step=step)
             source_type_key = str(job.get("source_type") or "pmid").strip().lower()
             source_type = mods["PaperSource"].PMID
             if source_type_key == "pdf":
@@ -965,16 +970,20 @@ def _run_step(
             if not force_reparse:
                 cached = PaperCache.objects.filter(canonical_id=canonical_id, llm_model=str(model or "")).first()
                 if cached is not None:
+                    _log_job_event(job_id, "Paper cache hit; loading cached parse", step=step)
                     _persist_component(job_id, "paper", cached.paper_json, "cached")
                     if cached.figures_json:
                         _persist_component(job_id, "figures", cached.figures_json, "cached")
                     update_job(job_id, stage="Loaded paper from cache")
+                    _log_job_event(job_id, "Loaded paper from cache", step=step)
                     return
+            _log_job_event(job_id, f"Paper cache miss; parsing source ({source_type_key})", step=step)
 
             parser = mods["PaperParser"](llm_model=model)
             paper = parser.parse(job["source"], source_type=source_type)
             paper_json = paper.model_dump(mode="json")
             _persist_component(job_id, "paper", paper_json, "parsed")
+            _log_job_event(job_id, "Paper parsing complete", step=step)
             PaperCache.objects.update_or_create(
                 canonical_id=canonical_id,
                 defaults={
@@ -982,6 +991,7 @@ def _run_step(
                     "llm_model": str(model or ""),
                 },
             )
+            _log_job_event(job_id, "Paper cache updated", step=step)
             return
 
         paper = _typed_component(job, "paper", mods)
@@ -989,6 +999,7 @@ def _run_step(
             raise ValueError("Paper step must be completed first.")
 
         if step == "figures":
+            _log_job_event(job_id, "Initializing figure parser", step=step)
             parser = mods["FigureParser"](llm_model=model)
             figure_ids = list(getattr(paper, "figure_ids", []) or [])
             if not figure_ids:
@@ -1000,9 +1011,15 @@ def _run_step(
             primary_figure_ids, supplementary_figure_ids = _split_primary_and_supplementary_figure_ids(figure_ids)
             update_job(job_id, supplementary_figure_ids=supplementary_figure_ids)
             figure_ids = primary_figure_ids
+            _log_job_event(
+                job_id,
+                f"Figure discovery complete: {len(primary_figure_ids)} primary, {len(supplementary_figure_ids)} supplementary",
+                step=step,
+            )
             if not figure_ids:
                 _persist_component(job_id, "figures", [], "parsed")
                 update_job(job_id, figure_parse_total=0, figure_parse_current=0, stage="No primary figures to parse")
+                _log_job_event(job_id, "No primary figures detected", step=step)
                 return
 
             parsed_figures = []
@@ -1011,6 +1028,13 @@ def _run_step(
             prev_pct = _progress_for_step("paper")
             end_pct = _progress_for_step("figures")
             for idx, fig_id in enumerate(figure_ids, start=1):
+                update_job(
+                    job_id,
+                    stage=f"Starting {fig_id} ({idx}/{total})",
+                    figure_parse_current=max(0, idx - 1),
+                    figure_parse_total=total,
+                )
+                _log_job_event(job_id, f"Parsing {fig_id} ({idx}/{total})", step=step)
                 single = paper.model_copy(update={"figure_ids": [fig_id]})
                 chunk = parser.parse_all_figures(single)
                 if chunk:
@@ -1030,8 +1054,10 @@ def _run_step(
                     [f.model_dump(mode="json") for f in parsed_figures],
                     "parsed_partial",
                 )
+                _log_job_event(job_id, f"Parsed {fig_id}; {idx}/{total} complete", step=step)
             figures_json = [f.model_dump(mode="json") for f in parsed_figures]
             _persist_component(job_id, "figures", figures_json, "parsed")
+            _log_job_event(job_id, f"Figure parsing complete: {len(figures_json)} figure records", step=step)
             source_type_key = str(job.get("source_type") or "pmid").strip().lower()
             canonical_id = _canonical_paper_cache_id(source_type_key, str(job.get("source") or ""))
             if canonical_id:
@@ -1043,17 +1069,21 @@ def _run_step(
                         "llm_model": str(model or ""),
                     },
                 )
+                _log_job_event(job_id, "Figure cache updated", step=step)
             return
 
         figures = _typed_component(job, "figures", mods) or []
         if step == "method":
+            _log_job_event(job_id, "Running methods parser", step=step)
             parser = mods["MethodsParser"](llm_model=model)
             method = parser.parse(paper, figures=figures, computational_only=True)
             _persist_component(job_id, "method", method.model_dump(mode="json"), "parsed")
+            _log_job_event(job_id, "Methods parsing complete", step=step)
             return
 
         method = _typed_component(job, "method", mods)
         if step == "datasets":
+            _log_job_event(job_id, "Running dataset parsers", step=step)
             geo = mods["GEOParser"]()
             sra = mods["SRAParser"]()
             section_text = "\n".join((getattr(sec, "text", "") or "") for sec in (paper.sections or []))
@@ -1082,6 +1112,7 @@ def _run_step(
                 ]
             )
             accessions = _collect_accessions(combined)
+            _log_job_event(job_id, f"Found {len(accessions)} accession candidates", step=step)
             datasets = []
             for acc in accessions[:25]:
                 if acc.startswith(("GSE", "GSM", "GDS", "GPL")):
@@ -1093,20 +1124,25 @@ def _run_step(
                 if ds is not None:
                     datasets.append(ds.model_dump(mode="json"))
             _persist_component(job_id, "datasets", datasets, "parsed")
+            _log_job_event(job_id, f"Dataset parsing complete: {len(datasets)} datasets", step=step)
             return
 
         datasets = _typed_component(job, "datasets", mods) or []
         if step == "software":
+            _log_job_event(job_id, "Running software parser", step=step)
             parser = mods["SoftwareParser"](llm_model=model)
             software = parser.parse_from_method(method) if method else []
             _persist_component(job_id, "software", [s.model_dump(mode="json") for s in software], "parsed")
+            _log_job_event(job_id, f"Software parsing complete: {len(software)} entries", step=step)
             return
 
         software = _typed_component(job, "software", mods) or []
         if step == "pipeline":
+            _log_job_event(job_id, "Building pipeline from parsed components", step=step)
             builder = mods["PipelineBuilder"](llm_model=model)
             pipeline = builder.build(method, datasets, software, figures)
             _persist_component(job_id, "pipeline", pipeline.model_dump(mode="json"), "parsed")
+            _log_job_event(job_id, "Pipeline build complete", step=step)
             return
 
     raise ValueError(f"Unknown step: {step}")
@@ -1184,26 +1220,39 @@ def _dispatch_workflow_step(
     llm_model: str,
     force_reparse: bool = False,
 ) -> None:
-    from .tasks import run_workflow_step
-
-    run_workflow_step.delay(
-        job_id,
-        step,
-        llm_api_key=llm_api_key,
-        llm_model=llm_model,
-        force_reparse=force_reparse,
-    )
+    _log_job_event(job_id, f"Queued step: {STEP_LABELS.get(step, step)}", step=step)
+    label = STEP_LABELS.get(step, step)
+    update_job(job_id, status="in_progress", current_step=step, stage=f"Running {label}")
+    _log_job_event(job_id, f"Worker started step: {label}", step=step)
+    try:
+        _run_step(
+            job_id,
+            step,
+            llm_api_key=llm_api_key,
+            llm_model=llm_model,
+            force_reparse=force_reparse,
+        )
+        progress = _progress_for_step(step)
+        update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
+        _log_job_event(job_id, f"Step completed: {label}", step=step)
+    except Exception as exc:
+        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=str(exc))
+        _log_job_event(job_id, f"Step failed: {label}: {exc}", level="error", step=step)
+        raise
 
 
 def _dispatch_rebuild(job_id: str, edited_step: str, *, llm_api_key: str, llm_model: str) -> None:
-    from .tasks import rebuild_from_step
-
-    rebuild_from_step.delay(
-        job_id,
-        edited_step,
-        llm_api_key=llm_api_key,
-        llm_model=llm_model,
-    )
+    dirty_steps = invalidated_steps(get_job(job_id) or {}, edited_step)
+    for step in dirty_steps:
+        _dispatch_workflow_step(
+            job_id,
+            step,
+            llm_api_key=llm_api_key,
+            llm_model=llm_model,
+            force_reparse=False,
+        )
+    if dirty_steps:
+        update_job(job_id, status="in_progress", current_step=dirty_steps[-1])
 
 
 def _infer_last_edited_step(job: dict[str, Any]) -> str:
@@ -1319,8 +1368,10 @@ def start_parse(request):
         progress=0,
         current_step="paper",
     )
+    _log_job_event(job_id, f"Parse job created for {source_type}: {input_value}", step="paper")
     try:
         update_job(job_id, user=request.user, stage=f"Running {STEP_LABELS['paper']}", current_step="paper")
+        _log_job_event(job_id, "Starting Paper Parser", step="paper")
         _dispatch_workflow_step(
             job_id,
             "paper",
@@ -1330,6 +1381,7 @@ def start_parse(request):
         )
     except Exception as exc:  # pragma: no cover - user/network-driven
         update_job(job_id, user=request.user, status="failed", error=str(exc), stage=f"{STEP_LABELS['paper']} failed")
+        _log_job_event(job_id, f"Paper Parser failed: {exc}", step="paper", level="error")
     return redirect("workflow_step", job_id=job_id, step="paper")
 
 
@@ -1346,26 +1398,21 @@ def job_progress(request, job_id: str):
 @login_required
 @require_GET
 def job_status(request, job_id: str):
-    cached = cache.get(_progress_cache_key(job_id))
-    if cached and int(cached.get("user_id") or request.user.id) == int(request.user.id):
-        payload = {"job_id": job_id, **cached}
-        return JsonResponse(payload)
-
     job = get_job(job_id, user=request.user)
     if job is None:
         return JsonResponse({"error": "unknown job"}, status=404)
-    return JsonResponse(
-        {
-            "job_id": job["job_id"],
-            "status": job.get("status", "in_progress"),
-            "progress": job.get("progress", 0),
-            "stage": job.get("stage", ""),
-            "error": job.get("error", ""),
-            "current_step": job.get("current_step", "paper"),
-            "figure_parse_current": job.get("figure_parse_current", 0),
-            "figure_parse_total": job.get("figure_parse_total", 0),
-        }
-    )
+    payload = {
+        "job_id": job["job_id"],
+        "status": job.get("status", "in_progress"),
+        "progress": job.get("progress", 0),
+        "stage": job.get("stage", ""),
+        "error": job.get("error", ""),
+        "current_step": job.get("current_step", "paper"),
+        "figure_parse_current": job.get("figure_parse_current", 0),
+        "figure_parse_total": job.get("figure_parse_total", 0),
+    }
+    payload = merge_logs(payload, job_id)
+    return JsonResponse(payload)
 
 
 @login_required
@@ -1539,8 +1586,13 @@ def workflow_step(request, job_id: str, step: str):
     i = STEP_ORDER.index(step)
     prev_step = STEP_ORDER[i - 1] if i > 0 else None
     next_step = STEP_ORDER[i + 1] if i < len(STEP_ORDER) - 1 else None
-    progress = int(round(((i + 1) / len(STEP_ORDER)) * 100))
-    update_job(job_id, user=request.user, current_step=step, progress=progress)
+    step_progress = int(round(((i + 1) / len(STEP_ORDER)) * 100))
+    progress = int(job.get("progress", step_progress) or step_progress)
+    if progress < 0:
+        progress = 0
+    if progress > 100:
+        progress = 100
+    update_job(job_id, user=request.user, current_step=step)
 
     initial_component = component if component is not None else ({} if step in ("paper", "method", "pipeline") else [])
     form = ComponentJSONForm(initial={"component_json": initial_component}, prefix=form_prefix)

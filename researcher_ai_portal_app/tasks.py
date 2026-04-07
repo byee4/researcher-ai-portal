@@ -4,6 +4,7 @@ from typing import Any
 
 from django.core.cache import cache
 
+from .job_events import append_job_log, merge_logs
 from .job_store import get_job, update_job
 
 try:  # pragma: no cover - optional dependency in local MVP mode
@@ -42,7 +43,7 @@ def run_workflow_step(
     label = STEP_LABELS.get(step, step)
     job = get_job(job_id)
     user_id = (job or {}).get("user_id")
-    cache.set(_cache_key(job_id), {
+    cache_payload = {
         "status": "in_progress",
         "progress": _progress_for_step(step),
         "stage": f"Running {label}",
@@ -50,7 +51,9 @@ def run_workflow_step(
         "figure_parse_current": 0,
         "figure_parse_total": 0,
         "user_id": user_id,
-    }, timeout=3600)
+    }
+    cache.set(_cache_key(job_id), merge_logs(cache_payload, job_id), timeout=3600)
+    append_job_log(job_id, f"Worker started step: {label}", step=step)
 
     try:
         update_job(job_id, status="in_progress", current_step=step, stage=f"Running {label}")
@@ -63,32 +66,28 @@ def run_workflow_step(
         )
         progress = _progress_for_step(step)
         update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
-        cache.set(
-            _cache_key(job_id),
-            {
-                "status": "step_complete",
-                "progress": progress,
-                "stage": f"Completed {label}",
-                "current_step": step,
-                "user_id": user_id,
-            },
-            timeout=3600,
-        )
+        append_job_log(job_id, f"Step completed: {label}", step=step)
+        complete_payload = {
+            "status": "step_complete",
+            "progress": progress,
+            "stage": f"Completed {label}",
+            "current_step": step,
+            "user_id": user_id,
+        }
+        cache.set(_cache_key(job_id), merge_logs(complete_payload, job_id), timeout=3600)
         return {"ok": True, "job_id": job_id, "step": step}
     except Exception as exc:
         update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=str(exc))
-        cache.set(
-            _cache_key(job_id),
-            {
-                "status": "failed",
-                "progress": (get_job(job_id) or {}).get("progress", 0),
-                "stage": f"{label} failed",
-                "current_step": step,
-                "error": str(exc),
-                "user_id": user_id,
-            },
-            timeout=3600,
-        )
+        append_job_log(job_id, f"Step failed: {label}: {exc}", level="error", step=step)
+        fail_payload = {
+            "status": "failed",
+            "progress": (get_job(job_id) or {}).get("progress", 0),
+            "stage": f"{label} failed",
+            "current_step": step,
+            "error": str(exc),
+            "user_id": user_id,
+        }
+        cache.set(_cache_key(job_id), merge_logs(fail_payload, job_id), timeout=3600)
         return {"ok": False, "job_id": job_id, "step": step, "error": str(exc)}
 
 

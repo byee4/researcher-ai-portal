@@ -11,12 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY .vendor/researcher-ai /app/.vendor/researcher-ai
+COPY .vendor/wheels /app/.vendor/wheels
+RUN pip install -r requirements.txt
 
 ARG RESEARCHER_AI_PIP_SPEC=researcher-ai
+RUN pip install "${RESEARCHER_AI_PIP_SPEC}"
 COPY . .
-RUN pip install --no-cache-dir "${RESEARCHER_AI_PIP_SPEC}"
-RUN chmod +x /app/scripts/start_web.sh /app/scripts/run_local_docker.sh
+RUN chmod +x /app/scripts/start_web.sh /app/scripts/start_worker.sh /app/scripts/run_local_docker.sh
 
 RUN python manage.py collectstatic --noinput 2>/dev/null || true
 
