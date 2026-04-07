@@ -8,3 +8,11 @@ media/
 staticfiles/
 parse_results/
 template.db
+.vendor/
+.rag_chroma/
+*_setup.sh
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

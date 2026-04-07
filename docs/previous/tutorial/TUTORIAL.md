@@ -6,7 +6,7 @@ This tutorial walks through using the Django portal to run the `researcher-ai` p
 
 - Django project module: `researcher_ai_portal`
 - Django app: `researcher_ai_portal_app`
-- Workflow runner script: `researcher-ai/scripts/django_run_workflow.py`
+- Workflow runner script: `researcher-ai/scripts/run_workflow.py`
 - Core package used by runner: `researcher-ai/researcher_ai/*`
 
 The portal launches parsing in a background thread and subprocess, then streams progress to the browser.
@@ -44,8 +44,8 @@ Click **Start Parsing**.
 ### What happens under the hood
 
 1. Django creates a job record in memory (`job_store.py`).
-2. A background thread starts a subprocess:
-   - `python researcher-ai/scripts/django_run_workflow.py ...`
+2. A background worker starts the parser workflow:
+   - `python researcher-ai/scripts/run_workflow.py ...`
 3. The runner emits stage lines:
    - `PROGRESS|15|Parsing paper`
    - `PROGRESS|35|Parsing figures`
@@ -133,4 +133,3 @@ Portal-run outputs are written under:
 - `researcher_ai/parse_results/<job_id>.json`
 
 These files can be archived or post-processed for downstream analysis.
-

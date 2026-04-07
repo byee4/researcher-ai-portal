@@ -201,6 +201,30 @@ def test_figure_media_rows_marks_supplementary_as_deferred_parser():
     assert rows[0]["deferred_parser"] == "Supplemental Figure Parser"
 
 
+def test_sort_figures_and_panels_alphanumerically_orders_natural_numeric_labels():
+    payload = [
+        {
+            "figure_id": "Figure 10",
+            "subfigures": [{"label": "B10"}, {"label": "B2"}, {"label": "A"}],
+        },
+        {
+            "figure_id": "Figure 2",
+            "subfigures": [{"label": "C"}, {"label": "A"}],
+        },
+        {
+            "figure_id": "Figure 1",
+            "subfigures": [{"label": "B"}, {"label": "A"}],
+        },
+    ]
+
+    ordered = views._sort_figures_and_panels_alphanumerically(payload)
+
+    assert [f["figure_id"] for f in ordered] == ["Figure 1", "Figure 2", "Figure 10"]
+    assert [sf["label"] for sf in ordered[0]["subfigures"]] == ["A", "B"]
+    assert [sf["label"] for sf in ordered[1]["subfigures"]] == ["A", "C"]
+    assert [sf["label"] for sf in ordered[2]["subfigures"]] == ["A", "B2", "B10"]
+
+
 @patch("httpx.Client")
 def test_pick_first_valid_url_accepts_html_figure_endpoint(mock_client_cls):
     client = MagicMock()

@@ -68,7 +68,8 @@ cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
 python -m pip install -r requirements.txt
 # Install core package dependency (editable for local co-dev):
 # python -m pip install -e /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
-# OR install from package index/git source when available.
+# OR install a pinned package release:
+# python -m pip install researcher-ai==2.0.0
 
 python manage.py migrate
 python manage.py runserver 0.0.0.0:8000
@@ -79,6 +80,20 @@ Optional dependency for full DAG canvas:
 ```bash
 python -m pip install dash-cytoscape
 ```
+
+## v2 Runtime Environment
+
+`researcher-ai v2.0.0` supports multiple LLM providers. The portal routes the single UI API key to provider-specific env vars by model prefix:
+
+- `gpt-*`, `chatgpt-*`, `o1-*`, `o3-*`, `o4-*` -> `OPENAI_API_KEY`
+- `claude-*` -> `ANTHROPIC_API_KEY`
+- `gemini-*` -> `GEMINI_API_KEY`
+
+Optional v2 runtime controls:
+
+- `RESEARCHER_AI_VISION_MODEL` (override default figure multimodal model)
+- `RESEARCHER_AI_RAG_MODE` (`per_job` default, `shared` opt-in)
+- `RESEARCHER_AI_RAG_BASE_DIR` (base directory for RAG persistence)
 
 ## Test
 

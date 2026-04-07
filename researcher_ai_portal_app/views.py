@@ -10,6 +10,7 @@ import hashlib
 from html import unescape
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse
 from cryptography.fernet import Fernet, InvalidToken
@@ -31,6 +32,7 @@ from .job_store import create_job, get_job, update_job
 
 DJANGO_ROOT = Path(__file__).resolve().parents[1]
 RESULT_DIR = DJANGO_ROOT / "parse_results"
+PDF_STAGE_DIR = RESULT_DIR / "uploaded_pdfs"
 
 STEP_ORDER = ["paper", "figures", "method", "datasets", "software", "pipeline"]
 STEP_LABELS = {
@@ -55,6 +57,8 @@ COMMON_LLM_MODELS = [
     "gpt-5.3-codex",
     "gpt-5.2",
     "o4-mini",
+    "gemini-3.1-pro",
+    "gemini-2.5-pro",
     "claude-sonnet-4-6",
     "claude-opus-4-1",
 ]
@@ -109,7 +113,15 @@ def _infer_provider(model: str) -> str:
     m = (model or "").strip().lower()
     if m.startswith("claude"):
         return "anthropic"
-    if m.startswith("gpt") or m.startswith("chatgpt") or m.startswith(("o1", "o3", "o4")):
+    if m.startswith("gemini"):
+        return "gemini"
+    if (
+        m.startswith("gpt")
+        or m.startswith("chatgpt")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    ):
         return "openai"
     return "anthropic"
 
@@ -127,8 +139,10 @@ def _validate_llm_api_key(api_key: str, provider: str) -> str:
         raise ValueError("LLM API key is required.")
     if provider == "anthropic" and not value.startswith("sk-ant-"):
         raise ValueError("Invalid Anthropic API key format. Expected 'sk-ant-...'.")
-    if provider == "openai" and not value.startswith("sk-"):
-        raise ValueError("Invalid OpenAI API key format. Expected 'sk-...'.")
+    if provider == "openai" and not (value.startswith("sk-") or value.startswith("sk-proj-")):
+        raise ValueError("Invalid OpenAI API key format. Expected 'sk-' or 'sk-proj-...'.")
+    if provider == "gemini" and not re.fullmatch(r"[A-Za-z0-9_-]{39}", value):
+        raise ValueError("Invalid Gemini API key format. Expected 39 URL-safe characters.")
     if len(value) < 20:
         raise ValueError("API key appears too short.")
     return value
@@ -200,17 +214,33 @@ def _canonical_paper_cache_id(source_type: str, source: str) -> str:
     return f"{(source_type or '').strip().lower()}:{(source or '').strip()}"
 
 
+def _stage_uploaded_pdf(uploaded_file) -> Path:
+    """Persist an uploaded PDF to a durable portal-managed staging path."""
+    PDF_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(str(getattr(uploaded_file, "name", "") or "")).suffix.lower()
+    if suffix != ".pdf":
+        suffix = ".pdf"
+    staged_path = (PDF_STAGE_DIR / f"{uuid4().hex}{suffix}").resolve()
+    with staged_path.open("wb") as fh:
+        for chunk in uploaded_file.chunks():
+            fh.write(chunk)
+    return staged_path
+
+
 @contextmanager
 def _llm_env(job: dict[str, Any]):
     provider = _infer_provider(job.get("llm_model", ""))
     old_openai = os.environ.get("OPENAI_API_KEY")
     old_anthropic = os.environ.get("ANTHROPIC_API_KEY")
+    old_gemini = os.environ.get("GEMINI_API_KEY")
     old_model = os.environ.get("RESEARCHER_AI_MODEL")
     with _LLM_ENV_LOCK:
         try:
             os.environ["RESEARCHER_AI_MODEL"] = job.get("llm_model", "")
             if provider == "openai":
                 os.environ["OPENAI_API_KEY"] = job.get("llm_api_key", "")
+            elif provider == "gemini":
+                os.environ["GEMINI_API_KEY"] = job.get("llm_api_key", "")
             else:
                 os.environ["ANTHROPIC_API_KEY"] = job.get("llm_api_key", "")
             yield
@@ -223,6 +253,10 @@ def _llm_env(job: dict[str, Any]):
                 os.environ.pop("ANTHROPIC_API_KEY", None)
             else:
                 os.environ["ANTHROPIC_API_KEY"] = old_anthropic
+            if old_gemini is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = old_gemini
             if old_model is None:
                 os.environ.pop("RESEARCHER_AI_MODEL", None)
             else:
@@ -587,6 +621,38 @@ def _figure_id_key(figure_id: str) -> str:
     text = re.sub(r"(?i)\bfig(?:ure)?\.?\b", "figure", text)
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
+
+
+def _alphanumeric_sort_key(value: str) -> tuple[tuple[int, Any], ...]:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"(?i)\bfig(?:ure)?\.?\b", "figure", text)
+    text = re.sub(r"\s+", " ", text)
+    parts = re.findall(r"\d+|[a-z]+", text)
+    key: list[tuple[int, Any]] = []
+    for token in parts:
+        if token.isdigit():
+            key.append((1, int(token)))
+        else:
+            key.append((0, token))
+    # Add normalized text as a stable tie-breaker.
+    key.append((2, text))
+    return tuple(key)
+
+
+def _sort_figures_and_panels_alphanumerically(figures_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    for fig in figures_payload or []:
+        if not isinstance(fig, dict):
+            continue
+        fig_copy = dict(fig)
+        subfigures = fig_copy.get("subfigures")
+        if isinstance(subfigures, list):
+            fig_copy["subfigures"] = sorted(
+                [dict(sf) for sf in subfigures if isinstance(sf, dict)],
+                key=lambda sf: _alphanumeric_sort_key(str(sf.get("label") or "")),
+            )
+        ordered.append(fig_copy)
+    return sorted(ordered, key=lambda fig: _alphanumeric_sort_key(str(fig.get("figure_id") or "")))
 
 
 def _build_pmc_figure_url(pmcid: str, figure_id: str) -> str | None:
@@ -957,8 +1023,18 @@ def _run_step(
             _log_job_event(job_id, "Initializing paper parser", step=step)
             source_type_key = str(job.get("source_type") or "pmid").strip().lower()
             source_type = mods["PaperSource"].PMID
+            source_value = str(job.get("source") or "")
             if source_type_key == "pdf":
                 source_type = mods["PaperSource"].PDF
+                pdf_path = Path(source_value).expanduser()
+                if not pdf_path.is_absolute():
+                    pdf_path = pdf_path.resolve()
+                if not pdf_path.exists() or not pdf_path.is_file():
+                    raise FileNotFoundError(
+                        "Uploaded PDF is no longer available for parsing. "
+                        "Please re-upload the PDF and retry."
+                    )
+                source_value = str(pdf_path)
             elif source_type_key == "pmcid":
                 source_type = mods["PaperSource"].PMCID
             elif source_type_key == "doi":
@@ -980,7 +1056,7 @@ def _run_step(
             _log_job_event(job_id, f"Paper cache miss; parsing source ({source_type_key})", step=step)
 
             parser = mods["PaperParser"](llm_model=model)
-            paper = parser.parse(job["source"], source_type=source_type)
+            paper = parser.parse(source_value, source_type=source_type)
             paper_json = paper.model_dump(mode="json")
             _persist_component(job_id, "paper", paper_json, "parsed")
             _log_job_event(job_id, "Paper parsing complete", step=step)
@@ -1000,6 +1076,15 @@ def _run_step(
 
         if step == "figures":
             _log_job_event(job_id, "Initializing figure parser", step=step)
+            if getattr(paper, "source", None) == mods["PaperSource"].PDF:
+                pdf_path = Path(str(getattr(paper, "source_path", "") or "")).expanduser()
+                if not pdf_path.is_absolute():
+                    pdf_path = pdf_path.resolve()
+                if not pdf_path.exists() or not pdf_path.is_file():
+                    raise FileNotFoundError(
+                        "Staged PDF for figure parsing was not found. "
+                        "Please restart the parse with the original PDF."
+                    )
             parser = mods["FigureParser"](llm_model=model)
             figure_ids = list(getattr(paper, "figure_ids", []) or [])
             if not figure_ids:
@@ -1009,6 +1094,8 @@ def _run_step(
             if not figure_ids:
                 figure_ids = _infer_figure_ids_from_paper_text(paper)
             primary_figure_ids, supplementary_figure_ids = _split_primary_and_supplementary_figure_ids(figure_ids)
+            primary_figure_ids = sorted(primary_figure_ids, key=_alphanumeric_sort_key)
+            supplementary_figure_ids = sorted(supplementary_figure_ids, key=_alphanumeric_sort_key)
             update_job(job_id, supplementary_figure_ids=supplementary_figure_ids)
             figure_ids = primary_figure_ids
             _log_job_event(
@@ -1022,7 +1109,7 @@ def _run_step(
                 _log_job_event(job_id, "No primary figures detected", step=step)
                 return
 
-            parsed_figures = []
+            parsed_figures: list[dict[str, Any]] = []
             total = len(figure_ids)
             update_job(job_id, figure_parse_total=total, figure_parse_current=0)
             prev_pct = _progress_for_step("paper")
@@ -1038,7 +1125,11 @@ def _run_step(
                 single = paper.model_copy(update={"figure_ids": [fig_id]})
                 chunk = parser.parse_all_figures(single)
                 if chunk:
-                    parsed_figures.append(chunk[0])
+                    first = chunk[0]
+                    if isinstance(first, dict):
+                        parsed_figures.append(dict(first))
+                    else:
+                        parsed_figures.append(first.model_dump(mode="json"))
                 stage = f"Parsing {fig_id} ({idx}/{total})"
                 pct = prev_pct + int(round(((end_pct - prev_pct) * idx) / max(total, 1)))
                 update_job(
@@ -1051,11 +1142,11 @@ def _run_step(
                 _persist_component(
                     job_id,
                     "figures",
-                    [f.model_dump(mode="json") for f in parsed_figures],
+                    _sort_figures_and_panels_alphanumerically(parsed_figures),
                     "parsed_partial",
                 )
                 _log_job_event(job_id, f"Parsed {fig_id}; {idx}/{total} complete", step=step)
-            figures_json = [f.model_dump(mode="json") for f in parsed_figures]
+            figures_json = _sort_figures_and_panels_alphanumerically(parsed_figures)
             _persist_component(job_id, "figures", figures_json, "parsed")
             _log_job_event(job_id, f"Figure parsing complete: {len(figures_json)} figure records", step=step)
             source_type_key = str(job.get("source_type") or "pmid").strip().lower()
@@ -1075,8 +1166,26 @@ def _run_step(
         figures = _typed_component(job, "figures", mods) or []
         if step == "method":
             _log_job_event(job_id, "Running methods parser", step=step)
-            parser = mods["MethodsParser"](llm_model=model)
-            method = parser.parse(paper, figures=figures, computational_only=True)
+            rag_mode = str(os.environ.get("RESEARCHER_AI_RAG_MODE", "per_job") or "per_job").strip().lower()
+            rag_base = str(os.environ.get("RESEARCHER_AI_RAG_BASE_DIR", "") or "").strip()
+            if rag_mode == "shared":
+                if rag_base:
+                    shared_dir = Path(rag_base).expanduser().resolve()
+                else:
+                    shared_dir = (DJANGO_ROOT / ".rag_chroma").resolve()
+                shared_dir.mkdir(parents=True, exist_ok=True)
+                parser = mods["MethodsParser"](llm_model=model, rag_persist_dir=str(shared_dir))
+                method = parser.parse(paper, figures=figures, computational_only=True)
+            else:
+                temp_parent = Path(rag_base).expanduser().resolve() if rag_base else None
+                if temp_parent is not None:
+                    temp_parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(
+                    prefix=f"researcher_ai_rag_{job_id}_",
+                    dir=str(temp_parent) if temp_parent is not None else None,
+                ) as rag_tmp_dir:
+                    parser = mods["MethodsParser"](llm_model=model, rag_persist_dir=rag_tmp_dir)
+                    method = parser.parse(paper, figures=figures, computational_only=True)
             _persist_component(job_id, "method", method.model_dump(mode="json"), "parsed")
             _log_job_event(job_id, "Methods parsing complete", step=step)
             return
@@ -1151,6 +1260,14 @@ def _run_step(
 def _progress_for_step(step: str) -> int:
     idx = STEP_ORDER.index(step)
     return int(round((idx / (len(STEP_ORDER) - 1)) * 100))
+
+
+def _humanize_step_error(exc: Exception) -> str:
+    text = str(exc or "").strip()
+    lower = text.lower()
+    if "429" in lower or "rate limit" in lower or "too many requests" in lower:
+        return "Vision model rate limit reached. Please try again in 1 minute."
+    return text or exc.__class__.__name__
 
 
 def _job_result_from_components(job: dict[str, Any]) -> dict[str, Any]:
@@ -1236,8 +1353,9 @@ def _dispatch_workflow_step(
         update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
         _log_job_event(job_id, f"Step completed: {label}", step=step)
     except Exception as exc:
-        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=str(exc))
-        _log_job_event(job_id, f"Step failed: {label}: {exc}", level="error", step=step)
+        user_error = _humanize_step_error(exc)
+        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=user_error)
+        _log_job_event(job_id, f"Step failed: {label}: {user_error}", level="error", step=step)
         raise
 
 
@@ -1340,10 +1458,7 @@ def start_parse(request):
         )
 
     if pdf_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            for chunk in pdf_file.chunks():
-                tmp.write(chunk)
-            source = tmp.name
+        source = str(_stage_uploaded_pdf(pdf_file))
         source_type = "pdf"
         input_value = pdf_file.name
     else:
