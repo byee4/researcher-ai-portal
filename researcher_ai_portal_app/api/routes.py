@@ -187,10 +187,22 @@ async def get_graph(
 ) -> WorkflowGraph:
     """Return the stored React Flow graph (nodes, edges, viewport) for a job.
 
+    State-persistence contract
+    --------------------------
+    This endpoint ALWAYS returns the previously persisted graph when one
+    exists.  It never regenerates node positions from scratch, so any layout
+    changes the user made (node drag, zoom, pan) survive a full page reload.
+
+    The write side is ``PUT /api/v1/graphs/{job_id}``: the client sends the
+    full ReactFlow state (including updated ``position`` values) after every
+    user interaction, and that payload is stored verbatim in
+    ``WorkflowJob.graph_data``.  Subsequent GET calls return that saved state.
+
     If the job exists but no graph has been generated or saved yet, an empty
     WorkflowGraph is returned (empty nodes and edges lists, default viewport).
     This lets the frontend distinguish "job not found" (404) from "job has no
-    graph yet" (200 with empty lists).
+    graph yet" (200 with empty lists) and fall back to client-side graph
+    construction from the injected SOFTWARE_TOOLS / METHOD_ASSAYS data.
     """
     graph_data = await repository.get_graph_state(
         job_id=job_id, user_id=user.pk

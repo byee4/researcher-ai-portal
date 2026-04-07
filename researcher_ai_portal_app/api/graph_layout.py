@@ -72,6 +72,7 @@ NODE_TYPE_MAP: dict[str, str] = {
 X_STRIDE = 280   # pixels between tiers
 Y_STRIDE = 220   # pixels between nodes within the same tier
 TOOL_Y_STRIDE = 260  # slightly more breathing room for tool nodes
+GRID_COLS = 4    # columns used by the grid fallback (no edge data available)
 
 
 # ---------------------------------------------------------------------------
@@ -228,18 +229,31 @@ def generate_tool_graph(
 
     # ------------------------------------------------------------------
     # 1. Build a stable ID for each software tool and a name→id lookup.
+    #
+    # node_ids  : lower(name) → node_id for the FIRST occurrence of that
+    #             name.  Used by edge-building (depends_on resolution).
+    # idx_to_id : index → unique node_id for every tool, including
+    #             duplicates.  Used in step 5 to build node dicts.
+    # used_ids  : tracks every allocated id so we can suffix-deduplicate
+    #             without clobbering the first-occurrence entry in node_ids.
     # ------------------------------------------------------------------
-    node_ids: dict[str, str] = {}   # lower(name) → node_id
+    node_ids:  dict[str, str] = {}   # lower(name) → first-occurrence node_id
+    idx_to_id: dict[int, str] = {}   # index       → unique node_id
+    used_ids:  set[str]       = set()
+
     for i, sw in enumerate(software_list):
         name = (sw.get("name") or f"tool_{i}").strip()
         node_id = _slugify(name, i)
-        # Deduplicate: if two tools share a slug, append index
+        # Deduplicate: if this slug is already taken, append a numeric suffix
         base = node_id
         suffix = 0
-        while node_id in node_ids.values():
+        while node_id in used_ids:
             suffix += 1
             node_id = f"{base}_{suffix}"
-        node_ids[name.lower()] = node_id
+        used_ids.add(node_id)
+        idx_to_id[i] = node_id
+        # Only map the FIRST occurrence so edge-building resolves to a real node
+        node_ids.setdefault(name.lower(), node_id)
 
     # ------------------------------------------------------------------
     # 2. Extract pipeline steps for default edges and per-tool metadata.
@@ -296,36 +310,65 @@ def generate_tool_graph(
 
     # ------------------------------------------------------------------
     # 4. Compute tier (column) for each node using the edge DAG.
+    #
+    # When no edges were derived (empty pipeline_config / no depends_on
+    # chains), every node ends up at tier 0 and would be stacked in a
+    # single vertical column — unreadable for large tool lists.  In that
+    # case we defer to the grid fallback in step 5 instead.
     # ------------------------------------------------------------------
-    all_ids = list(node_ids.values())
+    all_ids = list(idx_to_id.values())
+    use_grid_layout = len(edges) == 0  # no dependency data → grid is clearer
 
     # Iterative tier resolution; handles cycles gracefully.
     tiers: dict[str, int] = {nid: 0 for nid in all_ids}
-    for _ in range(len(all_ids)):          # max passes = n (handles longest chain)
-        changed = False
-        for edge in edges:
-            src, tgt = edge["source"], edge["target"]
-            if tiers.get(src, 0) + 1 > tiers.get(tgt, 0):
-                tiers[tgt] = tiers[src] + 1
-                changed = True
-        if not changed:
-            break
+    if not use_grid_layout:
+        for _ in range(len(all_ids)):      # max passes = n (handles longest chain)
+            changed = False
+            for edge in edges:
+                src, tgt = edge["source"], edge["target"]
+                if tiers.get(src, 0) + 1 > tiers.get(tgt, 0):
+                    tiers[tgt] = tiers[src] + 1
+                    changed = True
+            if not changed:
+                break
 
-    # Group IDs by tier for row assignment.
+    # Group IDs by tier for row assignment (used only when edges exist).
     tier_rows: dict[int, list[str]] = {}
     for nid in all_ids:
         tier_rows.setdefault(tiers.get(nid, 0), []).append(nid)
 
     # ------------------------------------------------------------------
     # 5. Build node dicts.
+    #
+    # Position strategy:
+    #   • Edge data available  → tier-based layout (x = tier * X_STRIDE,
+    #                            y = row_within_tier * TOOL_Y_STRIDE).
+    #   • No edge data (grid)  → wrap into GRID_COLS columns so nodes fill
+    #                            the canvas horizontally instead of piling
+    #                            up in a single vertical stripe.
+    #
+    # In both cases, positions are only used as *initial* values.  Once a
+    # user drags nodes the client saves their chosen positions via
+    # PUT /api/v1/graphs/{job_id}, and those positions are returned
+    # verbatim by GET /api/v1/graphs/{job_id} on subsequent loads —
+    # the backend never recalculates positions for a stored graph.
     # ------------------------------------------------------------------
     nodes: list[dict[str, Any]] = []
     for i, sw in enumerate(software_list):
         name = (sw.get("name") or f"tool_{i}").strip()
-        node_id = node_ids.get(name.lower(), _slugify(name, i))
-        tier = tiers.get(node_id, 0)
-        row_list = tier_rows.get(tier, [])
-        row = row_list.index(node_id) if node_id in row_list else 0
+        node_id = idx_to_id[i]  # always unique, even for duplicate tool names
+
+        if use_grid_layout:
+            col = i % GRID_COLS
+            row_g = i // GRID_COLS
+            pos_x = float(col * X_STRIDE)
+            pos_y = float(row_g * TOOL_Y_STRIDE)
+        else:
+            tier = tiers.get(node_id, 0)
+            row_list = tier_rows.get(tier, [])
+            row = row_list.index(node_id) if node_id in row_list else 0
+            pos_x = float(tier * X_STRIDE)
+            pos_y = float(row * TOOL_Y_STRIDE)
 
         commands: list[dict[str, Any]] = sw.get("commands") or []
         first_cmd: dict[str, Any] = commands[0] if commands else {}
@@ -337,10 +380,7 @@ def generate_tool_graph(
             {
                 "id": node_id,
                 "type": "tool_node",
-                "position": {
-                    "x": float(tier * X_STRIDE),
-                    "y": float(row * TOOL_Y_STRIDE),
-                },
+                "position": {"x": pos_x, "y": pos_y},
                 "data": {
                     # ── Identity ───────────────────────────────────────
                     "name": name,
