@@ -21,7 +21,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
-from .confidence import compute_confidence
+from .confidence import compute_actionable_items, compute_confidence
 from .dag_app import build_dag_app
 from .dashboards import build_dashboard_app
 from .forms import ComponentJSONForm, FigureGroundTruthForm
@@ -1311,6 +1311,37 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     confidence = compute_confidence(result)
     summary["overall_confidence"] = confidence.get("overall", 50.0)
 
+    actionable_items = compute_actionable_items(result, confidence)
+
+    # Per-step confidence summary keyed by step name — used by the stepper
+    # to colour-code circles on both workflow_step.html and dashboard.html.
+    # We map each parsing step to the mean assay confidence that depends on it.
+    assay_confidences = confidence.get("assay_confidences") or {}
+    step_confidence_scores: dict[str, float | None] = {}
+    for s in STEP_ORDER:
+        if s == "method" and assay_confidences:
+            step_confidence_scores[s] = round(
+                sum(v.get("overall", 50.0) for v in assay_confidences.values())
+                / len(assay_confidences),
+                1,
+            )
+        else:
+            step_confidence_scores[s] = None  # use component status for non-method steps
+
+    # Count actionable items per step-target for stepper badges
+    step_action_counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
+    tab_to_step = {
+        "editing": "method",
+        "datasets": "datasets",
+        "figures": "figures",
+        "advanced": "pipeline",
+        "workflow-graph": "method",
+    }
+    for item in actionable_items:
+        mapped = tab_to_step.get(item["fix_target_tab"])
+        if mapped:
+            step_action_counts[mapped] = step_action_counts.get(mapped, 0) + 1
+
     return {
         "paper": paper,
         "figures": figures,
@@ -1319,6 +1350,9 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
         "software": software,
         "pipeline": pipeline,
         "confidence": confidence,
+        "actionable_items": actionable_items,
+        "step_confidence_scores": step_confidence_scores,
+        "step_action_counts": step_action_counts,
         "summary": summary,
         "paper_json": json.dumps(paper, indent=2),
         "figures_json": json.dumps(figures, indent=2),
@@ -1728,7 +1762,16 @@ def workflow_step(request, job_id: str, step: str):
             "step_label": STEP_LABELS[step],
             "step_order": STEP_ORDER,
             "step_labels": STEP_LABELS,
-            "step_chips": [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER],
+            "step_chips": [
+                {
+                    "id": s,
+                    "label": STEP_LABELS[s],
+                    "meta": (job.get("component_meta") or {}).get(
+                        s, {"status": "missing", "source": "none", "missing": []}
+                    ),
+                }
+                for s in STEP_ORDER
+            ],
             "component_meta": component_meta,
             "form": form,
             "figure_gt_form": figure_gt_form,
@@ -1981,6 +2024,14 @@ def dashboard(request, job_id: str):
                 for assay in raw_structured_assays
                 if isinstance(assay, dict)
             ],
+            # ── Phase 0: Confidence Command Center ─────────────────────
+            # Passed via json_script so the React layer can read them later
+            # without double-encoding. The plain Python objects are also
+            # available in the template for the server-rendered first paint.
+            "actionable_items": context.get("actionable_items") or [],
+            "confidence_json": context.get("confidence") or {},
+            "step_confidence_scores": context.get("step_confidence_scores") or {},
+            "step_action_counts": context.get("step_action_counts") or {},
         }
     )
     return render(request, "researcher_ai_portal/dashboard.html", context)

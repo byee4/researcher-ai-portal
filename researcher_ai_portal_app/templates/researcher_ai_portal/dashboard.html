@@ -11,6 +11,9 @@
 {{ software_tools_json|json_script:"_pb-software-tools" }}
 {{ pipeline_steps_json|json_script:"_pb-pipeline-steps" }}
 {{ method_assays_json|json_script:"_pb-method-assays" }}
+{# ── Phase 0: Command Center data (App Island seed) ── #}
+{{ actionable_items|json_script:"_cc-actionable-items" }}
+{{ confidence_json|json_script:"_cc-confidence" }}
 
 {# ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── #}
 <link rel="stylesheet" href="https://unpkg.com/@xyflow/react@12.3.6/dist/style.css" />
@@ -108,6 +111,50 @@
   /* ── Figure card hover ───────────────────────────────────── */
   .fig-card { transition: box-shadow .15s, border-color .15s; }
   .fig-card:hover { box-shadow: var(--shadow); border-color: var(--border-2); }
+
+  /* ── Phase 0: field-highlight animation ─────────────────── */
+  @keyframes field-flash {
+    0%   { box-shadow: 0 0 0 0 rgba(217,119,6,.7); border-color: var(--warning); }
+    50%  { box-shadow: 0 0 0 6px rgba(217,119,6,.2); border-color: var(--warning); }
+    100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); border-color: var(--border-2); }
+  }
+  .field-highlight {
+    animation: field-flash 1.4s ease-out;
+    border-color: var(--warning) !important;
+  }
+
+  /* ── Command Center: confidence factor bar ───────────────── */
+  .conf-factor-bar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; gap: 2px; background: var(--surface-3); }
+  .conf-factor-bar-seg { height: 100%; border-radius: 999px; transition: width .3s; }
+
+  /* ── Command Center: assay card ──────────────────────────── */
+  .assay-conf-card {
+    padding: 14px 16px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .assay-conf-card:hover { border-color: var(--border-2); box-shadow: var(--shadow-sm); }
+
+  /* ── Command Center: action item card ────────────────────── */
+  .action-item-card {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 16px;
+    border: 1.5px solid var(--border);
+    border-left-width: 4px;
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .action-item-card.sev-high  { border-left-color: var(--danger); }
+  .action-item-card.sev-medium { border-left-color: var(--warning); }
+  .action-item-card.sev-low   { border-left-color: var(--teal); }
+
+  /* ── Responsive adjustments ──────────────────────────────── */
+  @media (max-width: 768px) {
+    .cc-grid { grid-template-columns: 1fr !important; }
+    .cc-assay-grid { grid-template-columns: 1fr !important; }
+  }
 
   /* ── Accordion form fields ───────────────────────────────── */
   .accordion .form-group select,
@@ -211,7 +258,7 @@
   </div>
 
   <!-- ── Stat tiles ─────────────────────────────────────────── -->
-  <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px;">
+  <div class="stat-grid-5" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px;">
     <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
       <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
         {{ summary.figure_count|default:"—" }}</div>
@@ -242,22 +289,287 @@
   <!-- ── Tab bar ────────────────────────────────────────────── -->
   <div style="display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 22px;
               overflow-x: auto; -webkit-overflow-scrolling: touch;">
-    <button class="dash-tab active" onclick="showTab('overview',this)">Overview</button>
-    <button class="dash-tab" onclick="showTab('dag',this)">Workflow Graph</button>
+    <button class="dash-tab active" onclick="showTab('command-center',this)">
+      Command Center
+      {% if actionable_items %}<span class="tab-badge">{{ actionable_items|length }}</span>{% endif %}
+    </button>
     <button class="dash-tab" onclick="showTab('pipeline',this)" id="tab-btn-pipeline">Pipeline Builder</button>
+    <button class="dash-tab" onclick="showTab('datasets',this)">
+      Datasets{% if summary.dataset_count %}<span class="tab-badge">{{ summary.dataset_count }}</span>{% endif %}
+    </button>
     <button class="dash-tab" onclick="showTab('figures',this)">
       Figures{% if merged_figure_rows %}<span class="tab-badge">{{ merged_figure_rows|length }}</span>{% endif %}
     </button>
     <button class="dash-tab" onclick="showTab('editing',this)">
       Step Editing{% if structured_assays %}<span class="tab-badge">{{ structured_assays|length }}</span>{% endif %}
     </button>
+    <button class="dash-tab" onclick="showTab('dag',this)">Workflow Graph</button>
     <button class="dash-tab" onclick="showTab('advanced',this)">Advanced</button>
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
-       TAB: Overview
+       TAB: Command Center (default)
   ═══════════════════════════════════════════════════════════ -->
-  <div class="tab-panel active" id="tab-overview">
+  <div class="tab-panel active" id="tab-command-center">
+
+    {# ── Section 1: Score bar ─────────────────────────────── #}
+    <div class="cc-grid" style="display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; margin-bottom: 24px;">
+
+      {# Confidence ring — server-rendered for instant first paint #}
+      <div class="card" style="padding: 24px; text-align: center; min-width: 172px;">
+        {% with conf=confidence.overall|default:50 %}
+          {% if conf >= 80 %}{% with ring_color="#16a34a" track_color="#bbf7d0" %}
+            <div class="conf-ring" style="width: 128px; height: 128px; margin: 0 auto 12px;">
+              <svg width="128" height="128" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ track_color }}" stroke-width="10"/>
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ ring_color }}" stroke-width="10"
+                  stroke-linecap="round"
+                  style="stroke-dasharray: calc({{ conf }} * 3.393px) 339.3px;"/>
+              </svg>
+              <div class="conf-ring-label">
+                <span class="conf-ring-pct" style="color: {{ ring_color }}; font-size: 1.75rem;">{{ conf }}%</span>
+                <span class="conf-ring-sub">confidence</span>
+              </div>
+            </div>{% endwith %}
+          {% elif conf >= 50 %}{% with ring_color="#d97706" track_color="#fde68a" %}
+            <div class="conf-ring" style="width: 128px; height: 128px; margin: 0 auto 12px;">
+              <svg width="128" height="128" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ track_color }}" stroke-width="10"/>
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ ring_color }}" stroke-width="10"
+                  stroke-linecap="round"
+                  style="stroke-dasharray: calc({{ conf }} * 3.393px) 339.3px;"/>
+              </svg>
+              <div class="conf-ring-label">
+                <span class="conf-ring-pct" style="color: {{ ring_color }}; font-size: 1.75rem;">{{ conf }}%</span>
+                <span class="conf-ring-sub">confidence</span>
+              </div>
+            </div>{% endwith %}
+          {% else %}{% with ring_color="#dc2626" track_color="#fecaca" %}
+            <div class="conf-ring" style="width: 128px; height: 128px; margin: 0 auto 12px;">
+              <svg width="128" height="128" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ track_color }}" stroke-width="10"/>
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ ring_color }}" stroke-width="10"
+                  stroke-linecap="round"
+                  style="stroke-dasharray: calc({{ conf }} * 3.393px) 339.3px;"/>
+              </svg>
+              <div class="conf-ring-label">
+                <span class="conf-ring-pct" style="color: {{ ring_color }}; font-size: 1.75rem;">{{ conf }}%</span>
+                <span class="conf-ring-sub">confidence</span>
+              </div>
+            </div>{% endwith %}
+          {% endif %}
+        {% endwith %}
+
+        {# Validation badge #}
+        {% if confidence.validation_passed %}
+          <span class="pill pill-found" style="margin-bottom: 8px; display: inline-block;">✓ Validated</span>
+        {% else %}
+          <span class="pill pill-missing" style="margin-bottom: 8px; display: inline-block;">✗ Unvalidated</span>
+        {% endif %}
+
+        {# Factors resolved summary #}
+        {% with total=actionable_items|length %}
+          <p class="text-xs text-muted">
+            {% if total == 0 %}
+              All factors resolved
+            {% else %}
+              <strong style="color: var(--warning);">{{ total }} issue{{ total|pluralize }}</strong> to resolve
+            {% endif %}
+          </p>
+        {% endwith %}
+      </div>
+
+      {# Per-assay confidence cards #}
+      <div>
+        <h2 class="mb-3">Assay confidence breakdown</h2>
+        {% if confidence.assay_confidences %}
+          <div class="cc-assay-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px;">
+            {% for assay_name, assay_conf in confidence.assay_confidences.items %}
+              <div class="assay-conf-card">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm font-600" style="color: var(--text);">{{ assay_name|truncatechars:32 }}</span>
+                  <span class="text-sm font-600"
+                        style="color: {% if assay_conf.overall >= 80 %}var(--success){% elif assay_conf.overall >= 50 %}var(--warning){% else %}var(--danger){% endif %};">
+                    {{ assay_conf.overall|floatformat:0 }}%
+                  </span>
+                </div>
+
+                {# Weighted factor bar: step 50% | figure 20% | dataset 15% | warnings 15% #}
+                {% with step_w=assay_conf.step_confidences|length %}
+                  <div class="conf-factor-bar mb-2">
+                    {# Step completeness (50%) #}
+                    {% with sc_mean=assay_conf.step_confidences %}
+                      <div class="conf-factor-bar-seg"
+                           style="width: 50%; background: {% if assay_conf.overall >= 80 %}var(--success){% elif assay_conf.overall >= 50 %}var(--warning){% else %}var(--danger){% endif %}; opacity: .85;"
+                           title="Step completeness (50% weight)"></div>
+                    {% endwith %}
+                    {# Figure evidence (20%) #}
+                    <div class="conf-factor-bar-seg"
+                         style="width: 20%; background: {% if assay_conf.figure_confidence_mean >= 80 %}var(--success){% elif assay_conf.figure_confidence_mean >= 50 %}var(--warning){% else %}var(--danger){% endif %}; opacity: .7;"
+                         title="Figure evidence (20% weight): {{ assay_conf.figure_confidence_mean|floatformat:0 }}%"></div>
+                    {# Dataset resolution (15%) #}
+                    <div class="conf-factor-bar-seg"
+                         style="width: 15%; background: {% if assay_conf.dataset_resolved %}var(--success){% else %}var(--danger){% endif %}; opacity: .7;"
+                         title="Dataset resolved (15% weight)"></div>
+                    {# Warnings (15%) #}
+                    <div class="conf-factor-bar-seg"
+                         style="width: 15%; background: {% if assay_conf.parse_warning_count == 0 %}var(--success){% else %}var(--warning){% endif %}; opacity: .7;"
+                         title="Parse warnings (15% weight): {{ assay_conf.parse_warning_count }}"></div>
+                  </div>
+                {% endwith %}
+
+                {# Factor pills row #}
+                <div class="flex" style="flex-wrap: wrap; gap: 4px;">
+                  <span class="pill" style="font-size: 0.68rem; padding: 2px 6px;
+                    background: {% if assay_conf.dataset_resolved %}var(--success-soft){% else %}var(--danger-soft){% endif %};
+                    color: {% if assay_conf.dataset_resolved %}var(--success){% else %}var(--danger){% endif %};
+                    border: 1px solid {% if assay_conf.dataset_resolved %}var(--success-mid){% else %}var(--danger-mid){% endif %};">
+                    {% if assay_conf.dataset_resolved %}✓{% else %}✗{% endif %} dataset
+                  </span>
+                  <span class="pill" style="font-size: 0.68rem; padding: 2px 6px;
+                    background: {% if assay_conf.figure_confidence_mean >= 60 %}var(--success-soft){% else %}var(--warning-soft){% endif %};
+                    color: {% if assay_conf.figure_confidence_mean >= 60 %}var(--success){% else %}var(--warning){% endif %};
+                    border: 1px solid {% if assay_conf.figure_confidence_mean >= 60 %}var(--success-mid){% else %}var(--warning-mid){% endif %};">
+                    {{ assay_conf.figure_confidence_mean|floatformat:0 }}% figure conf
+                  </span>
+                  {% if assay_conf.parse_warning_count > 0 %}
+                    <span class="pill" style="font-size: 0.68rem; padding: 2px 6px; background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-mid);">
+                      ⚠ {{ assay_conf.parse_warning_count }} warning{{ assay_conf.parse_warning_count|pluralize }}
+                    </span>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="card" style="padding: 28px; text-align: center;">
+            <p class="text-muted mb-3">No assay confidence data yet. Complete the Methods step first.</p>
+            <a class="btn btn-ghost btn-sm" href="{% url 'workflow_step' job_id=job_id step='method' %}">Go to Methods →</a>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Section 2: Next recommended action banner ────────── #}
+    {% if actionable_items %}
+      {% with top=actionable_items.0 %}
+        <div style="margin-bottom: 20px; padding: 16px 20px;
+                    border: 1.5px solid
+                      {% if top.severity == 'high' %}var(--danger-mid){% elif top.severity == 'medium' %}var(--warning-mid){% else %}var(--border-2){% endif %};
+                    background:
+                      {% if top.severity == 'high' %}var(--danger-soft){% elif top.severity == 'medium' %}var(--warning-soft){% else %}var(--surface-2){% endif %};
+                    border-radius: var(--radius); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <p class="text-xs font-600 text-muted mb-1" style="text-transform: uppercase; letter-spacing: .04em;">Next recommended action</p>
+            <p class="font-600" style="color: var(--text); margin-bottom: 2px;">{{ top.reason }}</p>
+            <p class="text-xs" style="color:
+              {% if top.severity == 'high' %}var(--danger){% elif top.severity == 'medium' %}var(--warning){% else %}var(--text-3){% endif %};">
+              +{{ top.confidence_impact|floatformat:1 }}% confidence if resolved
+            </p>
+          </div>
+          <button class="btn btn-primary btn-sm"
+                  onclick="activateAction(JSON.parse(document.getElementById('_cc-actionable-items').textContent)[0])">
+            {{ top.fix_label }}
+          </button>
+        </div>
+      {% endwith %}
+    {% else %}
+      <div style="margin-bottom: 20px; padding: 16px 20px; border: 1.5px solid var(--success-mid);
+                  background: var(--success-soft); border-radius: var(--radius);
+                  display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 1.4rem;">🎉</span>
+        <div>
+          <p class="font-600" style="color: var(--success);">Pipeline ready</p>
+          <p class="text-sm text-muted">All tracked factors are resolved.</p>
+        </div>
+      </div>
+    {% endif %}
+
+    {# ── Section 3: Actionable items list ─────────────────── #}
+    {% if actionable_items %}
+      <h2 class="mb-3">Issues to resolve <span class="tab-badge" style="background: var(--danger-soft); color: var(--danger);">{{ actionable_items|length }}</span></h2>
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px;">
+        {% for item in actionable_items %}
+          <div class="action-item-card sev-{{ item.severity }}">
+            <div style="flex: 1;">
+              <p class="text-sm font-600" style="color: var(--text); margin-bottom: 2px;">{{ item.reason }}</p>
+              <p class="text-xs" style="color:
+                {% if item.severity == 'high' %}var(--danger){% elif item.severity == 'medium' %}var(--warning){% else %}var(--text-3){% endif %};">
+                {{ item.severity|title }} · +{{ item.confidence_impact|floatformat:1 }}% if resolved
+              </p>
+            </div>
+            <button class="btn btn-ghost btn-sm"
+                    style="flex-shrink: 0; white-space: nowrap;"
+                    data-action-tab="{{ item.fix_target_tab }}"
+                    data-action-field="{{ item.fix_target_field|default:'' }}"
+                    onclick="activateActionFromBtn(this)">
+              {{ item.fix_label }} →
+            </button>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {# ── Section 4: Dataset readiness table ───────────────── #}
+    {% if datasets %}
+      <h2 class="mb-3">Dataset readiness</h2>
+      <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 8px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+          <thead>
+            <tr style="background: var(--surface-2); border-bottom: 1px solid var(--border);">
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Accession</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Source</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Status</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ds in datasets %}
+              {% if forloop.counter <= 10 %}
+                <tr style="border-bottom: 1px solid var(--border); cursor: pointer;"
+                    onclick="showTab('datasets', document.querySelectorAll('.dash-tab')[2])"
+                    onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
+                  <td style="padding: 9px 14px;">
+                    <code style="font-size: 0.82rem;">{{ ds.accession|default:"—" }}</code>
+                  </td>
+                  <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.source_type|default:ds.data_source|default:"—" }}</td>
+                  <td style="padding: 9px 14px;">
+                    {% if ds.accession %}
+                      <span class="pill pill-found" style="font-size: 0.68rem; padding: 2px 7px;">Resolved</span>
+                    {% else %}
+                      <span class="pill pill-missing" style="font-size: 0.68rem; padding: 2px 7px;">Unresolved</span>
+                    {% endif %}
+                  </td>
+                  <td style="padding: 9px 14px; color: var(--text-3); font-size: 0.8125rem; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    {{ ds.description|default:"—"|truncatechars:60 }}
+                  </td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if datasets|length > 10 %}
+          <div style="padding: 10px 14px; text-align: center; border-top: 1px solid var(--border); background: var(--surface-2);">
+            <button class="btn btn-ghost btn-sm"
+                    onclick="showTab('datasets', document.querySelectorAll('.dash-tab')[2])">
+              View all {{ datasets|length }} datasets →
+            </button>
+          </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="card" style="padding: 20px; text-align: center;">
+        <p class="text-muted text-sm">No datasets found yet.</p>
+        <a class="btn btn-ghost btn-sm mt-2" href="{% url 'workflow_step' job_id=job_id step='datasets' %}">Run Datasets step →</a>
+      </div>
+    {% endif %}
+
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Overview (parser status + charts — now secondary)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-overview">
 
     <div style="display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start;">
 
@@ -417,6 +729,58 @@
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
+       TAB: Datasets (Phase 2 placeholder — structured editor)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-datasets">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 style="margin-bottom: 4px;">Datasets</h2>
+        <p class="text-sm text-muted">Structured dataset editor — coming in Phase 2.</p>
+      </div>
+    </div>
+    {% if datasets %}
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+          <thead>
+            <tr style="background: var(--surface-2); border-bottom: 1px solid var(--border);">
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Accession</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Source</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Organism</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Description</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ds in datasets %}
+              <tr style="border-bottom: 1px solid var(--border);"
+                  onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
+                <td style="padding: 9px 14px;"><code style="font-size: 0.82rem;">{{ ds.accession|default:"—" }}</code></td>
+                <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.source_type|default:ds.data_source|default:"—" }}</td>
+                <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.organism|default:"—" }}</td>
+                <td style="padding: 9px 14px; color: var(--text-3); font-size: 0.8125rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                  {{ ds.description|default:"—"|truncatechars:80 }}
+                </td>
+                <td style="padding: 9px 14px;">
+                  {% if ds.accession %}
+                    <span class="pill pill-found" style="font-size: 0.68rem; padding: 2px 7px;">Resolved</span>
+                  {% else %}
+                    <span class="pill pill-missing" style="font-size: 0.68rem; padding: 2px 7px;">Unresolved</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card" style="padding: 40px; text-align: center;">
+        <p class="text-muted mb-4">No datasets found. Complete the Datasets step first.</p>
+        <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='datasets' %}">Go to Datasets step →</a>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
        TAB: Figures
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-figures">
@@ -470,29 +834,33 @@
                 <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">
                   Step {{ forloop.counter }}
                 </p>
+                {# IDs follow the pattern used by compute_actionable_items field selectors:
+                   #id-step-{assay-slug}-step-{idx}-{field} #}
+                {% with astep_id="id-step-"|add:assay.name|slugify|add:"-step-"|add:forloop.counter0|stringformat:"s" %}
                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 10px;">
                   <div class="form-group">
-                    <label class="form-label">Software</label>
-                    <input class="step-edit-input" type="text" name="software" value="{{ step.software|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-software">Software</label>
+                    <input id="{{ astep_id }}-software" class="step-edit-input" type="text" name="software" value="{{ step.software|default:'' }}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Version</label>
-                    <input class="step-edit-input" type="text" name="software_version" value="{{ step.software_version|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-version">Version</label>
+                    <input id="{{ astep_id }}-version" class="step-edit-input" type="text" name="software_version" value="{{ step.software_version|default:'' }}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Input Data</label>
-                    <input class="step-edit-input" type="text" name="input_data" value="{{ step.input_data|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-input-data">Input Data</label>
+                    <input id="{{ astep_id }}-input-data" class="step-edit-input" type="text" name="input_data" value="{{ step.input_data|default:'' }}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Output Data</label>
-                    <input class="step-edit-input" type="text" name="output_data" value="{{ step.output_data|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-output-data">Output Data</label>
+                    <input id="{{ astep_id }}-output-data" class="step-edit-input" type="text" name="output_data" value="{{ step.output_data|default:'' }}" />
                   </div>
                 </div>
                 <div class="form-group" style="margin-bottom: 10px;">
-                  <label class="form-label">Parameters JSON</label>
-                  <textarea class="step-edit-input" name="parameters_json" rows="2"
+                  <label class="form-label" for="{{ astep_id }}-parameters">Parameters JSON</label>
+                  <textarea id="{{ astep_id }}-parameters" class="step-edit-input" name="parameters_json" rows="2"
                             style="font-family: var(--mono); font-size: 0.8125rem; resize: vertical;">{{ step.parameters_json }}</textarea>
                 </div>
+                {% endwith %}
                 <button class="btn btn-success btn-sm" type="submit">✓ Save step</button>
               </form>
             {% endfor %}
@@ -559,13 +927,59 @@
     }
   }
 
-  // Restore last active tab on load
+  // ── Phase 0: Confidence Command Center ─────────────────────────
+  // activateAction — switch tab, scroll to field, and flash it yellow
+  function activateAction(item) {
+    if (!item) return;
+    const tabName = item.fix_target_tab || 'command-center';
+    const btn = Array.from(document.querySelectorAll('.dash-tab'))
+      .find(b => (b.getAttribute('onclick') || '').includes("'" + tabName + "'"));
+    showTab(tabName, btn || null);
+
+    const fieldSel = item.fix_target_field;
+    if (fieldSel) {
+      // Defer slightly so the tab panel becomes visible before scrolling
+      setTimeout(() => {
+        const el = document.querySelector(fieldSel);
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.focus();
+        el.classList.remove('field-highlight');
+        void el.offsetWidth; // reflow to restart animation
+        el.classList.add('field-highlight');
+        setTimeout(() => el.classList.remove('field-highlight'), 2000);
+        // Auto-open accordion parent if inside a <details> element
+        const details = el.closest('details');
+        if (details) details.open = true;
+      }, 80);
+    }
+  }
+
+  // activateActionFromBtn — called from data-attribute buttons in the template
+  function activateActionFromBtn(btn) {
+    activateAction({
+      fix_target_tab: btn.dataset.actionTab || 'command-center',
+      fix_target_field: btn.dataset.actionField || null,
+    });
+  }
+
+  // Restore last active tab on load (default: command-center)
   (function() {
     const saved = sessionStorage.getItem('dash-tab-{{ job_id }}');
     if (!saved) return;
     const btn = Array.from(document.querySelectorAll('.dash-tab'))
       .find(b => (b.getAttribute('onclick') || '').includes("'" + saved + "'"));
     if (btn) showTab(saved, btn);
+  })();
+
+  // Handle URL hash deep-links: #fix-tab=editing&fix-field=#id-step-...
+  (function() {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const tab = params.get('fix-tab');
+    const field = params.get('fix-field');
+    if (tab) {
+      activateAction({ fix_target_tab: tab, fix_target_field: field });
+    }
   })();
 </script>
 
