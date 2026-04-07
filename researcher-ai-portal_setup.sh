@@ -11,7 +11,7 @@ export DJANGO_ALLOWED_HOSTS='localhost,127.0.0.1,0.0.0.0'
 export GLOBUS_CLIENT_ID=''
 export GLOBUS_CLIENT_SECRET=''
 export GLOBUS_ADMIN_GROUP=''
-export SOCIAL_AUTH_GLOBUS_REDIRECT_URI=''
+export SOCIAL_AUTH_GLOBUS_REDIRECT_URI='http://localhost:8000/complete/globus/'
 
-# Optional runtime dependencies:
+# Required runtime dependency:
 export REDIS_URL='redis://localhost:6379/0'

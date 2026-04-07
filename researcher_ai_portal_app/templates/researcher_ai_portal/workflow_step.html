@@ -24,39 +24,28 @@
 
       <!-- Workflow steps -->
       {% for chip in step_chips %}
-        {# Determine circle colour from step status + active state #}
-        {% if chip.id == step %}
-          {# Active step: always primary blue #}
-          {% with dot_bg="var(--primary)" dot_border="var(--primary)" dot_color="white" dot_shadow="0 0 0 4px var(--primary-soft)" label_color="var(--primary)" label_weight="700" %}
-        {% elif chip.meta.status == "found" %}
-          {% with dot_bg="var(--success-soft)" dot_border="var(--success)" dot_color="var(--success)" dot_shadow="none" label_color="var(--success)" label_weight="600" %}
-        {% elif chip.meta.status == "inferred" %}
-          {% with dot_bg="var(--warning-soft)" dot_border="var(--warning)" dot_color="var(--warning)" dot_shadow="none" label_color="var(--warning)" label_weight="600" %}
-        {% elif chip.meta.status == "missing" %}
-          {% with dot_bg="var(--surface)" dot_border="var(--border-2)" dot_color="var(--text-3)" dot_shadow="none" label_color="var(--text-3)" label_weight="500" %}
-        {% else %}
-          {% with dot_bg="var(--surface)" dot_border="var(--border-2)" dot_color="var(--text-3)" dot_shadow="none" label_color="var(--text-3)" label_weight="500" %}
-        {% endif %}
         <a href="{% url 'workflow_step' job_id=job_id step=chip.id %}"
            style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px;
                   text-decoration: none; position: relative; z-index: 1;">
           <div style="position: relative; width: 28px; height: 28px;">
             <div style="width: 28px; height: 28px; border-radius: 50%;
-                        background: {{ dot_bg }}; border: 2px solid {{ dot_border }}; color: {{ dot_color }};
-                        box-shadow: {{ dot_shadow }};
+                        background: {% if chip.id == step %}var(--primary){% elif chip.meta.status == "found" %}var(--success-soft){% elif chip.meta.status == "inferred" %}var(--warning-soft){% else %}var(--surface){% endif %};
+                        border: 2px solid {% if chip.id == step %}var(--primary){% elif chip.meta.status == "found" %}var(--success){% elif chip.meta.status == "inferred" %}var(--warning){% else %}var(--border-2){% endif %};
+                        color: {% if chip.id == step %}white{% elif chip.meta.status == "found" %}var(--success){% elif chip.meta.status == "inferred" %}var(--warning){% else %}var(--text-3){% endif %};
+                        box-shadow: {% if chip.id == step %}0 0 0 4px var(--primary-soft){% else %}none{% endif %};
                         display: flex; align-items: center; justify-content: center;
                         font-size: 0.7rem; font-weight: 700; transition: all .2s;">
               {% if chip.meta.status == "found" and chip.id != step %}✓
               {% else %}{{ forloop.counter }}{% endif %}
             </div>
           </div>
-          <span style="font-size: 0.7rem; font-weight: {{ label_weight }};
-                       color: {{ label_color }};
+          <span style="font-size: 0.7rem;
+                       font-weight: {% if chip.id == step %}700{% elif chip.meta.status == "found" or chip.meta.status == "inferred" %}600{% else %}500{% endif %};
+                       color: {% if chip.id == step %}var(--primary){% elif chip.meta.status == "found" %}var(--success){% elif chip.meta.status == "inferred" %}var(--warning){% else %}var(--text-3){% endif %};
                        white-space: nowrap; transition: color .2s;">
             {{ chip.label }}
           </span>
         </a>
-        {% endwith %}
       {% endfor %}
 
       <!-- Dashboard endpoint node -->

@@ -20,7 +20,7 @@ services:
     build:
       context: .
       args:
-        RESEARCHER_AI_PIP_SPEC: ${RESEARCHER_AI_PIP_SPEC:-researcher-ai}
+        RESEARCHER_AI_PIP_SPEC: ${RESEARCHER_AI_PIP_SPEC:-researcher-ai==2.0.0}
     restart: unless-stopped
     command: ["/app/scripts/start_web.sh"]
     ports:
