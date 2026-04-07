@@ -1140,7 +1140,8 @@ function PipelineBuilderInner() {
      id so handleNodeUpdate can target the right node in the nodes array.
      We attach `_nodeId` to data in attachCallbacks so it's always available. */
   const handleSelect = useCallback(data => setSelectedNode(prev =>
-    prev?.data?.step_id === data.step_id ? null : { id: data._nodeId, data }
+    /* toggle: clicking the already-selected node closes the panel */
+    prev?.id === data._nodeId ? null : { id: data._nodeId, data }
   ), []);
 
   const attachCallbacks = useCallback(ns =>
@@ -1149,6 +1150,21 @@ function PipelineBuilderInner() {
       data: { ...n.data, onSelect: handleSelect, _nodeId: n.id },
     })),
   [handleSelect]);
+
+  /* After setting nodes we need React Flow to re-fit the view.
+     This covers the case where the pipeline tab was already active
+     when the async fetch completed (pb-tab-activated already fired). */
+  const schedFit = useCallback(
+    () => setTimeout(() => fitView({ padding: 0.25, duration: 200 }), 120),
+    [fitView],
+  );
+
+  /* Helpers ── build from SOFTWARE_TOOLS injected at page render */
+  const buildFromSoftwareTools = useCallback(() => {
+    setNodes(attachCallbacks(buildToolNodes(SOFTWARE_TOOLS, PIPELINE_STEPS, handleSelect)));
+    setEdges(buildDefaultEdges(SOFTWARE_TOOLS, PIPELINE_STEPS));
+    schedFit();
+  }, [attachCallbacks, handleSelect, schedFit]);
 
   /* Fetch or default-build the graph */
   useEffect(() => {
@@ -1159,37 +1175,49 @@ function PipelineBuilderInner() {
       })
       .then(graph => {
         if (!mountedRef.current) return;
-        if (graph.nodes && graph.nodes.length > 0) {
-          /* Use stored graph — reattach callbacks */
+
+        /* A valid tool-graph has nodes where data.name is set.
+           Old step-graphs (pre-redesign, from generate_default_graph) have
+           data.step but no data.name — treat them as if no graph exists so we
+           rebuild from the injected SOFTWARE_TOOLS data. */
+        const isToolGraph =
+          Array.isArray(graph.nodes) &&
+          graph.nodes.length > 0 &&
+          graph.nodes.some(n => n.data && typeof n.data.name === 'string' && n.data.name !== '');
+
+        if (isToolGraph) {
+          /* Stored tool graph — reattach React callbacks */
           setNodes(attachCallbacks(graph.nodes.map(n => ({
             ...n,
             type: 'tool_node',
             data: {
               ...n.data,
-              inputs:     n.data.inputs     || [],
-              outputs:    n.data.outputs    || [],
-              parameters: n.data.parameters || {},
+              inputs:     Array.isArray(n.data.inputs)     ? n.data.inputs     : [],
+              outputs:    Array.isArray(n.data.outputs)    ? n.data.outputs    : [],
+              parameters: n.data.parameters && typeof n.data.parameters === 'object'
+                            ? n.data.parameters : {},
             },
           }))));
           setEdges((graph.edges || []).map(e => ({
             id:           e.id,
             source:       e.source,
             target:       e.target,
-            sourceHandle: e.source_handle ?? e.sourceHandle,
-            targetHandle: e.target_handle ?? e.targetHandle,
+            sourceHandle: e.source_handle ?? e.sourceHandle ?? null,
+            targetHandle: e.target_handle ?? e.targetHandle ?? null,
             style:        { stroke: '#94a3b8', strokeWidth: 2 },
             markerEnd:    { type: 'arrowclosed', color: '#94a3b8' },
           })));
+          schedFit();
         } else {
-          /* No stored graph — build from injected software data */
-          setNodes(attachCallbacks(buildToolNodes(SOFTWARE_TOOLS, PIPELINE_STEPS, handleSelect)));
-          setEdges(buildDefaultEdges(SOFTWARE_TOOLS, PIPELINE_STEPS));
+          /* No stored graph (or old step-format graph) — rebuild from
+             the software list injected by Django into the page. */
+          buildFromSoftwareTools();
         }
       })
       .catch(err => {
         if (!mountedRef.current) return;
-        setNodes(attachCallbacks(buildToolNodes(SOFTWARE_TOOLS, PIPELINE_STEPS, handleSelect)));
-        setEdges(buildDefaultEdges(SOFTWARE_TOOLS, PIPELINE_STEPS));
+        /* Any fetch error (401, network, etc.) — fall back gracefully */
+        buildFromSoftwareTools();
         if (err.message && !err.message.includes('401')) setLoadError(err.message);
       });
     return () => { mountedRef.current = false; };

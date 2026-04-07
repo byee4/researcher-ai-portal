@@ -205,6 +205,17 @@ async def get_graph(
         # Job exists but graph hasn't been generated yet.
         return WorkflowGraph(nodes=[], edges=[])
 
+    # Detect old step-format graphs (pre-redesign: nodes had data.step but no
+    # data.name).  Return an empty graph so the frontend falls back to
+    # building a fresh tool graph from the injected SOFTWARE_TOOLS data.
+    stored_nodes = graph_data.get("nodes") or []
+    is_tool_graph = any(
+        isinstance(n.get("data"), dict) and n["data"].get("name")
+        for n in stored_nodes
+    )
+    if stored_nodes and not is_tool_graph:
+        return WorkflowGraph(nodes=[], edges=[])
+
     return WorkflowGraph.model_validate(graph_data)
 
 
