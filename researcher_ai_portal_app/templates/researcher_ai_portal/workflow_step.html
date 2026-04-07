@@ -310,10 +310,31 @@
       renderHeartbeat();
     }
 
+    function setRunButtonIdle() {
+      runBtn.disabled = false;
+      runBtn.textContent = `▶ Run {{ step_label|escapejs }}`;
+    }
+
+    function setRunButtonRunning() {
+      runBtn.disabled = true;
+      runBtn.textContent = "Running…";
+    }
+
+    function shouldTreatAsRunning(data) {
+      const status = String((data && data.status) || "");
+      const currentStep = String((data && data.current_step) || "");
+      const stage = String((data && data.stage) || "");
+      if (status === "failed" || status === "completed" || status === "step_complete") return false;
+      if (currentStep !== thisStep) return false;
+      if (stage.startsWith("Completed ")) return false;
+      return status === "in_progress" || stage.startsWith("Running ");
+    }
+
     function stopHeartbeat(finalText) {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       heartbeatTimer = null;
       running = false;
+      setRunButtonIdle();
       if (heartbeatText && finalText) heartbeatText.textContent = finalText;
     }
 
@@ -369,6 +390,17 @@
         if (!res.ok) return;
         lastPollOkAtMs = Date.now();
         const data = await res.json();
+        const statusSaysRunning = shouldTreatAsRunning(data);
+        if (statusSaysRunning && !running) {
+          running = true;
+          if (runStartedAtMs === null) runStartedAtMs = Date.now();
+          setRunButtonRunning();
+          startHeartbeat();
+        } else if (!statusSaysRunning && running) {
+          stopHeartbeat("Idle");
+        } else if (!statusSaysRunning) {
+          setRunButtonIdle();
+        }
         const pct = Math.max(0, Math.min(100, Number(data.progress || 0)));
         stepBar.style.width = pct + "%";
         if (stepText) stepText.textContent = pct + "% complete";
@@ -418,8 +450,7 @@
       e.preventDefault();
       if (running) return;
       running = true;
-      runBtn.disabled = true;
-      runBtn.textContent = "Running…";
+      setRunButtonRunning();
       runStartedAtMs = Date.now();
       lastPollOkAtMs = Date.now();
       startHeartbeat();
@@ -433,11 +464,8 @@
           body: fd,
           credentials: "same-origin",
         });
-        // Serial mode: POST returns only after parse work completes.
-        if (pollTimer) clearInterval(pollTimer);
-        stopHeartbeat("Step complete. Reloading…");
-        window.location.reload();
-        return;
+        // Keep polling; backend may return before parse completion.
+        await pollStatus();
       } catch (err) {
         if (pollTimer) clearInterval(pollTimer);
         stopHeartbeat("Request failed. Reloading…");
@@ -453,8 +481,7 @@
       /^Running\b/.test(initialStage)
     ) {
       running = true;
-      runBtn.disabled = true;
-      runBtn.textContent = "Running…";
+      setRunButtonRunning();
       runStartedAtMs = Date.now();
       lastPollOkAtMs = Date.now();
       startHeartbeat();

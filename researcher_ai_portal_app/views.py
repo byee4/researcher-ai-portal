@@ -1975,6 +1975,12 @@ def dashboard(request, job_id: str):
             "pipeline_steps_json": (
                 ((context.get("pipeline") or {}).get("config") or {}).get("steps") or []
             ),
+            # Method assay graph data for the Pipeline Builder assay selector.
+            "method_assays_json": [
+                assay
+                for assay in raw_structured_assays
+                if isinstance(assay, dict)
+            ],
         }
     )
     return render(request, "researcher_ai_portal/dashboard.html", context)

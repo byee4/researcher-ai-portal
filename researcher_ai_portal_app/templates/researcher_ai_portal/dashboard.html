@@ -10,6 +10,7 @@
 {# ── Tool-based Pipeline Builder data ── #}
 {{ software_tools_json|json_script:"_pb-software-tools" }}
 {{ pipeline_steps_json|json_script:"_pb-pipeline-steps" }}
+{{ method_assays_json|json_script:"_pb-method-assays" }}
 
 {# ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── #}
 <link rel="stylesheet" href="https://unpkg.com/@xyflow/react@12.3.6/dist/style.css" />
@@ -402,7 +403,7 @@
 
       <!-- React Flow mount point -->
       <div style="padding: 16px;">
-        <div id="pipeline-builder-root" style="height: 560px; width: 100%;">
+        <div id="pipeline-builder-root" style="height: 760px; width: 100%;">
           <!-- Loading placeholder shown before React mounts -->
           <div style="height: 100%; display: flex; align-items: center; justify-content: center;
                       background: var(--surface-2); border: 1px dashed var(--border-2);
@@ -573,7 +574,7 @@
 ────────────────────────────────────────────────────────────── #}
 <script type="module">
 import React, {
-  useState, useCallback, useEffect, useRef,
+  useState, useCallback, useEffect, useMemo, useRef,
 } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -584,8 +585,8 @@ import {
   Panel,
   Handle,
   Position,
-  useNodesState,
-  useEdgesState,
+  applyNodeChanges,
+  applyEdgeChanges,
   useReactFlow,
   ReactFlowProvider,
   addEdge,
@@ -599,9 +600,9 @@ const SOFTWARE_TOOLS = JSON.parse(
   document.getElementById('_pb-software-tools').textContent
 );
 
-/* Pipeline steps for default edge wiring */
-const PIPELINE_STEPS = JSON.parse(
-  document.getElementById('_pb-pipeline-steps').textContent
+/* Parsed method assays for assay-centric graph rendering */
+const METHOD_ASSAYS = JSON.parse(
+  document.getElementById('_pb-method-assays').textContent
 );
 
 /* ── Language colour chips ──────────────────────────────────── */
@@ -623,130 +624,128 @@ function slugify(name, idx) {
   return slug || `tool_${idx}`;
 }
 
-/* ── Build node ID map ──────────────────────────────────────── */
-function buildNodeIdMap(tools) {
-  const map = {};   // lower(name) → node_id
-  const seen = {};
-  tools.forEach((sw, i) => {
-    const name = (sw.name || `tool_${i}`).trim();
-    let id = slugify(name, i);
-    let suffix = 0;
-    while (Object.values(seen).includes(id)) { suffix++; id = `${slugify(name, i)}_${suffix}`; }
-    seen[name.toLowerCase()] = id;
-    map[name.toLowerCase()] = id;
-  });
-  return map;
-}
-
-/* ── Build default nodes from SOFTWARE_TOOLS ────────────────── */
-function buildToolNodes(tools, steps, onSelect) {
-  if (!tools.length) return [];
-
-  const nodeIdMap = buildNodeIdMap(tools);
-
-  // Build edges first (to compute tiers)
-  const stepById = {};
-  steps.forEach(s => { if (s.step_id) stepById[s.step_id] = s; });
-  const stepBySw = {};
-  steps.forEach(s => { if (s.software) stepBySw[s.software.toLowerCase()] = s; });
-
-  const edgePairs = [];   // [{source, target}]
-  steps.forEach(step => {
-    const tgtSw = (step.software || '').toLowerCase();
-    const tgtId = nodeIdMap[tgtSw];
-    if (!tgtId) return;
-    (step.depends_on || []).forEach(dep => {
-      const depStep = stepById[dep] || {};
-      const depSw = (depStep.software || dep).toLowerCase();
-      const srcId = nodeIdMap[depSw];
-      if (srcId && srcId !== tgtId) edgePairs.push({ source: srcId, target: tgtId });
-    });
-  });
-
-  // Compute tiers
-  const tiers = {};
-  Object.values(nodeIdMap).forEach(id => { tiers[id] = 0; });
-  for (let pass = 0; pass < Object.keys(tiers).length; pass++) {
-    let changed = false;
-    edgePairs.forEach(({ source, target }) => {
-      if ((tiers[source] || 0) + 1 > (tiers[target] || 0)) {
-        tiers[target] = (tiers[source] || 0) + 1;
-        changed = true;
-      }
-    });
-    if (!changed) break;
+function toList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(v => String(v || '').trim())
+      .filter(Boolean);
   }
-
-  // Group by tier
-  const tierRows = {};
-  Object.entries(tiers).forEach(([id, t]) => {
-    (tierRows[t] = tierRows[t] || []).push(id);
-  });
-
-  return tools.map((sw, i) => {
-    const name   = (sw.name || `tool_${i}`).trim();
-    const nodeId = nodeIdMap[name.toLowerCase()] || slugify(name, i);
-    const tier   = tiers[nodeId] || 0;
-    const row    = (tierRows[tier] || []).indexOf(nodeId);
-    const cmds   = sw.commands || [];
-    const firstCmd = cmds[0] || {};
-    const pipStep  = stepBySw[name.toLowerCase()] || {};
-
-    return {
-      id:       nodeId,
-      type:     'tool_node',
-      position: { x: tier * 300, y: row * 260 },
-      data: {
-        name,
-        version:              sw.version || '',
-        description:          sw.description || '',
-        language:             sw.language || '',
-        source_url:           sw.source_url || '',
-        commands:             cmds,
-        selectedCommandIndex: 0,
-        inputs:  pipStep.inputs  || firstCmd.required_inputs || [],
-        outputs: pipStep.outputs || firstCmd.outputs         || [],
-        parameters: pipStep.parameters || firstCmd.parameters || {},
-        container:  pipStep.container  || (sw.environment || {}).docker_image || '',
-        step_id:    pipStep.step_id    || nodeId,
-        _nodeId:    nodeId,   // stable ID for handle wiring
-        onSelect,
-      },
-    };
-  });
+  if (typeof value === 'string') {
+    return value
+      .split(/[;,]/g)
+      .map(v => v.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
-function buildDefaultEdges(tools, steps) {
-  const nodeIdMap = buildNodeIdMap(tools);
-  const stepById  = {};
-  steps.forEach(s => { if (s.step_id) stepById[s.step_id] = s; });
+function edgeStyle(edge) {
+  return {
+    ...edge,
+    sourceHandle: edge.sourceHandle ?? edge.source_handle ?? null,
+    targetHandle: edge.targetHandle ?? edge.target_handle ?? null,
+    style: { stroke: '#94a3b8', strokeWidth: 2 },
+    markerEnd: { type: 'arrowclosed', color: '#94a3b8' },
+  };
+}
 
-  const seen = new Set();
+function buildAssayToolGraph(assays, tools) {
+  const byName = {};
+  tools.forEach((sw, i) => {
+    const name = String(sw?.name || `tool_${i}`).trim().toLowerCase();
+    if (name && !byName[name]) byName[name] = sw || {};
+  });
+
+  const assayOptions = [];
+  const nodes = [];
   const edges = [];
-  steps.forEach(step => {
-    const tgtSw = (step.software || '').toLowerCase();
-    const tgtId = nodeIdMap[tgtSw];
-    if (!tgtId) return;
-    (step.depends_on || []).forEach(dep => {
-      const depStep = stepById[dep] || {};
-      const depSw   = (depStep.software || dep).toLowerCase();
-      const srcId   = nodeIdMap[depSw];
-      if (!srcId || srcId === tgtId) return;
-      const key = `${srcId}--${tgtId}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      edges.push({
-        id:           key,
-        source:       srcId,
-        target:       tgtId,
-        sourceHandle: `${srcId}__out`,
-        targetHandle: `${tgtId}__in`,
-        style:        { stroke: '#94a3b8', strokeWidth: 2 },
-        markerEnd:    { type: 'arrowclosed', color: '#94a3b8' },
+  const usedAssayKeys = new Set();
+  const usedNodeIds = new Set();
+
+  assays.forEach((assay, assayIndex) => {
+    const assayName = String(assay?.name || `Assay ${assayIndex + 1}`).trim();
+    let assayKey = slugify(assayName, assayIndex);
+    let assaySuffix = 0;
+    while (usedAssayKeys.has(assayKey)) {
+      assaySuffix += 1;
+      assayKey = `${slugify(assayName, assayIndex)}_${assaySuffix}`;
+    }
+    usedAssayKeys.add(assayKey);
+
+    const rawSteps = Array.isArray(assay?.steps) ? assay.steps : [];
+    const orderedSteps = rawSteps
+      .map((step, idx) => {
+        const parsedStepNum = Number(step?.step_number);
+        return {
+          step,
+          idx,
+          stepNum: Number.isFinite(parsedStepNum) ? parsedStepNum : (idx + 1),
+        };
+      })
+      .sort((a, b) => (a.stepNum - b.stepNum) || (a.idx - b.idx));
+
+    assayOptions.push({ key: assayKey, label: assayName, stepCount: orderedSteps.length });
+
+    let prevNodeId = null;
+    orderedSteps.forEach(({ step, idx, stepNum }) => {
+      const stepSoftware = String(step?.software || '').trim();
+      const nodeLabel = stepSoftware || `Step ${stepNum}`;
+      const sw = byName[stepSoftware.toLowerCase()] || {};
+      const commands = Array.isArray(sw?.commands) ? sw.commands : [];
+      const firstCmd = commands[0] || {};
+
+      let nodeId = `${assayKey}__s${stepNum}_${slugify(nodeLabel, idx)}`;
+      let nodeSuffix = 0;
+      while (usedNodeIds.has(nodeId)) {
+        nodeSuffix += 1;
+        nodeId = `${assayKey}__s${stepNum}_${slugify(nodeLabel, idx)}_${nodeSuffix}`;
+      }
+      usedNodeIds.add(nodeId);
+
+      const stepInputs = toList(step?.input_data);
+      const stepOutputs = toList(step?.output_data);
+      const stepParameters = step?.parameters && typeof step.parameters === 'object'
+        ? step.parameters
+        : {};
+
+      nodes.push({
+        id: nodeId,
+        type: 'tool_node',
+        position: { x: idx * 320, y: assayIndex * 260 },
+        data: {
+          name: nodeLabel,
+          version: step?.software_version || sw?.version || '',
+          description: step?.description || sw?.description || '',
+          language: sw?.language || '',
+          source_url: sw?.source_url || '',
+          commands,
+          selectedCommandIndex: 0,
+          inputs: stepInputs.length ? stepInputs : (firstCmd.required_inputs || []),
+          outputs: stepOutputs.length ? stepOutputs : (firstCmd.outputs || []),
+          parameters: Object.keys(stepParameters).length ? stepParameters : (firstCmd.parameters || {}),
+          container: (sw?.environment || {}).docker_image || '',
+          step_id: `${assayKey}__step_${stepNum}`,
+          assay_key: assayKey,
+          assay_name: assayName,
+          step_number: stepNum,
+        },
       });
+
+      if (prevNodeId) {
+        edges.push({
+          id: `${prevNodeId}--${nodeId}`,
+          source: prevNodeId,
+          target: nodeId,
+          sourceHandle: `${prevNodeId}__out`,
+          targetHandle: `${nodeId}__in`,
+          data: { assay_key: assayKey },
+        });
+      }
+      prevNodeId = nodeId;
     });
   });
-  return edges;
+
+  return { nodes, edges, assays: assayOptions };
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1127,9 +1126,11 @@ function ToolEditPanel({ node, onClose, onUpdate }) {
    Main pipeline builder (inner — needs ReactFlowProvider context)
 ══════════════════════════════════════════════════════════════ */
 function PipelineBuilderInner() {
-  const { fitView } = useReactFlow();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const { fitView, getViewport } = useReactFlow();
+  const [allNodes, setAllNodes] = useState([]);
+  const [allEdges, setAllEdges] = useState([]);
+  const [assays, setAssays] = useState([]);
+  const [selectedAssay, setSelectedAssay] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [saveStatus,   setSaveStatus]   = useState('idle');
   const [loadError,    setLoadError]    = useState('');
@@ -1151,20 +1152,79 @@ function PipelineBuilderInner() {
     })),
   [handleSelect]);
 
-  /* After setting nodes we need React Flow to re-fit the view.
-     This covers the case where the pipeline tab was already active
-     when the async fetch completed (pb-tab-activated already fired). */
+  const visibleNodes = useMemo(() => {
+    if (!selectedAssay) return allNodes;
+    return allNodes.filter(n => n?.data?.assay_key === selectedAssay);
+  }, [allNodes, selectedAssay]);
+
+  const visibleNodeIds = useMemo(
+    () => new Set(visibleNodes.map(n => n.id)),
+    [visibleNodes]
+  );
+
+  const visibleEdges = useMemo(() =>
+    allEdges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target)),
+  [allEdges, visibleNodeIds]);
+
   const schedFit = useCallback(
-    () => setTimeout(() => fitView({ padding: 0.25, duration: 200 }), 120),
+    () => setTimeout(() => fitView({ padding: 0.28, duration: 250 }), 120),
     [fitView],
   );
 
-  /* Helpers ── build from SOFTWARE_TOOLS injected at page render */
-  const buildFromSoftwareTools = useCallback(() => {
-    setNodes(attachCallbacks(buildToolNodes(SOFTWARE_TOOLS, PIPELINE_STEPS, handleSelect)));
-    setEdges(buildDefaultEdges(SOFTWARE_TOOLS, PIPELINE_STEPS));
-    schedFit();
-  }, [attachCallbacks, handleSelect, schedFit]);
+  const hydrateFromStoredGraph = useCallback((storedGraph = null) => {
+    const base = buildAssayToolGraph(METHOD_ASSAYS, SOFTWARE_TOOLS);
+    let nodes = base.nodes;
+    let edges = base.edges;
+
+    const storedNodes = Array.isArray(storedGraph?.nodes) ? storedGraph.nodes : [];
+    const storedEdges = Array.isArray(storedGraph?.edges) ? storedGraph.edges : [];
+    const storedById = new Map(storedNodes.map(n => [n.id, n]));
+    const isStoredAssayGraph = storedNodes.some(n => n?.data?.assay_key);
+
+    if (storedById.size > 0) {
+      nodes = nodes.map(n => {
+        const saved = storedById.get(n.id);
+        if (!saved) return n;
+        return {
+          ...n,
+          position: saved.position || n.position,
+          data: {
+            ...n.data,
+            version: saved?.data?.version ?? n.data.version,
+            inputs: Array.isArray(saved?.data?.inputs) ? saved.data.inputs : n.data.inputs,
+            outputs: Array.isArray(saved?.data?.outputs) ? saved.data.outputs : n.data.outputs,
+            parameters: (saved?.data?.parameters && typeof saved.data.parameters === 'object')
+              ? saved.data.parameters
+              : n.data.parameters,
+            container: saved?.data?.container ?? n.data.container,
+            selectedCommandIndex: Number.isFinite(saved?.data?.selectedCommandIndex)
+              ? saved.data.selectedCommandIndex
+              : n.data.selectedCommandIndex,
+          },
+        };
+      });
+    }
+
+    if (isStoredAssayGraph && storedEdges.length > 0) {
+      edges = storedEdges;
+    }
+
+    if (base.assays.length === 0 && !isStoredAssayGraph) {
+      setAssays([]);
+      setSelectedAssay('');
+      setAllNodes([]);
+      setAllEdges([]);
+      return;
+    }
+
+    setAssays(base.assays);
+    setSelectedAssay(prev => {
+      if (base.assays.some(a => a.key === prev)) return prev;
+      return base.assays[0]?.key || '';
+    });
+    setAllNodes(attachCallbacks(nodes));
+    setAllEdges(edges.map(edgeStyle));
+  }, [attachCallbacks]);
 
   /* Fetch or default-build the graph */
   useEffect(() => {
@@ -1175,73 +1235,54 @@ function PipelineBuilderInner() {
       })
       .then(graph => {
         if (!mountedRef.current) return;
-
-        /* A valid tool-graph has nodes where data.name is set.
-           Old step-graphs (pre-redesign, from generate_default_graph) have
-           data.step but no data.name — treat them as if no graph exists so we
-           rebuild from the injected SOFTWARE_TOOLS data. */
-        const isToolGraph =
-          Array.isArray(graph.nodes) &&
-          graph.nodes.length > 0 &&
-          graph.nodes.some(n => n.data && typeof n.data.name === 'string' && n.data.name !== '');
-
-        if (isToolGraph) {
-          /* Stored tool graph — reattach React callbacks */
-          setNodes(attachCallbacks(graph.nodes.map(n => ({
-            ...n,
-            type: 'tool_node',
-            data: {
-              ...n.data,
-              inputs:     Array.isArray(n.data.inputs)     ? n.data.inputs     : [],
-              outputs:    Array.isArray(n.data.outputs)    ? n.data.outputs    : [],
-              parameters: n.data.parameters && typeof n.data.parameters === 'object'
-                            ? n.data.parameters : {},
-            },
-          }))));
-          setEdges((graph.edges || []).map(e => ({
-            id:           e.id,
-            source:       e.source,
-            target:       e.target,
-            sourceHandle: e.source_handle ?? e.sourceHandle ?? null,
-            targetHandle: e.target_handle ?? e.targetHandle ?? null,
-            style:        { stroke: '#94a3b8', strokeWidth: 2 },
-            markerEnd:    { type: 'arrowclosed', color: '#94a3b8' },
-          })));
-          schedFit();
-        } else {
-          /* No stored graph (or old step-format graph) — rebuild from
-             the software list injected by Django into the page. */
-          buildFromSoftwareTools();
-        }
+        hydrateFromStoredGraph(graph);
       })
       .catch(err => {
         if (!mountedRef.current) return;
-        /* Any fetch error (401, network, etc.) — fall back gracefully */
-        buildFromSoftwareTools();
+        hydrateFromStoredGraph(null);
         if (err.message && !err.message.includes('401')) setLoadError(err.message);
       });
     return () => { mountedRef.current = false; };
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hydrateFromStoredGraph]);
+
+  useEffect(() => {
+    if (visibleNodes.length > 0) schedFit();
+  }, [schedFit, selectedAssay, visibleNodes.length]);
 
   /* Re-fit when the tab is activated */
   useEffect(() => {
-    const onActivated = () => setTimeout(() => fitView({ padding: 0.25 }), 50);
+    const onActivated = () => setTimeout(() => fitView({ padding: 0.28 }), 50);
     window.addEventListener('pb-tab-activated', onActivated);
     return () => window.removeEventListener('pb-tab-activated', onActivated);
   }, [fitView]);
 
+  useEffect(() => {
+    if (!selectedNode) return;
+    const visible = visibleNodes.some(n => n.id === selectedNode.id);
+    if (!visible) setSelectedNode(null);
+  }, [selectedNode, visibleNodes]);
+
+  const onNodesChange = useCallback(changes => {
+    setAllNodes(ns => applyNodeChanges(changes, ns));
+  }, []);
+
+  const onEdgesChange = useCallback(changes => {
+    setAllEdges(eds => applyEdgeChanges(changes, eds));
+  }, []);
+
   /* Allow manual edge drawing */
-  const onConnect = useCallback(params =>
-    setEdges(eds => addEdge({
+  const onConnect = useCallback(params => {
+    const sourceNode = allNodes.find(n => n.id === params.source);
+    const assayKey = sourceNode?.data?.assay_key || selectedAssay || null;
+    setAllEdges(eds => addEdge(edgeStyle({
       ...params,
-      style:     { stroke: '#94a3b8', strokeWidth: 2 },
-      markerEnd: { type: 'arrowclosed', color: '#94a3b8' },
-    }, eds)),
-  [setEdges]);
+      data: { assay_key: assayKey },
+    }), eds));
+  }, [allNodes, selectedAssay]);
 
   /* Update a single node's data from the edit panel */
   const handleNodeUpdate = useCallback((nodeId, updatedData) => {
-    setNodes(ns => ns.map(n =>
+    setAllNodes(ns => ns.map(n =>
       n.id === nodeId
         ? { ...n, data: { ...updatedData, onSelect: handleSelect, _nodeId: n.id } }
         : n
@@ -1253,7 +1294,7 @@ function PipelineBuilderInner() {
   const saveLayout = useCallback(() => {
     setSaveStatus('saving');
     const payload = {
-      nodes: nodes.map(({ id, type, position, data }) => ({
+      nodes: allNodes.map(({ id, type, position, data }) => ({
         id, type, position,
         data: {
           name:                 data.name,
@@ -1268,14 +1309,17 @@ function PipelineBuilderInner() {
           parameters:           data.parameters           ?? {},
           container:            data.container            ?? '',
           step_id:              data.step_id              ?? id,
+          assay_key:            data.assay_key            ?? '',
+          assay_name:           data.assay_name           ?? '',
+          step_number:          data.step_number          ?? null,
         },
       })),
-      edges: edges.map(({ id, source, target, sourceHandle, targetHandle }) => ({
+      edges: allEdges.map(({ id, source, target, sourceHandle, targetHandle }) => ({
         id, source, target,
         source_handle: sourceHandle ?? null,
         target_handle: targetHandle ?? null,
       })),
-      viewport: { x: 0.0, y: 0.0, zoom: 1.0 },
+      viewport: getViewport(),
     };
     fetch(`/api/v1/graphs/${JOB_ID}`, {
       method:      'PUT',
@@ -1291,21 +1335,20 @@ function PipelineBuilderInner() {
         setSaveStatus('error');
         setTimeout(() => setSaveStatus('idle'), 3000);
       });
-  }, [nodes, edges]);
+  }, [allEdges, allNodes, getViewport]);
 
   const saveBtnLabel = { idle: 'Save layout', saving: 'Saving…', saved: '✓ Saved', error: '✗ Error' };
   const saveBtnColor = { idle: '#1d4ed8', saving: '#6b7280', saved: '#16a34a', error: '#dc2626' };
 
-  /* Empty-state if software list has no items */
-  if (!SOFTWARE_TOOLS.length) {
+  if (!METHOD_ASSAYS.length) {
     return React.createElement('div', {
       style: { height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
                flexDirection: 'column', gap: 10, color: '#64748b', fontFamily: "'Inter', system-ui" },
     },
       React.createElement('div', { style: { fontSize: 32 } }, '🔬'),
-      React.createElement('div', { style: { fontWeight: 600, fontSize: 15 } }, 'No tools parsed yet'),
+      React.createElement('div', { style: { fontWeight: 600, fontSize: 15 } }, 'No assay graph parsed yet'),
       React.createElement('div', { style: { fontSize: 13, textAlign: 'center', maxWidth: 320 } },
-        'Run the Software Parser step to extract tools from the methods section, then return here to build your pipeline.'
+        'Run the Methods step to extract assay steps, then return here to build the assay-specific visual pipeline.'
       ),
     );
   }
@@ -1322,7 +1365,8 @@ function PipelineBuilderInner() {
       },
     },
       React.createElement(ReactFlow, {
-        nodes, edges,
+        nodes: visibleNodes,
+        edges: visibleEdges,
         onNodesChange, onEdgesChange,
         onConnect,
         nodeTypes:            NODE_TYPES,
@@ -1359,6 +1403,31 @@ function PipelineBuilderInner() {
                 fontSize: 12, fontWeight: 600, cursor: 'pointer',
               },
             }, saveBtnLabel[saveStatus]),
+          ),
+        ),
+        React.createElement(Panel, { position: 'top-left' },
+          React.createElement('div', {
+            style: { background: '#fff', border: '1px solid #e2e8f0',
+                     borderRadius: 8, padding: '8px 10px', minWidth: 240 },
+          },
+            React.createElement('div', {
+              style: { fontSize: 10, fontWeight: 700, color: '#64748b',
+                       marginBottom: 5, textTransform: 'uppercase', letterSpacing: '.5px' },
+            }, 'Assay View'),
+            React.createElement('select', {
+              value: selectedAssay,
+              onChange: e => setSelectedAssay(e.target.value),
+              style: {
+                width: '100%', fontSize: 12, border: '1px solid #cbd5e1',
+                borderRadius: 6, padding: '6px 8px', background: '#fff',
+              },
+            },
+              assays.map(a =>
+                React.createElement('option', { key: a.key, value: a.key },
+                  `${a.label} (${a.stepCount})`
+                )
+              ),
+            ),
           ),
         ),
       ),
