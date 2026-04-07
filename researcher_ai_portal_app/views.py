@@ -1954,6 +1954,27 @@ def dashboard(request, job_id: str):
                 {"id": r["id"], "label": r["label"], "meta": r["meta"]}
                 for r in step_rows
             ],
+            # Tool data for the redesigned Pipeline Builder tab.
+            # Each entry is a minimal projection of the Software model sufficient
+            # for the node card and edit panel; passed as raw Python so
+            # json_script encodes it exactly once.
+            "software_tools_json": [
+                {
+                    "name": (sw.get("name") or ""),
+                    "version": sw.get("version") or "",
+                    "description": sw.get("description") or "",
+                    "language": sw.get("language") or "",
+                    "source_url": sw.get("source_url") or "",
+                    "commands": sw.get("commands") or [],
+                    "environment": sw.get("environment") or {},
+                }
+                for sw in (context.get("software") or [])
+                if isinstance(sw, dict)
+            ],
+            # Pipeline steps for default edge wiring and per-tool metadata.
+            "pipeline_steps_json": (
+                ((context.get("pipeline") or {}).get("config") or {}).get("steps") or []
+            ),
         }
     )
     return render(request, "researcher_ai_portal/dashboard.html", context)

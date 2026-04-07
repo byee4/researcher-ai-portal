@@ -2,7 +2,31 @@
 {% load plotly_dash %}
 {% block title %}{{ summary.title|default:"Dashboard" }} — researcher-ai{% endblock %}
 
-{% block extra_head %}{{ dashboard_form_media }}{% endblock %}
+{% block extra_head %}
+{{ dashboard_form_media }}
+
+{# ── Pipeline Builder: inject step metadata as JSON (XSS-safe via json_script) ── #}
+{{ step_rows_json|json_script:"_pb-step-rows" }}
+{# ── Tool-based Pipeline Builder data ── #}
+{{ software_tools_json|json_script:"_pb-software-tools" }}
+{{ pipeline_steps_json|json_script:"_pb-pipeline-steps" }}
+
+{# ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── #}
+<link rel="stylesheet" href="https://unpkg.com/@xyflow/react@12.3.6/dist/style.css" />
+
+{# ── ES module import map — must be in <head>, before any <script type="module"> ── #}
+<script type="importmap">
+{
+  "imports": {
+    "react":          "https://esm.sh/react@18.3.1",
+    "react/":         "https://esm.sh/react@18.3.1/",
+    "react-dom":      "https://esm.sh/react-dom@18.3.1",
+    "react-dom/":     "https://esm.sh/react-dom@18.3.1/",
+    "@xyflow/react":  "https://esm.sh/@xyflow/react@12.3.6?deps=react@18.3.1,react-dom@18.3.1"
+  }
+}
+</script>
+{% endblock %}
 
 {% block breadcrumb %}
   <a href="{% url 'home' %}">Home</a>
@@ -219,6 +243,7 @@
               overflow-x: auto; -webkit-overflow-scrolling: touch;">
     <button class="dash-tab active" onclick="showTab('overview',this)">Overview</button>
     <button class="dash-tab" onclick="showTab('dag',this)">Workflow Graph</button>
+    <button class="dash-tab" onclick="showTab('pipeline',this)" id="tab-btn-pipeline">Pipeline Builder</button>
     <button class="dash-tab" onclick="showTab('figures',this)">
       Figures{% if merged_figure_rows %}<span class="tab-badge">{{ merged_figure_rows|length }}</span>{% endif %}
     </button>
@@ -357,6 +382,40 @@
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
+       TAB: Pipeline Builder (React Flow visual editor)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-pipeline">
+    <div class="card" style="padding: 0; overflow: hidden;">
+
+      <!-- Header -->
+      <div style="padding: 16px 22px; border-bottom: 1px solid var(--border);
+                  display: flex; align-items: center; justify-content: space-between;
+                  flex-wrap: wrap; gap: 10px;">
+        <div>
+          <h2 style="margin-bottom: 4px;">Visual Pipeline Builder</h2>
+          <p class="text-sm text-muted">
+            Drag nodes to rearrange · Connect tools by dragging between handles ·
+            Click a node to edit parameters, inputs, and outputs.
+          </p>
+        </div>
+      </div>
+
+      <!-- React Flow mount point -->
+      <div style="padding: 16px;">
+        <div id="pipeline-builder-root" style="height: 560px; width: 100%;">
+          <!-- Loading placeholder shown before React mounts -->
+          <div style="height: 100%; display: flex; align-items: center; justify-content: center;
+                      background: var(--surface-2); border: 1px dashed var(--border-2);
+                      border-radius: var(--radius); color: var(--text-3); font-size: 0.875rem;">
+            Loading pipeline builder…
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
        TAB: Figures
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-figures">
@@ -491,6 +550,12 @@
     if (panel) panel.classList.add('active');
     if (btn) btn.classList.add('active');
     sessionStorage.setItem('dash-tab-{{ job_id }}', name);
+    // Notify the React Flow app that the canvas is now visible so it can
+    // recalculate the viewport (React Flow's fitView needs the element to
+    // have non-zero dimensions).
+    if (name === 'pipeline') {
+      window.dispatchEvent(new CustomEvent('pb-tab-activated'));
+    }
   }
 
   // Restore last active tab on load
@@ -501,5 +566,797 @@
       .find(b => (b.getAttribute('onclick') || '').includes("'" + saved + "'"));
     if (btn) showTab(saved, btn);
   })();
+</script>
+
+{# ──────────────────────────────────────────────────────────────
+   Pipeline Builder — React Flow app (ESM module, no build step)
+────────────────────────────────────────────────────────────── #}
+<script type="module">
+import React, {
+  useState, useCallback, useEffect, useRef,
+} from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  Panel,
+  Handle,
+  Position,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+  ReactFlowProvider,
+  addEdge,
+} from '@xyflow/react';
+
+/* ── Constants ─────────────────────────────────────────────── */
+const JOB_ID = '{{ job_id }}';
+
+/* Software tools injected from Django (array of tool objects) */
+const SOFTWARE_TOOLS = JSON.parse(
+  document.getElementById('_pb-software-tools').textContent
+);
+
+/* Pipeline steps for default edge wiring */
+const PIPELINE_STEPS = JSON.parse(
+  document.getElementById('_pb-pipeline-steps').textContent
+);
+
+/* ── Language colour chips ──────────────────────────────────── */
+const LANG_COLORS = {
+  python: { bg: '#eff6ff', text: '#1d4ed8' },
+  r:      { bg: '#f0fdf4', text: '#15803d' },
+  'c++':  { bg: '#fef3c7', text: '#b45309' },
+  bash:   { bg: '#f5f3ff', text: '#6d28d9' },
+  perl:   { bg: '#fdf2f8', text: '#9d174d' },
+  java:   { bg: '#fff7ed', text: '#c2410c' },
+};
+function langColor(lang) {
+  return LANG_COLORS[(lang || '').toLowerCase()] || { bg: '#f1f5f9', text: '#475569' };
+}
+
+/* ── Slugify: mirror of graph_layout._slugify ───────────────── */
+function slugify(name, idx) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  return slug || `tool_${idx}`;
+}
+
+/* ── Build node ID map ──────────────────────────────────────── */
+function buildNodeIdMap(tools) {
+  const map = {};   // lower(name) → node_id
+  const seen = {};
+  tools.forEach((sw, i) => {
+    const name = (sw.name || `tool_${i}`).trim();
+    let id = slugify(name, i);
+    let suffix = 0;
+    while (Object.values(seen).includes(id)) { suffix++; id = `${slugify(name, i)}_${suffix}`; }
+    seen[name.toLowerCase()] = id;
+    map[name.toLowerCase()] = id;
+  });
+  return map;
+}
+
+/* ── Build default nodes from SOFTWARE_TOOLS ────────────────── */
+function buildToolNodes(tools, steps, onSelect) {
+  if (!tools.length) return [];
+
+  const nodeIdMap = buildNodeIdMap(tools);
+
+  // Build edges first (to compute tiers)
+  const stepById = {};
+  steps.forEach(s => { if (s.step_id) stepById[s.step_id] = s; });
+  const stepBySw = {};
+  steps.forEach(s => { if (s.software) stepBySw[s.software.toLowerCase()] = s; });
+
+  const edgePairs = [];   // [{source, target}]
+  steps.forEach(step => {
+    const tgtSw = (step.software || '').toLowerCase();
+    const tgtId = nodeIdMap[tgtSw];
+    if (!tgtId) return;
+    (step.depends_on || []).forEach(dep => {
+      const depStep = stepById[dep] || {};
+      const depSw = (depStep.software || dep).toLowerCase();
+      const srcId = nodeIdMap[depSw];
+      if (srcId && srcId !== tgtId) edgePairs.push({ source: srcId, target: tgtId });
+    });
+  });
+
+  // Compute tiers
+  const tiers = {};
+  Object.values(nodeIdMap).forEach(id => { tiers[id] = 0; });
+  for (let pass = 0; pass < Object.keys(tiers).length; pass++) {
+    let changed = false;
+    edgePairs.forEach(({ source, target }) => {
+      if ((tiers[source] || 0) + 1 > (tiers[target] || 0)) {
+        tiers[target] = (tiers[source] || 0) + 1;
+        changed = true;
+      }
+    });
+    if (!changed) break;
+  }
+
+  // Group by tier
+  const tierRows = {};
+  Object.entries(tiers).forEach(([id, t]) => {
+    (tierRows[t] = tierRows[t] || []).push(id);
+  });
+
+  return tools.map((sw, i) => {
+    const name   = (sw.name || `tool_${i}`).trim();
+    const nodeId = nodeIdMap[name.toLowerCase()] || slugify(name, i);
+    const tier   = tiers[nodeId] || 0;
+    const row    = (tierRows[tier] || []).indexOf(nodeId);
+    const cmds   = sw.commands || [];
+    const firstCmd = cmds[0] || {};
+    const pipStep  = stepBySw[name.toLowerCase()] || {};
+
+    return {
+      id:       nodeId,
+      type:     'tool_node',
+      position: { x: tier * 300, y: row * 260 },
+      data: {
+        name,
+        version:              sw.version || '',
+        description:          sw.description || '',
+        language:             sw.language || '',
+        source_url:           sw.source_url || '',
+        commands:             cmds,
+        selectedCommandIndex: 0,
+        inputs:  pipStep.inputs  || firstCmd.required_inputs || [],
+        outputs: pipStep.outputs || firstCmd.outputs         || [],
+        parameters: pipStep.parameters || firstCmd.parameters || {},
+        container:  pipStep.container  || (sw.environment || {}).docker_image || '',
+        step_id:    pipStep.step_id    || nodeId,
+        _nodeId:    nodeId,   // stable ID for handle wiring
+        onSelect,
+      },
+    };
+  });
+}
+
+function buildDefaultEdges(tools, steps) {
+  const nodeIdMap = buildNodeIdMap(tools);
+  const stepById  = {};
+  steps.forEach(s => { if (s.step_id) stepById[s.step_id] = s; });
+
+  const seen = new Set();
+  const edges = [];
+  steps.forEach(step => {
+    const tgtSw = (step.software || '').toLowerCase();
+    const tgtId = nodeIdMap[tgtSw];
+    if (!tgtId) return;
+    (step.depends_on || []).forEach(dep => {
+      const depStep = stepById[dep] || {};
+      const depSw   = (depStep.software || dep).toLowerCase();
+      const srcId   = nodeIdMap[depSw];
+      if (!srcId || srcId === tgtId) return;
+      const key = `${srcId}--${tgtId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      edges.push({
+        id:           key,
+        source:       srcId,
+        target:       tgtId,
+        sourceHandle: `${srcId}__out`,
+        targetHandle: `${tgtId}__in`,
+        style:        { stroke: '#94a3b8', strokeWidth: 2 },
+        markerEnd:    { type: 'arrowclosed', color: '#94a3b8' },
+      });
+    });
+  });
+  return edges;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ToolNode — the custom React Flow node component
+══════════════════════════════════════════════════════════════ */
+function ToolNode({ data, selected }) {
+  const lc  = langColor(data.language);
+  const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+
+  return React.createElement(React.Fragment, null,
+
+    /* ── Target handle (left) ──── */
+    React.createElement(Handle, {
+      type: 'target', position: Position.Left,
+      id: `${data._nodeId}__in`,
+      style: { background: '#94a3b8', width: 10, height: 10, border: '2px solid #fff', left: -6 },
+    }),
+
+    /* ── Card ─────────────────── */
+    React.createElement('div', {
+      onClick: () => data.onSelect && data.onSelect(data),
+      style: {
+        background:   selected ? '#eff6ff' : '#ffffff',
+        border:       `2px solid ${selected ? '#1d4ed8' : '#e2e8f0'}`,
+        borderRadius: 12,
+        padding:      '12px 14px',
+        minWidth:     180,
+        maxWidth:     220,
+        cursor:       'pointer',
+        boxShadow:    selected
+          ? '0 0 0 3px rgba(29,78,216,.18)'
+          : '0 2px 8px rgba(15,23,42,.07)',
+        fontFamily: "'Inter', system-ui, sans-serif",
+        transition: 'border-color .15s, box-shadow .15s',
+        userSelect: 'none',
+      },
+    },
+      /* Tool name */
+      React.createElement('div', {
+        style: { fontWeight: 700, fontSize: 13, color: '#0f172a', marginBottom: 6, lineHeight: 1.3 },
+      }, data.name),
+
+      /* Version + language row */
+      React.createElement('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8, flexWrap: 'wrap' },
+      },
+        data.version && React.createElement('span', {
+          style: { fontSize: 10, color: '#64748b', background: '#f1f5f9',
+                   borderRadius: 4, padding: '1px 5px', fontFamily: 'monospace' },
+        }, `v${data.version}`),
+        data.language && React.createElement('span', {
+          style: { fontSize: 10, fontWeight: 600, color: lc.text, background: lc.bg,
+                   borderRadius: 4, padding: '1px 6px' },
+        }, cap(data.language)),
+      ),
+
+      /* I/O summary */
+      (data.inputs.length > 0 || data.outputs.length > 0) && React.createElement('div', {
+        style: { fontSize: 10, color: '#64748b', lineHeight: 1.6 },
+      },
+        data.inputs.length > 0 && React.createElement('div', null,
+          React.createElement('span', { style: { color: '#0ea5e9', fontWeight: 600 } }, '→ '),
+          data.inputs.slice(0, 2).join(', '),
+          data.inputs.length > 2 && ` +${data.inputs.length - 2}`,
+        ),
+        data.outputs.length > 0 && React.createElement('div', null,
+          React.createElement('span', { style: { color: '#10b981', fontWeight: 600 } }, '← '),
+          data.outputs.slice(0, 2).join(', '),
+          data.outputs.length > 2 && ` +${data.outputs.length - 2}`,
+        ),
+      ),
+
+      /* Parameter count hint */
+      Object.keys(data.parameters || {}).length > 0 && React.createElement('div', {
+        style: { marginTop: 6, fontSize: 10, color: '#94a3b8' },
+      }, `${Object.keys(data.parameters).length} parameter${Object.keys(data.parameters).length !== 1 ? 's' : ''}`),
+    ),
+
+    /* ── Source handle (right) ── */
+    React.createElement(Handle, {
+      type: 'source', position: Position.Right,
+      id: `${data._nodeId}__out`,
+      style: { background: '#94a3b8', width: 10, height: 10, border: '2px solid #fff', right: -6 },
+    }),
+  );
+}
+
+const NODE_TYPES = { tool_node: ToolNode };
+
+/* ══════════════════════════════════════════════════════════════
+   ListEditor — add / remove string items
+══════════════════════════════════════════════════════════════ */
+function ListEditor({ label, items, onChange }) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    onChange([...items, v]);
+    setDraft('');
+  };
+  return React.createElement('div', { style: { marginBottom: 12 } },
+    React.createElement('div', {
+      style: { fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+               letterSpacing: '.5px', marginBottom: 5 },
+    }, label),
+    items.map((item, idx) =>
+      React.createElement('div', {
+        key: idx,
+        style: { display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 },
+      },
+        React.createElement('span', {
+          style: { flex: 1, fontSize: 12, background: '#f8fafc', border: '1px solid #e2e8f0',
+                   borderRadius: 4, padding: '3px 7px', fontFamily: 'monospace', color: '#1e293b',
+                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        }, item),
+        React.createElement('button', {
+          onClick: () => onChange(items.filter((_, i) => i !== idx)),
+          title: 'Remove',
+          style: { background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8',
+                   fontSize: 14, lineHeight: 1, padding: '0 2px' },
+        }, '×'),
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', gap: 4 } },
+      React.createElement('input', {
+        value: draft,
+        onChange: e => setDraft(e.target.value),
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        placeholder: `Add ${label.toLowerCase()}…`,
+        style: { flex: 1, fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 4,
+                 padding: '3px 7px', outline: 'none', fontFamily: 'monospace' },
+      }),
+      React.createElement('button', {
+        onClick: add,
+        style: { fontSize: 12, padding: '3px 8px', background: '#f1f5f9', border: '1px solid #e2e8f0',
+                 borderRadius: 4, cursor: 'pointer', color: '#475569' },
+      }, '+'),
+    ),
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ParamEditor — add / remove key=value parameter pairs
+══════════════════════════════════════════════════════════════ */
+function ParamEditor({ params, onChange }) {
+  const [draftKey, setDraftKey]   = useState('');
+  const [draftVal, setDraftVal]   = useState('');
+  const entries = Object.entries(params || {});
+  const add = () => {
+    const k = draftKey.trim();
+    if (!k) return;
+    onChange({ ...params, [k]: draftVal });
+    setDraftKey(''); setDraftVal('');
+  };
+  return React.createElement('div', { style: { marginBottom: 12 } },
+    React.createElement('div', {
+      style: { fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+               letterSpacing: '.5px', marginBottom: 5 },
+    }, 'Parameters'),
+    entries.map(([k, v], idx) =>
+      React.createElement('div', {
+        key: idx,
+        style: { display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 },
+      },
+        React.createElement('span', {
+          style: { fontSize: 11, fontFamily: 'monospace', color: '#6d28d9',
+                   background: '#f5f3ff', border: '1px solid #ede9fe',
+                   borderRadius: 4, padding: '2px 5px', whiteSpace: 'nowrap' },
+        }, k),
+        React.createElement('span', { style: { fontSize: 11, color: '#94a3b8' } }, '='),
+        React.createElement('input', {
+          value: String(v),
+          onChange: e => {
+            const updated = { ...params };
+            updated[k] = e.target.value;
+            onChange(updated);
+          },
+          style: { flex: 1, fontSize: 11, fontFamily: 'monospace', border: '1px solid #e2e8f0',
+                   borderRadius: 4, padding: '2px 5px', outline: 'none' },
+        }),
+        React.createElement('button', {
+          onClick: () => {
+            const updated = { ...params };
+            delete updated[k];
+            onChange(updated);
+          },
+          style: { background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8',
+                   fontSize: 14, lineHeight: 1, padding: '0 2px' },
+          title: 'Remove',
+        }, '×'),
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', gap: 4 } },
+      React.createElement('input', {
+        value: draftKey,
+        onChange: e => setDraftKey(e.target.value),
+        placeholder: '--flag',
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        style: { width: 90, fontSize: 11, fontFamily: 'monospace', border: '1px solid #e2e8f0',
+                 borderRadius: 4, padding: '3px 5px', outline: 'none' },
+      }),
+      React.createElement('input', {
+        value: draftVal,
+        onChange: e => setDraftVal(e.target.value),
+        placeholder: 'value',
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        style: { flex: 1, fontSize: 11, fontFamily: 'monospace', border: '1px solid #e2e8f0',
+                 borderRadius: 4, padding: '3px 5px', outline: 'none' },
+      }),
+      React.createElement('button', {
+        onClick: add,
+        style: { fontSize: 12, padding: '3px 8px', background: '#f1f5f9', border: '1px solid #e2e8f0',
+                 borderRadius: 4, cursor: 'pointer', color: '#475569' },
+      }, '+'),
+    ),
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ToolEditPanel — right-side editing panel
+══════════════════════════════════════════════════════════════ */
+function ToolEditPanel({ node, onClose, onUpdate }) {
+  if (!node) return null;
+  const d = node.data;
+  const [version,    setVersion]    = useState(d.version    || '');
+  const [inputs,     setInputs]     = useState(d.inputs     || []);
+  const [outputs,    setOutputs]    = useState(d.outputs    || []);
+  const [parameters, setParameters] = useState(d.parameters || {});
+  const [container,  setContainer]  = useState(d.container  || '');
+  const [cmdIdx,     setCmdIdx]     = useState(d.selectedCommandIndex || 0);
+  const cmds = d.commands || [];
+
+  /* Sync state when a different node is selected */
+  const prevId = useRef(node.id);
+  useEffect(() => {
+    if (node.id !== prevId.current) {
+      prevId.current = node.id;
+      setVersion(d.version || '');
+      setInputs(d.inputs || []);
+      setOutputs(d.outputs || []);
+      setParameters(d.parameters || {});
+      setContainer(d.container || '');
+      setCmdIdx(d.selectedCommandIndex || 0);
+    }
+  }, [node.id]);
+
+  /* When user picks a different command, pre-fill I/O from that command */
+  const handleCmdChange = idx => {
+    setCmdIdx(idx);
+    const cmd = cmds[idx] || {};
+    setInputs(cmd.required_inputs || inputs);
+    setOutputs(cmd.outputs || outputs);
+    setParameters(cmd.parameters || parameters);
+  };
+
+  const save = () => {
+    onUpdate(node.id, {
+      ...d,
+      version,
+      inputs,
+      outputs,
+      parameters,
+      container,
+      selectedCommandIndex: cmdIdx,
+    });
+  };
+
+  const fieldRow = (label, child) =>
+    React.createElement('div', { style: { marginBottom: 12 } },
+      React.createElement('label', {
+        style: { display: 'block', fontSize: 11, fontWeight: 600, color: '#475569',
+                 textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 4 },
+      }, label),
+      child,
+    );
+
+  const inputStyle = {
+    width: '100%', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 4,
+    padding: '5px 8px', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace',
+  };
+
+  return React.createElement('div', {
+    style: {
+      width: 280, flexShrink: 0, overflowY: 'auto',
+      background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
+      padding: '16px 14px', fontFamily: "'Inter', system-ui, sans-serif",
+      display: 'flex', flexDirection: 'column',
+    },
+  },
+    /* Header */
+    React.createElement('div', {
+      style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 },
+    },
+      React.createElement('div', null,
+        React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: '#0f172a' } }, d.name),
+        d.source_url && React.createElement('a', {
+          href: d.source_url, target: '_blank', rel: 'noreferrer',
+          style: { fontSize: 11, color: '#3b82f6', textDecoration: 'none' },
+        }, 'View source →'),
+      ),
+      React.createElement('button', {
+        onClick: onClose,
+        style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: 18,
+                 color: '#94a3b8', lineHeight: 1, padding: 0 },
+      }, '×'),
+    ),
+
+    /* Description */
+    d.description && React.createElement('p', {
+      style: { fontSize: 11, color: '#64748b', marginBottom: 14, lineHeight: 1.5 },
+    }, d.description.length > 140 ? d.description.slice(0, 137) + '…' : d.description),
+
+    /* Version */
+    fieldRow('Version',
+      React.createElement('input', {
+        value: version, onChange: e => setVersion(e.target.value),
+        placeholder: 'e.g. 2.7.10', style: inputStyle,
+      }),
+    ),
+
+    /* Command selector */
+    cmds.length > 1 && fieldRow('Command',
+      React.createElement('select', {
+        value: cmdIdx, onChange: e => handleCmdChange(Number(e.target.value)),
+        style: { ...inputStyle, fontFamily: 'inherit' },
+      },
+        cmds.map((cmd, i) =>
+          React.createElement('option', { key: i, value: i },
+            cmd.description ? cmd.description.slice(0, 48) : `Command ${i + 1}`
+          )
+        ),
+      ),
+    ),
+
+    /* Command template preview */
+    cmds.length > 0 && cmds[cmdIdx]?.command_template && React.createElement('div', {
+      style: { marginBottom: 12, background: '#0f172a', borderRadius: 6, padding: '8px 10px',
+               fontFamily: 'monospace', fontSize: 10, color: '#e2e8f0',
+               overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+    }, cmds[cmdIdx].command_template),
+
+    /* Inputs */
+    React.createElement(ListEditor, {
+      label: 'Inputs', items: inputs, onChange: setInputs,
+    }),
+
+    /* Outputs */
+    React.createElement(ListEditor, {
+      label: 'Outputs', items: outputs, onChange: setOutputs,
+    }),
+
+    /* Parameters */
+    React.createElement(ParamEditor, {
+      params: parameters, onChange: setParameters,
+    }),
+
+    /* Container */
+    fieldRow('Container / image',
+      React.createElement('input', {
+        value: container, onChange: e => setContainer(e.target.value),
+        placeholder: 'docker.io/…', style: inputStyle,
+      }),
+    ),
+
+    /* Save */
+    React.createElement('button', {
+      onClick: save,
+      style: {
+        marginTop: 'auto', padding: '9px 0', background: '#1d4ed8', color: '#fff',
+        border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600,
+        cursor: 'pointer', width: '100%',
+      },
+    }, 'Apply changes'),
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Main pipeline builder (inner — needs ReactFlowProvider context)
+══════════════════════════════════════════════════════════════ */
+function PipelineBuilderInner() {
+  const { fitView } = useReactFlow();
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [saveStatus,   setSaveStatus]   = useState('idle');
+  const [loadError,    setLoadError]    = useState('');
+  const mountedRef = useRef(true);
+
+  /* Stable select / update callbacks.
+     onSelect receives node.data; we need to also capture the React Flow node
+     id so handleNodeUpdate can target the right node in the nodes array.
+     We attach `_nodeId` to data in attachCallbacks so it's always available. */
+  const handleSelect = useCallback(data => setSelectedNode(prev =>
+    prev?.data?.step_id === data.step_id ? null : { id: data._nodeId, data }
+  ), []);
+
+  const attachCallbacks = useCallback(ns =>
+    ns.map(n => ({
+      ...n,
+      data: { ...n.data, onSelect: handleSelect, _nodeId: n.id },
+    })),
+  [handleSelect]);
+
+  /* Fetch or default-build the graph */
+  useEffect(() => {
+    fetch(`/api/v1/graphs/${JOB_ID}`, { credentials: 'include' })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(graph => {
+        if (!mountedRef.current) return;
+        if (graph.nodes && graph.nodes.length > 0) {
+          /* Use stored graph — reattach callbacks */
+          setNodes(attachCallbacks(graph.nodes.map(n => ({
+            ...n,
+            type: 'tool_node',
+            data: {
+              ...n.data,
+              inputs:     n.data.inputs     || [],
+              outputs:    n.data.outputs    || [],
+              parameters: n.data.parameters || {},
+            },
+          }))));
+          setEdges((graph.edges || []).map(e => ({
+            id:           e.id,
+            source:       e.source,
+            target:       e.target,
+            sourceHandle: e.source_handle ?? e.sourceHandle,
+            targetHandle: e.target_handle ?? e.targetHandle,
+            style:        { stroke: '#94a3b8', strokeWidth: 2 },
+            markerEnd:    { type: 'arrowclosed', color: '#94a3b8' },
+          })));
+        } else {
+          /* No stored graph — build from injected software data */
+          setNodes(attachCallbacks(buildToolNodes(SOFTWARE_TOOLS, PIPELINE_STEPS, handleSelect)));
+          setEdges(buildDefaultEdges(SOFTWARE_TOOLS, PIPELINE_STEPS));
+        }
+      })
+      .catch(err => {
+        if (!mountedRef.current) return;
+        setNodes(attachCallbacks(buildToolNodes(SOFTWARE_TOOLS, PIPELINE_STEPS, handleSelect)));
+        setEdges(buildDefaultEdges(SOFTWARE_TOOLS, PIPELINE_STEPS));
+        if (err.message && !err.message.includes('401')) setLoadError(err.message);
+      });
+    return () => { mountedRef.current = false; };
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Re-fit when the tab is activated */
+  useEffect(() => {
+    const onActivated = () => setTimeout(() => fitView({ padding: 0.25 }), 50);
+    window.addEventListener('pb-tab-activated', onActivated);
+    return () => window.removeEventListener('pb-tab-activated', onActivated);
+  }, [fitView]);
+
+  /* Allow manual edge drawing */
+  const onConnect = useCallback(params =>
+    setEdges(eds => addEdge({
+      ...params,
+      style:     { stroke: '#94a3b8', strokeWidth: 2 },
+      markerEnd: { type: 'arrowclosed', color: '#94a3b8' },
+    }, eds)),
+  [setEdges]);
+
+  /* Update a single node's data from the edit panel */
+  const handleNodeUpdate = useCallback((nodeId, updatedData) => {
+    setNodes(ns => ns.map(n =>
+      n.id === nodeId
+        ? { ...n, data: { ...updatedData, onSelect: handleSelect, _nodeId: n.id } }
+        : n
+    ));
+    setSelectedNode({ id: nodeId, data: updatedData });
+  }, [handleSelect]);
+
+  /* Save layout to the API */
+  const saveLayout = useCallback(() => {
+    setSaveStatus('saving');
+    const payload = {
+      nodes: nodes.map(({ id, type, position, data }) => ({
+        id, type, position,
+        data: {
+          name:                 data.name,
+          version:              data.version              ?? '',
+          description:          data.description          ?? '',
+          language:             data.language             ?? '',
+          source_url:           data.source_url           ?? '',
+          commands:             data.commands             ?? [],
+          selectedCommandIndex: data.selectedCommandIndex ?? 0,
+          inputs:               data.inputs               ?? [],
+          outputs:              data.outputs              ?? [],
+          parameters:           data.parameters           ?? {},
+          container:            data.container            ?? '',
+          step_id:              data.step_id              ?? id,
+        },
+      })),
+      edges: edges.map(({ id, source, target, sourceHandle, targetHandle }) => ({
+        id, source, target,
+        source_handle: sourceHandle ?? null,
+        target_handle: targetHandle ?? null,
+      })),
+      viewport: { x: 0.0, y: 0.0, zoom: 1.0 },
+    };
+    fetch(`/api/v1/graphs/${JOB_ID}`, {
+      method:      'PUT',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify(payload),
+    })
+      .then(r => {
+        setSaveStatus(r.ok ? 'saved' : 'error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      })
+      .catch(() => {
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      });
+  }, [nodes, edges]);
+
+  const saveBtnLabel = { idle: 'Save layout', saving: 'Saving…', saved: '✓ Saved', error: '✗ Error' };
+  const saveBtnColor = { idle: '#1d4ed8', saving: '#6b7280', saved: '#16a34a', error: '#dc2626' };
+
+  /* Empty-state if software list has no items */
+  if (!SOFTWARE_TOOLS.length) {
+    return React.createElement('div', {
+      style: { height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+               flexDirection: 'column', gap: 10, color: '#64748b', fontFamily: "'Inter', system-ui" },
+    },
+      React.createElement('div', { style: { fontSize: 32 } }, '🔬'),
+      React.createElement('div', { style: { fontWeight: 600, fontSize: 15 } }, 'No tools parsed yet'),
+      React.createElement('div', { style: { fontSize: 13, textAlign: 'center', maxWidth: 320 } },
+        'Run the Software Parser step to extract tools from the methods section, then return here to build your pipeline.'
+      ),
+    );
+  }
+
+  return React.createElement('div', {
+    style: { display: 'flex', gap: 12, height: '100%', alignItems: 'stretch' },
+  },
+    /* ── React Flow canvas ──────────────────────────────────── */
+    React.createElement('div', {
+      style: {
+        flex: 1, minWidth: 0,
+        border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+        background: '#f8fafc',
+      },
+    },
+      React.createElement(ReactFlow, {
+        nodes, edges,
+        onNodesChange, onEdgesChange,
+        onConnect,
+        nodeTypes:            NODE_TYPES,
+        fitView:              true,
+        fitViewOptions:       { padding: 0.25 },
+        minZoom:              0.2,
+        maxZoom:              2.5,
+        deleteKeyCode:        'Backspace',
+        elevateEdgesOnSelect: true,
+        connectionLineStyle:  { stroke: '#94a3b8', strokeWidth: 2 },
+      },
+        React.createElement(Background, { variant: 'dots', gap: 20, size: 1.2, color: '#cbd5e1' }),
+        React.createElement(Controls, { style: { bottom: 12, left: 12 } }),
+        React.createElement(MiniMap, {
+          style: { bottom: 12, right: 12, borderRadius: 8, border: '1px solid #e2e8f0' },
+          nodeColor: () => '#94a3b8',
+          maskColor: 'rgba(240,244,248,.8)',
+        }),
+        React.createElement(Panel, { position: 'top-right' },
+          React.createElement('div', {
+            style: { display: 'flex', alignItems: 'center', gap: 10,
+                     background: '#fff', border: '1px solid #e2e8f0',
+                     borderRadius: 8, padding: '7px 12px' },
+          },
+            loadError && React.createElement('span', {
+              style: { fontSize: 11, color: '#dc2626' },
+            }, `⚠ ${loadError}`),
+            React.createElement('button', {
+              onClick: saveLayout,
+              disabled: saveStatus === 'saving',
+              style: {
+                padding: '6px 14px', background: saveBtnColor[saveStatus],
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              },
+            }, saveBtnLabel[saveStatus]),
+          ),
+        ),
+      ),
+    ),
+
+    /* ── Edit panel (shown when a node is selected) ─────────── */
+    React.createElement(ToolEditPanel, {
+      node:     selectedNode,   // already { id, data } from handleSelect
+      onClose:  () => setSelectedNode(null),
+      onUpdate: handleNodeUpdate,
+    }),
+  );
+}
+
+/* Wrap in ReactFlowProvider (required by useReactFlow hook) */
+function PipelineBuilder() {
+  return React.createElement(ReactFlowProvider, null,
+    React.createElement(PipelineBuilderInner, null)
+  );
+}
+
+/* ── Mount ──────────────────────────────────────────────────── */
+const root = document.getElementById('pipeline-builder-root');
+if (root) {
+  root.innerHTML = '';
+  createRoot(root).render(React.createElement(PipelineBuilder));
+}
 </script>
 {% endblock %}
