@@ -1426,7 +1426,20 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     paper = result["paper"]
     figures = result["figures"]
     method = result["method"]
-    datasets = result["datasets"]
+    # Normalise dataset dicts: older parsed jobs store the repository type as
+    # "source"; templates that pre-date this fix also reference "source_type".
+    # Add both keys so the template works with either name.
+    raw_datasets = result["datasets"] or []
+    datasets: list[dict] = []
+    for ds in raw_datasets:
+        if not isinstance(ds, dict):
+            continue
+        d = dict(ds)
+        src = d.get("source") or d.get("source_type") or ""
+        d.setdefault("source", src)
+        d.setdefault("source_type", src)
+        datasets.append(d)
+    result["datasets"] = datasets
     software = result["software"]
     pipeline = result["pipeline"]
     meta = job.get("component_meta") or {}
