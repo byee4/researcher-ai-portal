@@ -169,3 +169,42 @@ class JobStatusResponse(BaseModel):
     parse_logs: list[Any] = Field(default_factory=list)
     figure_parse_total: int = 0
     figure_parse_current: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 2a — Component PATCH (partial update with path-based mutation)
+# ---------------------------------------------------------------------------
+
+
+class ComponentPatchRequest(BaseModel):
+    """Body payload for PATCH /api/v1/jobs/{job_id}/components/{step}.
+
+    Uses dot-bracket notation to address a specific field inside the component
+    payload, e.g.::
+
+        path  = "assay_graph.assays[1].steps[0].software_version"
+        value = "2.1.3"
+
+    Only paths in the per-step whitelist are accepted; unknown paths receive
+    a 422 response without touching the database.
+    """
+
+    path: str = Field(
+        ...,
+        description='Dot-bracket path into the payload, e.g. "assays[0].steps[1].software_version"',
+        max_length=512,
+    )
+    value: Any = Field(..., description="New value to set at the given path")
+
+
+class ComponentSaveResponse(BaseModel):
+    """Response body for a successful PATCH to a component step.
+
+    Returns the full (re-validated) payload plus refreshed confidence data
+    so the client can update the Command Center without a separate poll.
+    """
+
+    step: str
+    payload: Any
+    confidence: dict[str, Any]
+    actionable_items: list[dict[str, Any]]

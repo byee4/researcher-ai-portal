@@ -14,6 +14,9 @@
 {# ── Phase 0: Command Center data (App Island seed) ── #}
 {{ actionable_items|json_script:"_cc-actionable-items" }}
 {{ confidence_json|json_script:"_cc-confidence" }}
+{# ── Phase 2: Structured editor seed data (raw Python → XSS-safe JSON) ── #}
+{{ datasets|json_script:"_ed-datasets" }}
+{{ software|json_script:"_ed-software" }}
 
 {# ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── #}
 <link rel="stylesheet" href="https://unpkg.com/@xyflow/react@12.3.6/dist/style.css" />
@@ -726,58 +729,144 @@
       </div>
 
     </div>
+
+    {# ── Phase 2d: Pipeline step configuration accordion ──────────── #}
+    <details id="pc-config-panel" style="margin-top:16px;">
+      <summary style="cursor:pointer;font-weight:600;font-size:0.9375rem;padding:12px 16px;
+                       background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);
+                       list-style:none;display:flex;align-items:center;justify-content:space-between;">
+        <span>⚙ Configure pipeline steps</span>
+        <span style="font-size:0.75rem;font-weight:400;color:var(--text-2);" id="pc-save-status"></span>
+      </summary>
+      <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius);padding:16px;">
+        {% if pipeline %}
+          <p class="text-sm text-muted mb-3">
+            Edit step metadata below. Changes autosave after 800 ms.
+            <code style="font-size:0.8rem;">depends_on</code> values must be existing step names.
+          </p>
+          <div id="pc-steps-root">
+            {% with pipe_steps=pipeline.config.steps|default:pipeline.steps|default:"" %}
+            {% if pipe_steps %}
+              {% for ps in pipe_steps %}
+              <div class="pc-step-block" data-step-idx="{{ forloop.counter0 }}"
+                   style="padding:14px;margin-bottom:8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                  <span style="font-size:0.8rem;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">
+                    Step {{ forloop.counter }}
+                    <span class="pc-step-status" data-step-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.7rem;font-weight:400;margin-left:6px;text-transform:none;"></span>
+                  </span>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">
+                  <div class="form-group">
+                    <label class="form-label">Step name</label>
+                    <input class="step-edit-input pc-field"
+                           data-patch-path="config.steps[{{ forloop.counter0 }}].name"
+                           value="{{ ps.name|default:'' }}" placeholder="e.g. alignment" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Software</label>
+                    <input class="step-edit-input pc-field"
+                           data-patch-path="config.steps[{{ forloop.counter0 }}].software"
+                           value="{{ ps.software|default:'' }}" placeholder="e.g. STAR" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Depends on (comma-sep)</label>
+                    <input class="step-edit-input pc-field" data-json-array="true"
+                           data-patch-path="config.steps[{{ forloop.counter0 }}].depends_on"
+                           value="{{ ps.depends_on|join:', '|default:'' }}" placeholder="e.g. qc, trimming" />
+                  </div>
+                </div>
+              </div>
+              {% endfor %}
+            {% else %}
+              <p class="text-sm text-muted">No pipeline steps defined yet. Complete the Pipeline step first.</p>
+              <a class="btn btn-ghost btn-sm" href="{% url 'workflow_step' job_id=job_id step='pipeline' %}">Go to Pipeline step →</a>
+            {% endif %}
+            {% endwith %}
+          </div>
+        {% else %}
+          <p class="text-sm text-muted">No pipeline configuration found.</p>
+        {% endif %}
+      </div>
+    </details>
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
-       TAB: Datasets (Phase 2 placeholder — structured editor)
+       TAB: Datasets  (Phase 2b — inline editing + PATCH autosave)
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-datasets">
     <div class="flex items-center justify-between mb-4">
       <div>
         <h2 style="margin-bottom: 4px;">Datasets</h2>
-        <p class="text-sm text-muted">Structured dataset editor — coming in Phase 2.</p>
+        <p class="text-sm text-muted">Inline edits autosave after 800 ms. Accession format is validated client-side.</p>
       </div>
+      <span id="ds-save-status" style="font-size:0.8125rem;color:var(--text-2);"></span>
     </div>
-    {% if datasets %}
-      <div class="card" style="padding: 0; overflow: hidden;">
-        <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
-          <thead>
-            <tr style="background: var(--surface-2); border-bottom: 1px solid var(--border);">
-              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Accession</th>
-              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Source</th>
-              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Organism</th>
-              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Description</th>
-              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for ds in datasets %}
-              <tr style="border-bottom: 1px solid var(--border);"
-                  onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
-                <td style="padding: 9px 14px;"><code style="font-size: 0.82rem;">{{ ds.accession|default:"—" }}</code></td>
-                <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.source_type|default:ds.data_source|default:"—" }}</td>
-                <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.organism|default:"—" }}</td>
-                <td style="padding: 9px 14px; color: var(--text-3); font-size: 0.8125rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                  {{ ds.description|default:"—"|truncatechars:80 }}
+    <div id="ds-editor-root">
+      {% if datasets %}
+        <div class="card" style="padding:0;overflow:hidden;">
+          <table id="ds-table" style="width:100%;border-collapse:collapse;font-size:0.875rem;">
+            <thead>
+              <tr style="background:var(--surface-2);border-bottom:1px solid var(--border);">
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Accession</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Source</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Organism</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Experiment&nbsp;type</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Status</th>
+              </tr>
+            </thead>
+            <tbody id="ds-tbody">
+              {% for ds in datasets %}
+              <tr data-ds-idx="{{ forloop.counter0 }}" style="border-bottom:1px solid var(--border);">
+                <td style="padding:7px 10px;">
+                  <div style="position:relative;">
+                    <input class="step-edit-input ds-field" style="font-family:var(--mono);font-size:0.82rem;"
+                           data-field="accession" data-idx="{{ forloop.counter0 }}"
+                           value="{{ ds.accession|default:'' }}" placeholder="GSE12345" />
+                    <span class="ds-field-status" data-field="accession" data-idx="{{ forloop.counter0 }}"
+                          style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:0.7rem;pointer-events:none;"></span>
+                  </div>
                 </td>
-                <td style="padding: 9px 14px;">
+                <td style="padding:7px 10px;">
+                  <select class="step-edit-input ds-field" data-field="source" data-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.82rem;cursor:pointer;">
+                    {% with cur=ds.source|default:ds.source_type|default:"other" %}
+                    <option value="geo" {% if cur == "geo" %}selected{% endif %}>GEO</option>
+                    <option value="sra" {% if cur == "sra" %}selected{% endif %}>SRA</option>
+                    <option value="encode" {% if cur == "encode" %}selected{% endif %}>ENCODE</option>
+                    <option value="supplementary" {% if cur == "supplementary" %}selected{% endif %}>Supplementary</option>
+                    <option value="other" {% if cur == "other" %}selected{% endif %}>Other</option>
+                    {% endwith %}
+                  </select>
+                </td>
+                <td style="padding:7px 10px;">
+                  <input class="step-edit-input ds-field" data-field="organism" data-idx="{{ forloop.counter0 }}"
+                         value="{{ ds.organism|default:'' }}" placeholder="Homo sapiens" />
+                </td>
+                <td style="padding:7px 10px;">
+                  <input class="step-edit-input ds-field" data-field="experiment_type" data-idx="{{ forloop.counter0 }}"
+                         value="{{ ds.experiment_type|default:'' }}" placeholder="RNA-seq" />
+                </td>
+                <td style="padding:7px 10px;">
                   {% if ds.accession %}
-                    <span class="pill pill-found" style="font-size: 0.68rem; padding: 2px 7px;">Resolved</span>
+                    <span class="pill pill-found" style="font-size:0.68rem;padding:2px 7px;">Resolved</span>
                   {% else %}
-                    <span class="pill pill-missing" style="font-size: 0.68rem; padding: 2px 7px;">Unresolved</span>
+                    <span class="pill pill-missing" style="font-size:0.68rem;padding:2px 7px;">Unresolved</span>
                   {% endif %}
                 </td>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="card" style="padding: 40px; text-align: center;">
-        <p class="text-muted mb-4">No datasets found. Complete the Datasets step first.</p>
-        <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='datasets' %}">Go to Datasets step →</a>
-      </div>
-    {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="card" style="padding:40px;text-align:center;">
+          <p class="text-muted mb-4">No datasets found. Complete the Datasets step first.</p>
+          <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='datasets' %}">Go to Datasets step →</a>
+        </div>
+      {% endif %}
+    </div>
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
@@ -807,14 +896,15 @@
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
-       TAB: Step Editing
+       TAB: Step Editing  (Phase 2c — PATCH autosave, 800 ms debounce)
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-editing">
     <div class="flex items-center justify-between mb-4">
       <div>
         <h2 style="margin-bottom: 4px;">Structured Step Editing</h2>
-        <p class="text-sm text-muted">Edit assay steps without touching raw JSON. Changes save immediately.</p>
+        <p class="text-sm text-muted">Edit assay steps without touching raw JSON. Changes autosave after 800 ms.</p>
       </div>
+      <span id="se-save-status" style="font-size:0.8125rem;color:var(--text-2);"></span>
     </div>
     {% if structured_assays %}
       {% for assay in structured_assays %}
@@ -825,50 +915,57 @@
           </summary>
           <div class="accordion-body">
             {% for step in assay.steps %}
-              <form method="post"
-                    style="padding: 14px 0;{% if not forloop.last %} border-bottom: 1px solid var(--border);{% endif %}">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="save_structured_step" />
-                <input type="hidden" name="assay_name" value="{{ assay.name }}" />
-                <input type="hidden" name="step_index" value="{{ forloop.counter0 }}" />
-                <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">
+              <div class="se-step-block" data-assay="{{ assay.name|escapejs }}" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
+                   style="padding:14px 0;{% if not forloop.last %}border-bottom:1px solid var(--border);{% endif %}">
+                <p class="text-xs font-600 text-muted mb-2" style="text-transform:uppercase;letter-spacing:.04em;">
                   Step {{ forloop.counter }}
+                  <span class="se-step-status" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
+                        style="font-size:0.7rem;margin-left:8px;font-weight:400;text-transform:none;"></span>
                 </p>
                 {# IDs follow the pattern used by compute_actionable_items field selectors:
                    #id-step-{assay-slug}-step-{idx}-{field} #}
                 {% with astep_id="id-step-"|add:assay.name|slugify|add:"-step-"|add:forloop.counter0|stringformat:"s" %}
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 10px;">
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-bottom:10px;">
                   <div class="form-group">
                     <label class="form-label" for="{{ astep_id }}-software">Software</label>
-                    <input id="{{ astep_id }}-software" class="step-edit-input" type="text" name="software" value="{{ step.software|default:'' }}" />
+                    <input id="{{ astep_id }}-software" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].software"
+                           type="text" value="{{ step.software|default:'' }}" />
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="{{ astep_id }}-version">Version</label>
-                    <input id="{{ astep_id }}-version" class="step-edit-input" type="text" name="software_version" value="{{ step.software_version|default:'' }}" />
+                    <input id="{{ astep_id }}-version" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].software_version"
+                           type="text" value="{{ step.software_version|default:'' }}" />
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="{{ astep_id }}-input-data">Input Data</label>
-                    <input id="{{ astep_id }}-input-data" class="step-edit-input" type="text" name="input_data" value="{{ step.input_data|default:'' }}" />
+                    <input id="{{ astep_id }}-input-data" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].input_data"
+                           type="text" value="{{ step.input_data|default:'' }}" />
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="{{ astep_id }}-output-data">Output Data</label>
-                    <input id="{{ astep_id }}-output-data" class="step-edit-input" type="text" name="output_data" value="{{ step.output_data|default:'' }}" />
+                    <input id="{{ astep_id }}-output-data" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].output_data"
+                           type="text" value="{{ step.output_data|default:'' }}" />
                   </div>
                 </div>
-                <div class="form-group" style="margin-bottom: 10px;">
+                <div class="form-group" style="margin-bottom:10px;">
                   <label class="form-label" for="{{ astep_id }}-parameters">Parameters JSON</label>
-                  <textarea id="{{ astep_id }}-parameters" class="step-edit-input" name="parameters_json" rows="2"
-                            style="font-family: var(--mono); font-size: 0.8125rem; resize: vertical;">{{ step.parameters_json }}</textarea>
+                  <textarea id="{{ astep_id }}-parameters" class="step-edit-input se-field"
+                            data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].parameters"
+                            data-json="true" rows="2"
+                            style="font-family:var(--mono);font-size:0.8125rem;resize:vertical;">{{ step.parameters_json }}</textarea>
                 </div>
                 {% endwith %}
-                <button class="btn btn-success btn-sm" type="submit">✓ Save step</button>
-              </form>
+              </div>
             {% endfor %}
           </div>
         </details>
       {% endfor %}
     {% else %}
-      <div class="card" style="padding: 40px; text-align: center;">
+      <div class="card" style="padding:40px;text-align:center;">
         <p class="text-muted mb-4">No assay steps found. Complete the Methods step first.</p>
         <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='method' %}">Go to Methods step →</a>
       </div>
@@ -1987,5 +2084,214 @@ if (root) {
   root.innerHTML = '';
   createRoot(root).render(React.createElement(PipelineBuilder));
 }
+</script>
+
+{# ══════════════════════════════════════════════════════════════
+   Phase 2 — Autosave client (datasets, step editing, pipeline config)
+   Shared PATCH helper + 800 ms debounce per-editor.
+══════════════════════════════════════════════════════════════ #}
+<script>
+(function () {
+  'use strict';
+
+  const JOB_ID = '{{ job_id }}';
+
+  /* ── Shared PATCH helper ──────────────────────────────────── */
+  async function patchComponent(step, path, value) {
+    const res = await fetch(`/api/v1/jobs/${JOB_ID}/components/${step}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ path, value }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return res.json(); // ComponentSaveResponse
+  }
+
+  /* ── Confidence mini-refresh after any successful PATCH ──── */
+  function refreshConfidenceHint(saveResponse) {
+    const overall = saveResponse?.confidence?.overall;
+    if (overall == null) return;
+    // Update confidence ring label (Phase 0 server-rendered element)
+    document.querySelectorAll('.conf-ring-label').forEach(el => {
+      el.textContent = Math.round(overall) + '%';
+    });
+    // Update actionable items data block for Command Center re-reads
+    const ccData = document.getElementById('_cc-confidence');
+    if (ccData) ccData.textContent = JSON.stringify(saveResponse.confidence);
+    const ccActions = document.getElementById('_cc-actionable-items');
+    if (ccActions) ccActions.textContent = JSON.stringify(saveResponse.actionable_items);
+  }
+
+  /* ── Status indicator helpers ─────────────────────────────── */
+  function setStatus(el, state) {
+    if (!el) return;
+    const icons = { saving: '⏳ saving…', saved: '✓ saved', error: '⚠ error' };
+    const colors = { saving: 'var(--text-2)', saved: '#16a34a', error: '#dc2626' };
+    el.textContent = icons[state] || '';
+    el.style.color = colors[state] || '';
+  }
+
+  /* ── Accession format validator ───────────────────────────── */
+  const ACC_RE = /^(GSE|GSM|SRR|SRX|SRP|ENCSR|ENCFF|PRJNA|E-\w+)\d*/i;
+  function validateAccession(val) {
+    if (!val) return true;           // empty is OK — not required
+    return ACC_RE.test(val.trim());
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     Phase 2b — Dataset editor
+  ══════════════════════════════════════════════════════════ */
+  const dsTimers = {};
+
+  document.querySelectorAll('.ds-field').forEach(input => {
+    input.addEventListener('input', handleDsChange);
+    input.addEventListener('change', handleDsChange);
+  });
+
+  function handleDsChange(e) {
+    const el    = e.target;
+    const field = el.dataset.field;
+    const idx   = el.dataset.idx;
+    const value = el.value;
+
+    // Client-side accession validation
+    if (field === 'accession' && !validateAccession(value)) {
+      el.style.borderColor = '#f87171';
+      setStatus(document.querySelector(`.ds-field-status[data-field="accession"][data-idx="${idx}"]`), 'error');
+      return;
+    }
+    el.style.borderColor = '';
+
+    const key = `${idx}:${field}`;
+    clearTimeout(dsTimers[key]);
+    dsTimers[key] = setTimeout(async () => {
+      const statusEl = document.querySelector(`.ds-field-status[data-field="${field}"][data-idx="${idx}"]`);
+      const globalEl = document.getElementById('ds-save-status');
+      setStatus(statusEl, 'saving');
+      setStatus(globalEl, 'saving');
+      try {
+        const resp = await patchComponent('datasets', `[${idx}].${field}`, value);
+        setStatus(statusEl, 'saved');
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        // Update resolution badge in the same row
+        const row = document.querySelector(`tr[data-ds-idx="${idx}"]`);
+        if (row && field === 'accession') {
+          const badge = row.querySelector('.pill');
+          if (badge) {
+            badge.textContent = value ? 'Resolved' : 'Unresolved';
+            badge.className = 'pill ' + (value ? 'pill-found' : 'pill-missing');
+            badge.style.cssText = 'font-size:0.68rem;padding:2px 7px;';
+          }
+        }
+        setTimeout(() => { setStatus(statusEl, ''); setStatus(globalEl, ''); }, 2500);
+      } catch (err) {
+        setStatus(statusEl, 'error');
+        setStatus(globalEl, 'error');
+        el.title = err.message;
+      }
+    }, 800);
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     Phase 2c — Step editor
+  ══════════════════════════════════════════════════════════ */
+  const seTimers = {};
+
+  document.querySelectorAll('.se-field').forEach(input => {
+    input.addEventListener('input', handleSeChange);
+    input.addEventListener('change', handleSeChange);
+  });
+
+  function handleSeChange(e) {
+    const el    = e.target;
+    const path  = el.dataset.patchPath;
+    const isJson = el.dataset.json === 'true';
+    const key   = path;
+
+    clearTimeout(seTimers[key]);
+    seTimers[key] = setTimeout(async () => {
+      let value = el.value;
+      if (isJson) {
+        try { value = JSON.parse(value); }
+        catch (parseErr) {
+          el.style.borderColor = '#f87171';
+          el.title = 'Invalid JSON: ' + parseErr.message;
+          return;
+        }
+      }
+      el.style.borderColor = '';
+
+      // Find the status spans for this step
+      const block    = el.closest('.se-step-block');
+      const aIdx     = block ? block.dataset.assayIdx : null;
+      const sIdx     = block ? block.dataset.stepIdx  : null;
+      const stepSt   = document.querySelector(`.se-step-status[data-assay-idx="${aIdx}"][data-step-idx="${sIdx}"]`);
+      const globalEl = document.getElementById('se-save-status');
+
+      setStatus(stepSt, 'saving');
+      setStatus(globalEl, 'saving');
+      try {
+        const resp = await patchComponent('method', path, value);
+        setStatus(stepSt, 'saved');
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
+      } catch (err) {
+        setStatus(stepSt, 'error');
+        setStatus(globalEl, 'error');
+        el.title = err.message;
+      }
+    }, 800);
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     Phase 2d — Pipeline config editor
+  ══════════════════════════════════════════════════════════ */
+  const pcTimers = {};
+
+  document.querySelectorAll('.pc-field').forEach(input => {
+    input.addEventListener('input', handlePcChange);
+  });
+
+  function handlePcChange(e) {
+    const el        = e.target;
+    const path      = el.dataset.patchPath;
+    const isJsonArr = el.dataset.jsonArray === 'true';
+    const key       = path;
+
+    clearTimeout(pcTimers[key]);
+    pcTimers[key] = setTimeout(async () => {
+      let value = el.value;
+      if (isJsonArr) {
+        // Comma-separated → array of trimmed strings, filter empties
+        value = value.split(',').map(s => s.trim()).filter(Boolean);
+      }
+
+      const block    = el.closest('.pc-step-block');
+      const sIdx     = block ? block.dataset.stepIdx : null;
+      const stepSt   = document.querySelector(`.pc-step-status[data-step-idx="${sIdx}"]`);
+      const globalEl = document.getElementById('pc-save-status');
+
+      setStatus(stepSt, 'saving');
+      setStatus(globalEl, 'saving');
+      try {
+        const resp = await patchComponent('pipeline', path, value);
+        setStatus(stepSt, 'saved');
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
+      } catch (err) {
+        setStatus(stepSt, 'error');
+        setStatus(globalEl, 'error');
+        el.title = err.message;
+      }
+    }, 800);
+  }
+
+})();
 </script>
 {% endblock %}

@@ -27,6 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from .dependencies import get_current_user
 from .schemas import (
+    ComponentPatchRequest,
+    ComponentSaveResponse,
     ErrorResponse,
     GraphNode,
     JobStatusResponse,
@@ -321,6 +323,74 @@ async def get_graph_node(
             "payload": snapshot["payload"],
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2a — Component PATCH  (partial update + confidence refresh)
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/jobs/{job_id}/components/{step}",
+    response_model=ComponentSaveResponse,
+    summary="Partially update a component snapshot (autosave)",
+    tags=["components"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def patch_component(
+    job_id: str,
+    step: str,
+    req: ComponentPatchRequest,
+    user: Annotated[object, Depends(get_current_user)],
+) -> ComponentSaveResponse:
+    """Apply a path-based partial update to a component snapshot payload.
+
+    Uses dot-bracket notation, e.g.::
+
+        PATCH /api/v1/jobs/{job_id}/components/method
+        { "path": "assay_graph.assays[0].steps[1].software_version",
+          "value": "2.1.3" }
+
+    The endpoint re-validates the full payload through the same Pydantic
+    gate used by the Django form views, recomputes confidence, and returns
+    the updated payload + confidence delta in a single response so the
+    client can refresh the Command Center without a separate API call.
+
+    Only paths in the per-step whitelist are accepted; unknown paths receive
+    a 422 Unprocessable Entity response without touching the database.
+    """
+    valid_steps = {"paper", "figures", "method", "datasets", "software", "pipeline"}
+    if step not in valid_steps:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown step {step!r}. Must be one of: {', '.join(sorted(valid_steps))}.",
+        )
+
+    try:
+        result = await repository.patch_component_snapshot(
+            job_id=job_id,
+            user_id=user.pk,
+            step=step,
+            path=req.path,
+            value=req.value,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Component '{step}' not found for job '{job_id}'.",
+        )
+
+    return ComponentSaveResponse(**result)
 
 
 # ---------------------------------------------------------------------------
