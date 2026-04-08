@@ -225,6 +225,27 @@ def test_sort_figures_and_panels_alphanumerically_orders_natural_numeric_labels(
     assert [sf["label"] for sf in ordered[2]["subfigures"]] == ["A", "B2", "B10"]
 
 
+def test_alphanumeric_sort_key_normalizes_figure_prefix_variants():
+    values = ["Figure 2", "Figure 1", "Figure1", "Fig1", "Fig 1", "F1"]
+    ordered = sorted(values, key=views._alphanumeric_sort_key)
+    assert set(ordered[:5]) == {"Figure 1", "Figure1", "Fig1", "Fig 1", "F1"}
+    assert ordered[-1] == "Figure 2"
+
+
+def test_figure_media_rows_are_sorted_by_normalized_figure_id():
+    rows = views._figure_media_rows(
+        [
+            {"figure_id": "Figure 10", "title": "", "caption": "", "purpose": ""},
+            {"figure_id": "F1", "title": "", "caption": "", "purpose": ""},
+            {"figure_id": "Fig 2", "title": "", "caption": "", "purpose": ""},
+        ],
+        {},
+        "job123",
+        validate_urls=False,
+    )
+    assert [r["figure_id"] for r in rows] == ["F1", "Fig 2", "Figure 10"]
+
+
 @patch("httpx.Client")
 def test_pick_first_valid_url_accepts_html_figure_endpoint(mock_client_cls):
     client = MagicMock()

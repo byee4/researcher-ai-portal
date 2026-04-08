@@ -37,6 +37,12 @@ def test_phase2_dashboard_template_has_structured_step_editor_ui():
     assert "patchComponent" in text     # shared PATCH helper
     # Parameters field still present (as textarea with autosave)
     assert "parameters" in text
+    # Command field is editable and patched to Method.AnalysisStep.code_reference
+    assert "se-command-field" in text
+    assert ".code_reference" in text
+    # Step add/remove controls exist in structured editor
+    assert "se-add-step-btn" in text
+    assert "se-remove-step-btn" in text
 
 
 def test_phase2_legacy_save_structured_step_post_removed():

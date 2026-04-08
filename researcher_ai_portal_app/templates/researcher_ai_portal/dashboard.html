@@ -941,14 +941,31 @@
             <span class="pill pill-neutral" style="margin-left: 8px;">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
           </summary>
           <div class="accordion-body">
+            <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+              <button type="button"
+                      class="btn btn-ghost btn-sm se-add-step-btn"
+                      data-assay-idx="{{ forloop.counter0 }}"
+                      style="padding:4px 10px;font-size:0.75rem;">
+                + Add Step
+              </button>
+            </div>
             {% for step in assay.steps %}
               <div class="se-step-block" data-assay="{{ assay.name|escapejs }}" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
                    style="padding:14px 0;{% if not forloop.last %}border-bottom:1px solid var(--border);{% endif %}">
-                <p class="text-xs font-600 text-muted mb-2" style="text-transform:uppercase;letter-spacing:.04em;">
-                  Step {{ forloop.counter }}
-                  <span class="se-step-status" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
-                        style="font-size:0.7rem;margin-left:8px;font-weight:400;text-transform:none;"></span>
-                </p>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+                  <p class="text-xs font-600 text-muted" style="margin:0;text-transform:uppercase;letter-spacing:.04em;">
+                    Step {{ forloop.counter }}
+                    <span class="se-step-status" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.7rem;margin-left:8px;font-weight:400;text-transform:none;"></span>
+                  </p>
+                  <button type="button"
+                          class="btn btn-ghost btn-sm se-remove-step-btn"
+                          data-assay-idx="{{ forloop.parentloop.counter0 }}"
+                          data-step-idx="{{ forloop.counter0 }}"
+                          style="padding:3px 9px;font-size:0.72rem;color:var(--danger);border-color:var(--danger-mid);">
+                    Remove
+                  </button>
+                </div>
                 {# IDs follow the pattern used by compute_actionable_items field selectors:
                    #id-step-{assay-slug}-step-{idx}-{field} #}
                 {% with astep_id="id-step-"|add:assay.name|slugify|add:"-step-"|add:forloop.counter0|stringformat:"s" %}
@@ -984,6 +1001,15 @@
                             data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].parameters"
                             data-json="true" rows="2"
                             style="font-family:var(--mono);font-size:0.8125rem;resize:vertical;">{{ step.parameters_json }}</textarea>
+                </div>
+                <div class="form-group" style="margin-bottom:2px;">
+                  <label class="form-label" for="{{ astep_id }}-command">Command</label>
+                  <textarea id="{{ astep_id }}-command" class="step-edit-input se-field se-command-field"
+                            data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].code_reference"
+                            rows="2"
+                            style="font-family:var(--mono);font-size:0.8125rem;resize:vertical;"
+                            placeholder="Command preview appears after I/O + parameters save. You can edit it.">{{ step.code_reference|default:'' }}</textarea>
+                  <p class="text-xs text-muted" style="margin-top:4px;">Auto-generated after input/output/parameters updates and fully editable.</p>
                 </div>
                 {% endwith %}
               </div>
@@ -1322,6 +1348,7 @@ import {
   useReactFlow,
   ReactFlowProvider,
   addEdge,
+  reconnectEdge,
 } from '@xyflow/react';
 
 /* ── Constants ─────────────────────────────────────────────── */
@@ -1938,6 +1965,7 @@ function PipelineBuilderInner() {
   const [assays, setAssays] = useState([]);
   const [selectedAssay, setSelectedAssay] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState(null);
   const [saveStatus,   setSaveStatus]   = useState('idle');
   const [loadError,    setLoadError]    = useState('');
   const [jobStatus,    setJobStatus]    = useState(null);
@@ -2109,6 +2137,12 @@ function PipelineBuilderInner() {
     if (!visible) setSelectedNode(null);
   }, [selectedNode, visibleNodes]);
 
+  useEffect(() => {
+    if (!selectedEdgeId) return;
+    const visible = visibleEdges.some(e => e.id === selectedEdgeId);
+    if (!visible) setSelectedEdgeId(null);
+  }, [selectedEdgeId, visibleEdges]);
+
   const onNodesChange = useCallback(changes => {
     setAllNodes(ns => applyNodeChanges(changes, ns));
     if (hydratedRef.current) setSaveStatus('unsaved');
@@ -2129,6 +2163,83 @@ function PipelineBuilderInner() {
     }), eds));
     if (hydratedRef.current) setSaveStatus('unsaved');
   }, [allNodes, selectedAssay]);
+
+  /* Allow edge re-routing by dragging existing edge endpoints */
+  const onReconnect = useCallback((oldEdge, newConnection) => {
+    setAllEdges(eds => reconnectEdge(oldEdge, edgeStyle({
+      ...oldEdge,
+      ...newConnection,
+      data: oldEdge?.data || {},
+    }), eds));
+    if (hydratedRef.current) setSaveStatus('unsaved');
+  }, []);
+
+  const addStep = useCallback(() => {
+    if (!selectedAssay) return;
+    const assay = assays.find(a => a.key === selectedAssay);
+    const assayName = assay?.label || selectedAssay;
+    const assayNodes = allNodes.filter(n => n?.data?.assay_key === selectedAssay);
+    const maxStep = assayNodes.reduce((m, n) => Math.max(m, Number(n?.data?.step_number) || 0), 0);
+    const nextStep = maxStep + 1;
+    const x = assayNodes.length
+      ? Math.max(...assayNodes.map(n => Number(n?.position?.x) || 0)) + 320
+      : 0;
+    const y = assayNodes.length
+      ? Number(assayNodes[0]?.position?.y) || 0
+      : (assays.findIndex(a => a.key === selectedAssay) * 260);
+    let nodeId = `${selectedAssay}__s${nextStep}_custom`;
+    let suffix = 0;
+    const existing = new Set(allNodes.map(n => n.id));
+    while (existing.has(nodeId)) {
+      suffix += 1;
+      nodeId = `${selectedAssay}__s${nextStep}_custom_${suffix}`;
+    }
+    const node = {
+      id: nodeId,
+      type: 'tool_node',
+      position: { x, y },
+      data: {
+        name: `Step ${nextStep}`,
+        version: '',
+        description: '',
+        language: '',
+        source_url: '',
+        commands: [],
+        selectedCommandIndex: 0,
+        inputs: [],
+        outputs: [],
+        parameters: {},
+        container: '',
+        step_id: `${selectedAssay}__step_${nextStep}`,
+        assay_key: selectedAssay,
+        assay_name: assayName,
+        step_number: nextStep,
+      },
+    };
+    setAllNodes(ns => [
+      ...ns,
+      { ...node, data: { ...node.data, onSelect: handleSelect, _nodeId: node.id } },
+    ]);
+    setSelectedNode({ id: node.id, data: node.data });
+    setSelectedEdgeId(null);
+    setSaveStatus('unsaved');
+  }, [allNodes, assays, handleSelect, selectedAssay]);
+
+  const removeSelectedNode = useCallback(() => {
+    if (!selectedNode?.id) return;
+    const nid = selectedNode.id;
+    setAllNodes(ns => ns.filter(n => n.id !== nid));
+    setAllEdges(eds => eds.filter(e => e.source !== nid && e.target !== nid));
+    setSelectedNode(null);
+    setSaveStatus('unsaved');
+  }, [selectedNode]);
+
+  const removeSelectedEdge = useCallback(() => {
+    if (!selectedEdgeId) return;
+    setAllEdges(eds => eds.filter(e => e.id !== selectedEdgeId));
+    setSelectedEdgeId(null);
+    setSaveStatus('unsaved');
+  }, [selectedEdgeId]);
 
   /* Update a single node's data from the edit panel */
   const handleNodeUpdate = useCallback((nodeId, updatedData) => {
@@ -2314,6 +2425,20 @@ function PipelineBuilderInner() {
         edges: visibleEdges,
         onNodesChange, onEdgesChange,
         onConnect,
+        onReconnect,
+        onEdgeClick: (_evt, edge) => {
+          setSelectedEdgeId(edge.id);
+          setSelectedNode(null);
+        },
+        onEdgeDoubleClick: (_evt, edge) => {
+          setAllEdges(eds => eds.filter(e => e.id !== edge.id));
+          setSelectedEdgeId(prev => (prev === edge.id ? null : prev));
+          if (hydratedRef.current) setSaveStatus('unsaved');
+        },
+        onPaneClick: () => {
+          setSelectedNode(null);
+          setSelectedEdgeId(null);
+        },
         nodeTypes:            NODE_TYPES,
         fitView:              true,
         fitViewOptions:       { padding: 0.25 },
@@ -2430,6 +2555,46 @@ function PipelineBuilderInner() {
                 )
               ),
             ),
+            React.createElement('div', {
+              style: { marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' },
+            },
+              React.createElement('button', {
+                onClick: addStep,
+                style: {
+                  padding: '5px 9px', fontSize: 11, fontWeight: 600,
+                  background: '#eff6ff', color: '#1d4ed8',
+                  border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer',
+                },
+                title: 'Add a new step node to the selected assay',
+              }, '+ Step'),
+              React.createElement('button', {
+                onClick: removeSelectedNode,
+                disabled: !selectedNode,
+                style: {
+                  padding: '5px 9px', fontSize: 11, fontWeight: 600,
+                  background: selectedNode ? '#fef2f2' : '#f8fafc',
+                  color: selectedNode ? '#b91c1c' : '#94a3b8',
+                  border: '1px solid #fecaca', borderRadius: 6,
+                  cursor: selectedNode ? 'pointer' : 'default',
+                },
+                title: 'Remove selected step node',
+              }, '− Step'),
+              React.createElement('button', {
+                onClick: removeSelectedEdge,
+                disabled: !selectedEdgeId,
+                style: {
+                  padding: '5px 9px', fontSize: 11, fontWeight: 600,
+                  background: selectedEdgeId ? '#fff7ed' : '#f8fafc',
+                  color: selectedEdgeId ? '#c2410c' : '#94a3b8',
+                  border: '1px solid #fed7aa', borderRadius: 6,
+                  cursor: selectedEdgeId ? 'pointer' : 'default',
+                },
+                title: 'Remove selected edge (or double-click an edge)',
+              }, '− Edge'),
+            ),
+            React.createElement('div', {
+              style: { marginTop: 6, fontSize: 10, color: '#64748b' },
+            }, 'Drag from handles to add edges. Drag an edge endpoint to re-route.'),
           ),
         ),
       ),
@@ -2817,7 +2982,180 @@ if (root) {
   document.querySelectorAll('.se-field').forEach(input => {
     input.addEventListener('input', handleSeChange);
     input.addEventListener('change', handleSeChange);
+    if (input.classList.contains('se-command-field')) {
+      input.dataset.manual = 'true';
+    }
   });
+  document.querySelectorAll('.se-add-step-btn').forEach(btn => {
+    btn.addEventListener('click', handleSeAddStep);
+  });
+  document.querySelectorAll('.se-remove-step-btn').forEach(btn => {
+    btn.addEventListener('click', handleSeRemoveStep);
+  });
+
+  function stringifyParamToken(v) {
+    const s = String(v ?? '').trim();
+    if (!s) return '';
+    return /\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+  }
+
+  function renderParamArgs(params) {
+    if (!params || typeof params !== 'object') return '';
+    return Object.entries(params).map(([k, v]) => {
+      const key = String(k || '').trim();
+      if (!key) return '';
+      const val = stringifyParamToken(v);
+      return val ? `${key} ${val}` : key;
+    }).filter(Boolean).join(' ');
+  }
+
+  function parseStepParameters(block) {
+    const paramsField = block.querySelector('.se-field[data-json="true"]');
+    if (!paramsField) return {};
+    const raw = String(paramsField.value || '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Parameters must be a JSON object');
+    }
+    return parsed;
+  }
+
+  function generateStepCommand(block) {
+    const software = String(block.querySelector('.se-field[data-patch-path$=".software"]')?.value || '').trim();
+    const inputData = String(block.querySelector('.se-field[data-patch-path$=".input_data"]')?.value || '').trim();
+    const outputData = String(block.querySelector('.se-field[data-patch-path$=".output_data"]')?.value || '').trim();
+    let parameters = {};
+    try {
+      parameters = parseStepParameters(block);
+    } catch {
+      return '';
+    }
+
+    if (!software) return '';
+    const parts = [software];
+    const paramArgs = renderParamArgs(parameters);
+    if (paramArgs) parts.push(paramArgs);
+    if (inputData) parts.push(stringifyParamToken(inputData));
+    let cmd = parts.join(' ');
+    if (outputData) cmd += ` > ${stringifyParamToken(outputData)}`;
+    return cmd.trim();
+  }
+
+  function stepStateFromBlock(block) {
+    const software = String(block.querySelector('.se-field[data-patch-path$=".software"]')?.value || '').trim();
+    const software_version = String(block.querySelector('.se-field[data-patch-path$=".software_version"]')?.value || '').trim();
+    const input_data = String(block.querySelector('.se-field[data-patch-path$=".input_data"]')?.value || '').trim();
+    const output_data = String(block.querySelector('.se-field[data-patch-path$=".output_data"]')?.value || '').trim();
+    const command = String(block.querySelector('.se-command-field')?.value || '').trim();
+    let parameters = {};
+    try { parameters = parseStepParameters(block); } catch { parameters = {}; }
+    return {
+      software,
+      software_version,
+      input_data,
+      output_data,
+      parameters,
+      code_reference: command || null,
+      description: `Step using ${software || 'tool'}`,
+      step_number: Number(block.dataset.stepIdx) + 1,
+    };
+  }
+
+  function patchStepArray(assayIdx, steps, statusEl) {
+    return patchComponent('method', `assay_graph.assays[${assayIdx}].steps`, steps)
+      .then(resp => {
+        setStatus(statusEl, 'saved');
+        refreshConfidenceHint(resp);
+        setTimeout(() => {
+          const tabBtn = Array.from(document.querySelectorAll('.dash-tab'))
+            .find(b => (b.getAttribute('onclick') || '').includes("'editing'"));
+          if (tabBtn) showTab('editing', tabBtn);
+          window.location.reload();
+        }, 120);
+      })
+      .catch(err => {
+        setStatus(statusEl, 'error');
+        if (statusEl) statusEl.title = err.message;
+      });
+  }
+
+  function handleSeAddStep(e) {
+    const btn = e.currentTarget;
+    const assayIdx = Number(btn.dataset.assayIdx);
+    const blocks = Array.from(document.querySelectorAll(`.se-step-block[data-assay-idx="${assayIdx}"]`));
+    const globalEl = document.getElementById('se-save-status');
+    const lastStatus = blocks[blocks.length - 1]?.querySelector('.se-step-status') || globalEl;
+    setStatus(lastStatus, 'saving');
+    setStatus(globalEl, 'saving');
+    try {
+      const steps = blocks.map(stepStateFromBlock);
+      const next = {
+        step_number: steps.length + 1,
+        description: `Step ${steps.length + 1}`,
+        input_data: '',
+        output_data: '',
+        software: '',
+        software_version: '',
+        parameters: {},
+        code_reference: null,
+      };
+      steps.push(next);
+      patchStepArray(assayIdx, steps, globalEl);
+    } catch (err) {
+      setStatus(globalEl, 'error');
+      globalEl.title = err.message;
+    }
+  }
+
+  function handleSeRemoveStep(e) {
+    const btn = e.currentTarget;
+    const assayIdx = Number(btn.dataset.assayIdx);
+    const stepIdx = Number(btn.dataset.stepIdx);
+    const blocks = Array.from(document.querySelectorAll(`.se-step-block[data-assay-idx="${assayIdx}"]`));
+    const globalEl = document.getElementById('se-save-status');
+    setStatus(globalEl, 'saving');
+    try {
+      const steps = blocks.map(stepStateFromBlock).filter((_, idx) => idx !== stepIdx);
+      steps.forEach((step, idx) => { step.step_number = idx + 1; });
+      patchStepArray(assayIdx, steps, globalEl);
+    } catch (err) {
+      setStatus(globalEl, 'error');
+      globalEl.title = err.message;
+    }
+  }
+
+  async function maybeAutoSaveGeneratedCommand(block, changedPath) {
+    if (!block) return;
+    if (!changedPath || !/\.(software|input_data|output_data|parameters)$/.test(changedPath)) return;
+    const cmdField = block.querySelector('.se-command-field');
+    if (!cmdField) return;
+    const hasManualCommand = cmdField.dataset.manual === 'true' && String(cmdField.value || '').trim();
+    if (hasManualCommand) return;
+
+    const generated = generateStepCommand(block);
+    if (!generated) return;
+    if (String(cmdField.value || '').trim() === generated) return;
+
+    cmdField.value = generated;
+    cmdField.dataset.manual = 'false';
+    const cmdPath = cmdField.dataset.patchPath;
+    const stepSt = block.querySelector('.se-step-status');
+    const globalEl = document.getElementById('se-save-status');
+    setStatus(stepSt, 'saving');
+    setStatus(globalEl, 'saving');
+    try {
+      const resp = await patchComponent('method', cmdPath, generated);
+      setStatus(stepSt, 'saved');
+      setStatus(globalEl, 'saved');
+      refreshConfidenceHint(resp);
+      setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
+    } catch (err) {
+      setStatus(stepSt, 'error');
+      setStatus(globalEl, 'error');
+      cmdField.title = err.message;
+    }
+  }
 
   function handleSeChange(e) {
     const el    = e.target;
@@ -2836,6 +3174,9 @@ if (root) {
           return;
         }
       }
+      if (el.classList.contains('se-command-field')) {
+        el.dataset.manual = 'true';
+      }
       el.style.borderColor = '';
 
       // Find the status spans for this step
@@ -2852,6 +3193,7 @@ if (root) {
         setStatus(stepSt, 'saved');
         setStatus(globalEl, 'saved');
         refreshConfidenceHint(resp);
+        await maybeAutoSaveGeneratedCommand(block, path);
         setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
       } catch (err) {
         setStatus(stepSt, 'error');

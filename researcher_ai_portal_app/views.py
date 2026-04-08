@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import base64
 import hashlib
 from html import unescape
@@ -85,6 +86,8 @@ _SUPP_FIG_ID_RE = re.compile(r"(?i)\b(?:supplementary|supp\.?)\s*(?:figure|fig\.
 _EXT_DATA_FIG_ID_RE = re.compile(r"(?i)\bextended\s+data\s+(?:figure|fig\.?)\s*(\d{1,3})\b")
 _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
+_FIGURE_PROXY_CACHE_DIR = Path(settings.MEDIA_ROOT) / "figure_proxy_cache"
+_FIGURE_PROXY_CACHE_TTL_SEC = max(60, int(os.environ.get("FIGURE_PROXY_CACHE_TTL_SEC", "604800") or "604800"))
 
 
 def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
@@ -392,7 +395,7 @@ def _figure_uncertainty_rows(figures_payload: Any) -> list[dict[str, Any]]:
                 dedup.append(reason)
         if dedup:
             rows.append({"figure_id": figure_id, "reasons": dedup})
-    return rows
+    return sorted(rows, key=lambda row: _alphanumeric_sort_key(str(row.get("figure_id") or "")))
 
 
 def _figure_provenance_rows(figures_payload: Any) -> list[dict[str, Any]]:
@@ -435,7 +438,7 @@ def _figure_provenance_rows(figures_payload: Any) -> list[dict[str, Any]]:
             )
         if panel_rows:
             rows.append({"figure_id": figure_id, "panels": panel_rows})
-    return rows
+    return sorted(rows, key=lambda row: _alphanumeric_sort_key(str(row.get("figure_id") or "")))
 
 
 def _figure_merged_rows(
@@ -443,8 +446,7 @@ def _figure_merged_rows(
     uncertainty_rows: list[dict[str, Any]],
     provenance_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Merge the three figure data sources into one unified list, sorted
-    so uncertain / low-confidence figures appear first.
+    """Merge the three figure data sources into one unified list.
 
     Each row has:
         figure_id, figure_key, title, caption, entries, deferred_parser,
@@ -496,8 +498,8 @@ def _figure_merged_rows(
             "min_confidence": min_conf,
         })
 
-    # Sort: uncertain figures first, then by min_confidence ascending
-    merged.sort(key=lambda r: (not r["is_uncertain"], r["min_confidence"]))
+    # Keep figure ordering stable and predictable across all views.
+    merged.sort(key=lambda r: _alphanumeric_sort_key(str(r.get("figure_id") or "")))
     return merged
 
 
@@ -566,7 +568,7 @@ def _is_supplementary_figure_id(figure_id: str) -> bool:
 def _primary_figure_number(figure_id: str) -> str | None:
     if _is_supplementary_figure_id(figure_id):
         return None
-    match = re.search(r"(?i)\b(?:fig(?:ure)?\.?)\s*(\d+)", figure_id or "")
+    match = re.search(r"(?i)\b(?:f|fig(?:ure)?\.?)\s*(\d+)", figure_id or "")
     if not match:
         return None
     return match.group(1)
@@ -619,6 +621,7 @@ def _infer_figure_ids_from_paper_text(paper: Any) -> list[str]:
 def _figure_id_key(figure_id: str) -> str:
     text = (figure_id or "").strip().lower()
     text = re.sub(r"(?i)\bfig(?:ure)?\.?\b", "figure", text)
+    text = re.sub(r"(?i)\bf(?=\s*\d)", "figure", text)
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
 
@@ -626,6 +629,7 @@ def _figure_id_key(figure_id: str) -> str:
 def _alphanumeric_sort_key(value: str) -> tuple[tuple[int, Any], ...]:
     text = str(value or "").strip().lower()
     text = re.sub(r"(?i)\bfig(?:ure)?\.?\b", "figure", text)
+    text = re.sub(r"(?i)\bf(?=\s*\d)", "figure", text)
     text = re.sub(r"\s+", " ", text)
     parts = re.findall(r"\d+|[a-z]+", text)
     key: list[tuple[int, Any]] = []
@@ -655,6 +659,21 @@ def _sort_figures_and_panels_alphanumerically(figures_payload: list[dict[str, An
     return sorted(ordered, key=lambda fig: _alphanumeric_sort_key(str(fig.get("figure_id") or "")))
 
 
+def _sort_figure_ids_alphanumerically(figure_ids: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for fid in figure_ids or []:
+        text = str(fid or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return sorted(out, key=_alphanumeric_sort_key)
+
+
 def _build_pmc_figure_url(pmcid: str, figure_id: str) -> str | None:
     number = _primary_figure_number(figure_id)
     if not number:
@@ -680,6 +699,59 @@ def _candidate_pmc_figure_urls(pmcid: str, figure_id: str) -> list[str]:
         f"{base}/F{number}/",
         f"{base}/Fig{number}/",
     ]
+
+
+def _figure_proxy_cache_paths(url: str) -> tuple[Path, Path]:
+    digest = hashlib.sha256(url.casefold().encode("utf-8")).hexdigest()
+    bucket = _FIGURE_PROXY_CACHE_DIR / digest[:2] / digest[2:4]
+    return bucket / f"{digest}.meta.json", bucket / f"{digest}.bin"
+
+
+def _read_cached_figure_proxy_image(url: str) -> tuple[bytes, str] | None:
+    meta_path, blob_path = _figure_proxy_cache_paths(url)
+    if not meta_path.exists() or not blob_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        expires_at = float(meta.get("expires_at", 0) or 0)
+        if expires_at and expires_at < time.time():
+            meta_path.unlink(missing_ok=True)
+            blob_path.unlink(missing_ok=True)
+            return None
+        content_type = str(meta.get("content_type") or "application/octet-stream")
+        return blob_path.read_bytes(), content_type
+    except Exception:
+        return None
+
+
+def _write_cached_figure_proxy_image(url: str, *, content_type: str, body: bytes) -> None:
+    meta_path, blob_path = _figure_proxy_cache_paths(url)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    expires_at = time.time() + _FIGURE_PROXY_CACHE_TTL_SEC
+    meta = {
+        "content_type": content_type,
+        "size": len(body),
+        "cached_at": int(time.time()),
+        "expires_at": int(expires_at),
+    }
+    fd_blob, tmp_blob = tempfile.mkstemp(prefix="figproxy_", suffix=".bin", dir=str(meta_path.parent))
+    fd_meta, tmp_meta = tempfile.mkstemp(prefix="figproxy_", suffix=".json", dir=str(meta_path.parent))
+    try:
+        with os.fdopen(fd_blob, "wb") as fb:
+            fb.write(body)
+        with os.fdopen(fd_meta, "w", encoding="utf-8") as fm:
+            json.dump(meta, fm)
+        os.replace(tmp_blob, blob_path)
+        os.replace(tmp_meta, meta_path)
+    except Exception:
+        try:
+            os.unlink(tmp_blob)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_meta)
+        except OSError:
+            pass
 
 
 def _pick_first_valid_url(candidates: list[str]) -> str | None:
@@ -742,7 +814,13 @@ def _resolved_primary_preview_map(pmcid: str, figure_ids: list[str]) -> dict[str
     return {fid: url for fid, url in zip(ordered_ids, urls)}
 
 
-def _figure_media_rows(figures_payload: Any, paper_payload: Any, job_id: str) -> list[dict[str, Any]]:
+def _figure_media_rows(
+    figures_payload: Any,
+    paper_payload: Any,
+    job_id: str,
+    *,
+    validate_urls: bool = True,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not isinstance(figures_payload, list):
         return rows
@@ -768,16 +846,36 @@ def _figure_media_rows(figures_payload: Any, paper_payload: Any, job_id: str) ->
             mapped = preview_map.get(f"Figure {int(canonical)}")
             if mapped:
                 urls = [mapped] + urls
-        valid_urls: list[str] = []
+        filtered_urls: list[str] = []
+        seen_urls: set[str] = set()
         for candidate in urls:
-            picked = _pick_first_valid_url([candidate])
-            if picked:
-                valid_urls.append(picked)
-        urls = valid_urls
+            c = str(candidate or "").strip()
+            if not c:
+                continue
+            lower = c.lower()
+            if any(hint in lower for hint in _BLOCKED_IMG_HINTS):
+                continue
+            if c in seen_urls:
+                continue
+            seen_urls.add(c)
+            filtered_urls.append(c)
+        if validate_urls:
+            valid_urls: list[str] = []
+            for candidate in filtered_urls:
+                picked = _pick_first_valid_url([candidate])
+                if picked:
+                    valid_urls.append(picked)
+            urls = valid_urls
+        else:
+            urls = filtered_urls
         if not urls and pmcid and figure_id and not is_supplementary:
-            pmc_url = _pick_first_valid_url(_candidate_pmc_figure_urls(pmcid, figure_id))
-            if pmc_url:
-                urls.append(pmc_url)
+            candidates = _candidate_pmc_figure_urls(pmcid, figure_id)
+            if validate_urls:
+                pmc_url = _pick_first_valid_url(candidates)
+                if pmc_url:
+                    urls.append(pmc_url)
+            elif candidates:
+                urls.append(candidates[0])
         if not urls:
             rows.append(
                 {
@@ -813,7 +911,7 @@ def _figure_media_rows(figures_payload: Any, paper_payload: Any, job_id: str) ->
                 "deferred_parser": "",
             }
         )
-    return rows
+    return sorted(rows, key=lambda row: _alphanumeric_sort_key(str(row.get("figure_id") or "")))
 
 
 def _inject_figure_ground_truth(figures_payload: Any, cleaned: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1424,7 +1522,8 @@ def _job_result_from_components(job: dict[str, Any]) -> dict[str, Any]:
 def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     result = _job_result_from_components(job)
     paper = result["paper"]
-    figures = result["figures"]
+    figures = _sort_figures_and_panels_alphanumerically(result["figures"] or [])
+    result["figures"] = figures
     method = result["method"]
     # Normalise dataset dicts: older parsed jobs store the repository type as
     # "source"; templates that pre-date this fix also reference "source_type".
@@ -1782,6 +1881,10 @@ def figure_image_proxy(request, job_id: str):
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return HttpResponse("Invalid image URL.", status=400, content_type="text/plain")
+    cached_image = _read_cached_figure_proxy_image(url)
+    if cached_image is not None:
+        body, content_type = cached_image
+        return HttpResponse(body, content_type=content_type)
 
     timeout = httpx.Timeout(20.0, connect=8.0)
     try:
@@ -1795,6 +1898,7 @@ def figure_image_proxy(request, job_id: str):
             if content_type.startswith("image/"):
                 if "svg" in content_type and any(hint in response.text.lower() for hint in _BLOCKED_IMG_HINTS):
                     return HttpResponse("Blocked placeholder image detected.", status=502, content_type="text/plain")
+                _write_cached_figure_proxy_image(url, content_type=content_type, body=response.content)
                 return HttpResponse(response.content, content_type=content_type)
             if "html" in content_type:
                 html = response.text
@@ -1823,6 +1927,9 @@ def figure_image_proxy(request, job_id: str):
                         continue
                     if "svg" in img_type and any(hint in img_resp.text.lower() for hint in _BLOCKED_IMG_HINTS):
                         continue
+                    _write_cached_figure_proxy_image(url, content_type=img_type, body=img_resp.content)
+                    if img_url != url:
+                        _write_cached_figure_proxy_image(img_url, content_type=img_type, body=img_resp.content)
                     return HttpResponse(img_resp.content, content_type=img_type)
     except Exception as exc:  # pragma: no cover - network-dependent
         return HttpResponse(f"Failed to fetch image: {exc}", status=502, content_type="text/plain")
@@ -1844,7 +1951,7 @@ def workflow_step(request, job_id: str, step: str):
     form_prefix = f"step_{step}"
     gt_form_prefix = f"gt_{step}"
     components_now = job.get("components") or {}
-    figures_now = components_now.get("figures") or []
+    figures_now = _sort_figures_and_panels_alphanumerically(components_now.get("figures") or [])
     figure_ids_for_gt = [
         str(f.get("figure_id"))
         for f in figures_now
@@ -1853,6 +1960,7 @@ def workflow_step(request, job_id: str, step: str):
     if not figure_ids_for_gt:
         paper_comp = components_now.get("paper") or {}
         figure_ids_for_gt = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
+    figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
     figure_gt_form: FigureGroundTruthForm | None = None
 
     if request.method == "POST":
@@ -1917,26 +2025,33 @@ def workflow_step(request, job_id: str, step: str):
     job = get_job(job_id, user=request.user) or job
     component = (job.get("components") or {}).get(step)
     component_meta = (job.get("component_meta") or {}).get(step, {"status": "missing", "missing": [], "source": "none"})
-    figures_for_ui = (job.get("components") or {}).get("figures") or []
+    figures_for_ui = _sort_figures_and_panels_alphanumerically((job.get("components") or {}).get("figures") or [])
     paper_for_ui = (job.get("components") or {}).get("paper") or {}
-    figure_uncertain_rows = _figure_uncertainty_rows(figures_for_ui)
-    figure_provenance_rows = _figure_provenance_rows(figures_for_ui)
-    figure_media_rows = _figure_media_rows(figures_for_ui, paper_for_ui, job_id)
-    merged_figure_rows = _figure_merged_rows(figure_media_rows, figure_uncertain_rows, figure_provenance_rows)
+    figure_uncertain_rows: list[dict[str, Any]] = []
+    figure_provenance_rows: list[dict[str, Any]] = []
+    figure_media_rows: list[dict[str, Any]] = []
+    merged_figure_rows: list[dict[str, Any]] = []
     figure_parse_current = int(job.get("figure_parse_current", 0) or 0)
     figure_parse_total = int(job.get("figure_parse_total", len(figures_for_ui) if step == "figures" else 0) or 0)
     if figure_parse_total < figure_parse_current:
         figure_parse_total = figure_parse_current
     figure_parse_percent = int(round((figure_parse_current / max(figure_parse_total, 1)) * 100)) if figure_parse_total else 0
-    figure_ids_for_ui = [
-        str(f.get("figure_id"))
-        for f in figures_for_ui
-        if isinstance(f, dict) and str(f.get("figure_id") or "").strip()
-    ]
-    if not figure_ids_for_ui:
-        paper_comp = (job.get("components") or {}).get("paper") or {}
-        figure_ids_for_ui = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
-    supplementary_figure_ids = list(job.get("supplementary_figure_ids") or [])
+    figure_ids_for_ui: list[str] = []
+    if step == "figures":
+        figure_uncertain_rows = _figure_uncertainty_rows(figures_for_ui)
+        figure_provenance_rows = _figure_provenance_rows(figures_for_ui)
+        figure_media_rows = _figure_media_rows(figures_for_ui, paper_for_ui, job_id, validate_urls=False)
+        merged_figure_rows = _figure_merged_rows(figure_media_rows, figure_uncertain_rows, figure_provenance_rows)
+        figure_ids_for_ui = [
+            str(f.get("figure_id"))
+            for f in figures_for_ui
+            if isinstance(f, dict) and str(f.get("figure_id") or "").strip()
+        ]
+        if not figure_ids_for_ui:
+            paper_comp = (job.get("components") or {}).get("paper") or {}
+            figure_ids_for_ui = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
+        figure_ids_for_ui = _sort_figure_ids_alphanumerically(figure_ids_for_ui)
+    supplementary_figure_ids = _sort_figure_ids_alphanumerically(list(job.get("supplementary_figure_ids") or []))
     i = STEP_ORDER.index(step)
     prev_step = STEP_ORDER[i - 1] if i > 0 else None
     next_step = STEP_ORDER[i + 1] if i < len(STEP_ORDER) - 1 else None
@@ -2026,7 +2141,7 @@ def dashboard(request, job_id: str):
     if job is None:
         raise Http404("Unknown job id")
 
-    figures_now = ((job.get("components") or {}).get("figures") or [])
+    figures_now = _sort_figures_and_panels_alphanumerically(((job.get("components") or {}).get("figures") or []))
     figure_ids_for_gt = [
         str(f.get("figure_id"))
         for f in figures_now
@@ -2035,6 +2150,7 @@ def dashboard(request, job_id: str):
     if not figure_ids_for_gt:
         paper_comp = (job.get("components") or {}).get("paper") or {}
         figure_ids_for_gt = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
+    figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
 
     if request.method == "POST":
         action = request.POST.get("action", "save_component")
@@ -2153,7 +2269,7 @@ def dashboard(request, job_id: str):
     dashboard_form_media = ComponentJSONForm().media
     figure_uncertain_rows = _figure_uncertainty_rows(components["figures"])
     figure_provenance_rows = _figure_provenance_rows(components["figures"])
-    figure_media_rows = _figure_media_rows(components["figures"], components["paper"], job_id)
+    figure_media_rows = _figure_media_rows(components["figures"], components["paper"], job_id, validate_urls=False)
     merged_figure_rows = _figure_merged_rows(figure_media_rows, figure_uncertain_rows, figure_provenance_rows)
     figure_gt_form = FigureGroundTruthForm(
         prefix="gt_dashboard",
