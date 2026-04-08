@@ -4,6 +4,26 @@ This document covers everything needed to run `researcher-ai-portal` — from a 
 
 ---
 
+## Release baseline
+
+`v2.1.0` is the current minor release baseline before major feature development.
+
+If you need to reproduce the exact baseline state:
+
+```bash
+git fetch --tags
+git checkout v2.1.0
+```
+
+For new major feature branches, run a quick preflight first:
+
+```bash
+python manage.py check
+pytest -q
+```
+
+---
+
 ## Prerequisites
 
 | Requirement | Version | Notes |

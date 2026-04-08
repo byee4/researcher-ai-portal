@@ -14,6 +14,18 @@ Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API 
 
 ---
 
+## Release notes
+
+### v2.1.0 (April 8, 2026)
+
+- Added the `v2.1.0` annotated release tag to establish a stable baseline before the next major feature cycle.
+- Added a dedicated prep branch (`codex/feature-major-add-prep`) for major feature development.
+- Verified baseline environment health before feature work:
+  - `python manage.py check`
+  - `pytest -q` (117 passing tests at release time)
+
+---
+
 ## Quick start
 
 ### Docker (recommended)
