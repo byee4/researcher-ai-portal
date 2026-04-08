@@ -1441,7 +1441,21 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
         datasets.append(d)
     result["datasets"] = datasets
     software = result["software"]
-    pipeline = result["pipeline"]
+    # Normalise pipeline dict: ensure pipeline.config.steps always exists so
+    # the template can iterate it safely without variable-ref default filters.
+    raw_pipeline = result["pipeline"]
+    if not isinstance(raw_pipeline, dict):
+        raw_pipeline = {}
+    raw_config = raw_pipeline.get("config")
+    if not isinstance(raw_config, dict):
+        raw_pipeline = dict(raw_pipeline)
+        raw_pipeline["config"] = {"steps": []}
+    elif not isinstance(raw_config.get("steps"), list):
+        raw_pipeline = dict(raw_pipeline)
+        raw_pipeline["config"] = dict(raw_config)
+        raw_pipeline["config"]["steps"] = []
+    pipeline = raw_pipeline
+    result["pipeline"] = pipeline
     meta = job.get("component_meta") or {}
 
     status_counts = {"found": 0, "inferred": 0, "missing": 0}

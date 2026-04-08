@@ -772,7 +772,7 @@
             <code style="font-size:0.8rem;">depends_on</code> values must be existing step names.
           </p>
           <div id="pc-steps-root">
-            {% with pipe_steps=pipeline.config.steps|default:pipeline.steps|default:"" %}
+            {% with pipe_steps=pipeline.config.steps|default:"" %}
             {% if pipe_steps %}
               {% for ps in pipe_steps %}
               <div class="pc-step-block" data-step-idx="{{ forloop.counter0 }}"
