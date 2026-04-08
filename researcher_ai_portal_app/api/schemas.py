@@ -169,6 +169,10 @@ class JobStatusResponse(BaseModel):
     parse_logs: list[Any] = Field(default_factory=list)
     figure_parse_total: int = 0
     figure_parse_current: int = 0
+    review_required: bool | None = None
+    review_summary: dict[str, Any] | None = None
+    vision_fallback_count: int | None = None
+    vision_fallback_latency_seconds: float | None = None
 
 
 # ---------------------------------------------------------------------------

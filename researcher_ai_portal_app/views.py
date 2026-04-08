@@ -84,6 +84,11 @@ _PMC_FETCH_HEADERS = {
 _PRIMARY_FIG_ID_RE = re.compile(r"(?i)\b(?:figure|fig\.?)\s*(\d{1,3})\b")
 _SUPP_FIG_ID_RE = re.compile(r"(?i)\b(?:supplementary|supp\.?)\s*(?:figure|fig\.?)\s*(?:s)?(\d{1,3})\b")
 _EXT_DATA_FIG_ID_RE = re.compile(r"(?i)\bextended\s+data\s+(?:figure|fig\.?)\s*(\d{1,3})\b")
+_VISION_FALLBACK_WARN_RE = re.compile(
+    r"paper_rag_vision_fallback:\s*count\s*=\s*(\d+)\s+latency_seconds\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
+_BIOWORKFLOW_BLOCKED_RE = re.compile(r"bioworkflow_blocked:.*?ungrounded_fields\s*=\s*(\d+)", re.IGNORECASE)
 _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
 _FIGURE_PROXY_CACHE_DIR = Path(settings.MEDIA_ROOT) / "figure_proxy_cache"
@@ -305,6 +310,74 @@ def _component_status(step: str, payload: Any) -> tuple[str, list[str]]:
     if missing:
         return "inferred", missing
     return "found", []
+
+
+def _parse_vision_fallback_warning(warning: Any) -> dict[str, Any] | None:
+    text = " ".join(str(warning or "").split())
+    if not text:
+        return None
+    match = _VISION_FALLBACK_WARN_RE.search(text)
+    if not match:
+        return None
+    try:
+        return {
+            "vision_fallback_count": int(match.group(1)),
+            "vision_fallback_latency_seconds": float(match.group(2)),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_human_review_summary_from_warnings(parse_warnings: list[Any]) -> dict[str, Any] | None:
+    for warning in parse_warnings:
+        text = " ".join(str(warning or "").split())
+        match = _BIOWORKFLOW_BLOCKED_RE.search(text)
+        if not match:
+            continue
+        ungrounded_count = int(match.group(1))
+        return {
+            "reason": "validation_blocked",
+            "ungrounded_count": ungrounded_count,
+            "ungrounded_fields": [],
+            "recommended_action": (
+                "Provide missing parameters manually or switch "
+                "RESEARCHER_AI_BIOWORKFLOW_MODE=warn to continue with flagged defaults."
+            ),
+        }
+    return None
+
+
+def _extract_method_diagnostics(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    out: dict[str, Any] = {}
+    parse_warnings = list(payload.get("parse_warnings") or [])
+
+    total_fallback_count = 0
+    total_fallback_latency = 0.0
+    for warning in parse_warnings:
+        parsed = _parse_vision_fallback_warning(warning)
+        if parsed is None:
+            continue
+        total_fallback_count += int(parsed["vision_fallback_count"])
+        total_fallback_latency += float(parsed["vision_fallback_latency_seconds"])
+    if total_fallback_count > 0:
+        out["vision_fallback_count"] = total_fallback_count
+        out["vision_fallback_latency_seconds"] = round(total_fallback_latency, 3)
+
+    explicit_review_required = bool(payload.get("human_review_required", False))
+    explicit_review_summary = payload.get("human_review_summary")
+    derived_review_summary = _derive_human_review_summary_from_warnings(parse_warnings)
+    review_required = explicit_review_required or derived_review_summary is not None
+    if review_required:
+        out["human_review_required"] = True
+    if isinstance(explicit_review_summary, dict):
+        out["human_review_summary"] = explicit_review_summary
+    elif isinstance(derived_review_summary, dict):
+        out["human_review_summary"] = derived_review_summary
+
+    return out
 
 
 def _validate_component_json(step: str, payload: Any, mods: dict[str, Any]) -> Any:
@@ -1096,6 +1169,10 @@ def _persist_component(job_id: str, step: str, payload: Any, source: str) -> Non
         "source": source,
     }
     update_job(job_id, components=comps, component_meta=meta)
+    if step == "method":
+        diagnostics = _extract_method_diagnostics(payload)
+        if diagnostics:
+            update_job(job_id, job_metadata=diagnostics)
 
 
 def _run_step(
@@ -1371,6 +1448,19 @@ def _run_step(
 
         software = _typed_component(job, "software", mods) or []
         if step == "pipeline":
+            method_payload = method.model_dump(mode="json") if method is not None else {}
+            method_diagnostics = _extract_method_diagnostics(method_payload)
+            if method_diagnostics.get("human_review_required", False):
+                update_job(
+                    job_id,
+                    status="needs_human_review",
+                    current_step=step,
+                    progress=100,
+                    stage="needs_human_review",
+                    job_metadata=method_diagnostics,
+                )
+                _log_job_event(job_id, "Pipeline build blocked: human review required.", step=step, level="warning")
+                return
             _log_job_event(job_id, "Building pipeline from parsed components", step=step)
             update_job(job_id, stage=f"Pipeline: Sending LLM request to {model}…")
             _log_job_event(
@@ -1414,7 +1504,7 @@ def _run_all_steps_async(
             job = get_job(job_id)
             if job is None:
                 return
-            if str(job.get("status") or "") == "failed":
+            if str(job.get("status") or "") in {"failed", "needs_human_review"}:
                 return
             _dispatch_workflow_step(
                 job_id,
@@ -1424,13 +1514,18 @@ def _run_all_steps_async(
                 force_reparse=force_reparse,
             )
         # All six steps finished successfully
-        update_job(
-            job_id,
-            status="completed",
-            progress=100,
-            stage="All steps complete — ready for review",
-        )
-        _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
+        final_job = get_job(job_id) or {}
+        if str(final_job.get("status") or "") != "needs_human_review":
+            update_job(
+                job_id,
+                status="completed",
+                progress=100,
+                stage="All steps complete — ready for review",
+            )
+        if str((get_job(job_id) or {}).get("status") or "") == "needs_human_review":
+            _log_job_event(job_id, "Pipeline paused for required human review.", step="pipeline", level="warning")
+        else:
+            _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
     except Exception as exc:
         # _dispatch_workflow_step already marks the job as failed and logs the
         # step-level error; log an extra top-level note for clarity.
@@ -1577,6 +1672,7 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     summary["overall_confidence"] = confidence.get("overall", 50.0)
 
     actionable_items = compute_actionable_items(result, confidence)
+    job_metadata = dict(job.get("job_metadata") or {})
 
     # Per-step confidence summary keyed by step name — used by the stepper
     # to colour-code circles on both workflow_step.html and dashboard.html.
@@ -1616,6 +1712,11 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
         "pipeline": pipeline,
         "confidence": confidence,
         "actionable_items": actionable_items,
+        "job_metadata": job_metadata,
+        "review_required": bool(job_metadata.get("human_review_required", False)),
+        "review_summary": job_metadata.get("human_review_summary"),
+        "vision_fallback_count": job_metadata.get("vision_fallback_count"),
+        "vision_fallback_latency_seconds": job_metadata.get("vision_fallback_latency_seconds"),
         "step_confidence_scores": step_confidence_scores,
         "step_action_counts": step_action_counts,
         "summary": summary,
@@ -1648,6 +1749,11 @@ def _dispatch_workflow_step(
             llm_model=llm_model,
             force_reparse=force_reparse,
         )
+        refreshed = get_job(job_id) or {}
+        if str(refreshed.get("status") or "") == "needs_human_review":
+            update_job(job_id, current_step=step, progress=100, stage="needs_human_review")
+            _log_job_event(job_id, "Step ended with human review required.", step=step, level="warning")
+            return
         progress = _progress_for_step(step)
         update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
         _log_job_event(job_id, f"Step completed: {label}", step=step)
@@ -1669,7 +1775,9 @@ def _dispatch_rebuild(job_id: str, edited_step: str, *, llm_api_key: str, llm_mo
             force_reparse=False,
         )
     if dirty_steps:
-        update_job(job_id, status="in_progress", current_step=dirty_steps[-1])
+        refreshed = get_job(job_id) or {}
+        if str(refreshed.get("status") or "") != "needs_human_review":
+            update_job(job_id, status="in_progress", current_step=dirty_steps[-1])
 
 
 def _infer_last_edited_step(job: dict[str, Any]) -> str:
@@ -1852,6 +1960,7 @@ def job_status(request, job_id: str):
     job = get_job(job_id, user=request.user)
     if job is None:
         return JsonResponse({"error": "unknown job"}, status=404)
+    job_metadata = dict(job.get("job_metadata") or {})
     payload = {
         "job_id": job["job_id"],
         "status": job.get("status", "in_progress"),
@@ -1863,6 +1972,10 @@ def job_status(request, job_id: str):
         "figure_parse_total": job.get("figure_parse_total", 0),
         # Phase 5: include component_meta for the progress page completion stepper
         "component_meta": job.get("component_meta") or {},
+        "review_required": bool(job_metadata.get("human_review_required", False)) or None,
+        "review_summary": job_metadata.get("human_review_summary"),
+        "vision_fallback_count": job_metadata.get("vision_fallback_count"),
+        "vision_fallback_latency_seconds": job_metadata.get("vision_fallback_latency_seconds"),
     }
     payload = merge_logs(payload, job_id)
     return JsonResponse(payload)
@@ -2023,6 +2136,7 @@ def workflow_step(request, job_id: str, step: str):
             error = str(exc)
 
     job = get_job(job_id, user=request.user) or job
+    job_metadata = dict(job.get("job_metadata") or {})
     component = (job.get("components") or {}).get(step)
     component_meta = (job.get("component_meta") or {}).get(step, {"status": "missing", "missing": [], "source": "none"})
     figures_for_ui = _sort_figures_and_panels_alphanumerically((job.get("components") or {}).get("figures") or [])
@@ -2131,6 +2245,10 @@ def workflow_step(request, job_id: str, step: str):
             "error": error,
             "info": info,
             "status_url": reverse("job_status", kwargs={"job_id": job_id}),
+            "review_required": bool(job_metadata.get("human_review_required", False)),
+            "review_summary": job_metadata.get("human_review_summary"),
+            "vision_fallback_count": job_metadata.get("vision_fallback_count"),
+            "vision_fallback_latency_seconds": job_metadata.get("vision_fallback_latency_seconds"),
         },
     )
 

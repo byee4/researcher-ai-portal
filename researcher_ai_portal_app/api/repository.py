@@ -352,12 +352,14 @@ async def get_job_status(
                 "current_step",
                 "error",
                 "parse_logs",
+                "job_metadata",
                 "figure_parse_total",
                 "figure_parse_current",
                 "user_id",
             ).get(id=job_id, user_id=user_id)
         except WorkflowJob.DoesNotExist:
             return None
+        metadata = dict(job.job_metadata or {})
         return {
             "job_id": str(job.id),
             "status": job.status,
@@ -368,6 +370,10 @@ async def get_job_status(
             "parse_logs": job.parse_logs,
             "figure_parse_total": job.figure_parse_total,
             "figure_parse_current": job.figure_parse_current,
+            "review_required": bool(metadata.get("human_review_required", False)) or None,
+            "review_summary": metadata.get("human_review_summary"),
+            "vision_fallback_count": metadata.get("vision_fallback_count"),
+            "vision_fallback_latency_seconds": metadata.get("vision_fallback_latency_seconds"),
         }
 
     cached = await _from_cache()
@@ -385,6 +391,10 @@ async def get_job_status(
             "parse_logs": cached.get("parse_logs", []),
             "figure_parse_total": cached.get("figure_parse_total", 0),
             "figure_parse_current": cached.get("figure_parse_current", 0),
+            "review_required": cached.get("review_required"),
+            "review_summary": cached.get("review_summary"),
+            "vision_fallback_count": cached.get("vision_fallback_count"),
+            "vision_fallback_latency_seconds": cached.get("vision_fallback_latency_seconds"),
         }
 
     return await _from_db()

@@ -6,13 +6,13 @@ This document covers everything needed to run `researcher-ai-portal` — from a 
 
 ## Release baseline
 
-`v2.1.0` is the current minor release baseline before major feature development.
+`v2.1.1` is the current minor release baseline before major feature development.
 
 If you need to reproduce the exact baseline state:
 
 ```bash
 git fetch --tags
-git checkout v2.1.0
+git checkout v2.1.1
 ```
 
 For new major feature branches, run a quick preflight first:
@@ -30,7 +30,7 @@ pytest -q
 |-------------|---------|-------|
 | Python | 3.11+ | 3.12 recommended |
 | Docker + Compose | v24+ | Docker Desktop on Mac/Windows |
-| `researcher-ai` package | 2.0.0+ | Local checkout or pip release |
+| `researcher-ai` package | 2.1.1+ | Local checkout or pip release |
 | PostgreSQL | 14+ | Docker image used in all compose setups; SQLite works for development |
 | An LLM API key | — | OpenAI, Anthropic, or Google — entered per-session in the UI |
 
@@ -83,6 +83,8 @@ The UI always accepts an API key per session. These env vars let the server supp
 | `RESEARCHER_AI_VISION_MODEL` | Override the default multimodal model used for figure parsing | provider default |
 | `RESEARCHER_AI_RAG_MODE` | `per_job` (isolated vector store per parse job) or `shared` | `per_job` |
 | `RESEARCHER_AI_RAG_BASE_DIR` | Base directory for RAG persistence when using `per_job` mode | `/tmp` |
+| `RESEARCHER_AI_BIOWORKFLOW_MODE` | BioWorkflow rollout mode: `off`, `warn`, `on` | `warn` |
+| `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` | Hard cap for retrieval refinement rounds in method parsing | parser default |
 
 ### FastAPI / CORS
 
@@ -191,7 +193,7 @@ pip install -e /path/to/researcher-ai
 For a pinned release:
 
 ```bash
-pip install researcher-ai==2.0.0
+pip install researcher-ai==2.1.1
 ```
 
 Optional — install the Cytoscape DAG canvas:
@@ -416,7 +418,7 @@ No existing Django URL patterns, views, or templates were modified. Rollback is 
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'researcher_ai'`**
-The `researcher-ai` package is not installed. Run `pip install -e /path/to/researcher-ai` or `pip install researcher-ai==2.0.0`.
+The `researcher-ai` package is not installed. Run `pip install -e /path/to/researcher-ai` or `pip install researcher-ai==2.1.1`.
 
 **`DisallowedHost` error**
 Add your hostname to `DJANGO_ALLOWED_HOSTS` in `.env`.

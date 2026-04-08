@@ -483,6 +483,41 @@
     elHeaderIcon.innerHTML = `<span style="color:var(--danger,#ef4444);font-size:1.1rem;">✗</span>`;
   }
 
+  function formatReviewSummary(summary) {
+    if (!summary || typeof summary !== "object") {
+      return "Human review is required before pipeline finalization.";
+    }
+    const count = Number(summary.ungrounded_count || 0);
+    const action = String(summary.recommended_action || "").trim();
+    if (count > 0 && action) return `Ungrounded fields: ${count}. ${action}`;
+    if (count > 0) return `Ungrounded fields: ${count}.`;
+    if (action) return action;
+    return "Human review is required before pipeline finalization.";
+  }
+
+  function showNeedsHumanReview(data, step) {
+    done = true;
+    clearInterval(tickTimer);
+    if (step) updateStepDots(step, false);
+    elStallBanner.style.display = "none";
+    if (elActivityCard) elActivityCard.style.display = "none";
+    if (elCancelLink) elCancelLink.style.display = "none";
+    elTitle.textContent = "Human review required";
+    elHeaderIcon.style.background  = "var(--warning-soft)";
+    elHeaderIcon.style.borderColor = "var(--warning)";
+    elSpinner.style.display = "none";
+    elHeaderIcon.textContent = "!";
+    elHeaderIcon.style.fontSize = "1.2rem";
+    elHeaderIcon.style.color = "var(--warning)";
+    if (elReviewBtn) elReviewBtn.textContent = "Review required →";
+    if (elError) {
+      elError.style.display = "";
+      elError.textContent = formatReviewSummary(data && data.review_summary);
+    }
+    applyCompletionMeta(data && data.component_meta);
+    if (elCompletion) elCompletion.style.display = "";
+  }
+
   /* ── Poll ────────────────────────────────────────────────────────────── */
   async function poll() {
     if (done) return;
@@ -531,6 +566,7 @@
       /* terminal states */
       if (data.status === "completed") { showCompletion(data); return; }
       if (data.status === "failed")    { showError(data.error, step); return; }
+      if (data.status === "needs_human_review") { showNeedsHumanReview(data, step); return; }
 
     } catch (_) { /* network hiccup — keep polling */ }
 

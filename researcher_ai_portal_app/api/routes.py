@@ -409,7 +409,7 @@ async def execute_pipeline(
         )
 
     # Reset job status so the frontend polling sees a fresh run.
-    from researcher_ai_portal_app.job_store import update_job
+    from researcher_ai_portal_app.job_store import get_job, update_job
     @sync_to_async
     def _reset() -> None:
         update_job(
@@ -683,6 +683,9 @@ def _run_full_pipeline_sync(
 
     try:
         for step in STEP_ORDER:
+            existing = get_job(job_id)
+            if existing is not None and str(existing.get("status") or "") in {"failed", "needs_human_review"}:
+                return
             update_job(
                 job_id,
                 status="in_progress",
@@ -703,12 +706,12 @@ def _run_full_pipeline_sync(
     # All steps succeeded — persist the auto-generated graph layout.
     _save_graph_after_completion(job_id)
 
-    update_job(
-        job_id,
-        status="completed",
-        progress=100,
-        stage="Workflow complete",
-    )
+    final = get_job(job_id)
+    if final is None:
+        return
+    if str(final.get("status") or "") == "needs_human_review":
+        return
+    update_job(job_id, status="completed", progress=100, stage="Workflow complete")
 
 
 def _save_graph_after_completion(job_id: str) -> None:
@@ -765,7 +768,7 @@ async def parse_publication(
     Returns **202 Accepted** immediately.  The six-step pipeline (paper →
     figures → method → datasets → software → pipeline) runs in a background
     thread.  Poll ``GET /api/v1/jobs/{job_id}/status`` every 2–3 seconds
-    until ``status`` is ``"completed"`` or ``"failed"``, then retrieve the
+    until ``status`` is ``"completed"``, ``"failed"``, or ``"needs_human_review"``, then retrieve the
     generated graph with ``GET /api/v1/graphs/{job_id}``.
 
     ``llm_api_key`` is optional; if omitted the server falls back to the

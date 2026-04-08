@@ -176,6 +176,23 @@
 </style>
 
 <div class="page">
+  {% if review_required %}
+    <div class="alert mb-3" style="background: var(--warning-soft); border-color: var(--warning-mid); color: var(--warning);">
+      <strong>Human review required.</strong>
+      {% if review_summary and review_summary.recommended_action %}
+        {{ review_summary.recommended_action }}
+      {% else %}
+        Review method extraction before finalizing this workflow.
+      {% endif %}
+    </div>
+  {% endif %}
+  {% if vision_fallback_count %}
+    <div class="alert mb-3" style="background: var(--surface-2); border-color: var(--border); color: var(--text-2);">
+      Vision fallback observed during method parsing:
+      <strong style="color: var(--text);">{{ vision_fallback_count }}</strong> fallback(s),
+      <strong style="color: var(--text);">{{ vision_fallback_latency_seconds|default:0 }}</strong>s extra latency.
+    </div>
+  {% endif %}
 
   <!-- ── Paper header card ─────────────────────────────────── -->
   <div class="card mb-4" style="padding: 22px 28px;">

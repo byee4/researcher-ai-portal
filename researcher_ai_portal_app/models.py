@@ -25,7 +25,7 @@ class WorkflowJob(models.Model):
     input_display = models.CharField(max_length=255)
     llm_model = models.CharField(max_length=64)
 
-    status = models.CharField(max_length=16, default="queued")
+    status = models.CharField(max_length=32, default="queued")
     progress = models.IntegerField(default=0)
     stage = models.CharField(max_length=255, default="Queued")
     current_step = models.CharField(max_length=32, default="paper")
@@ -35,6 +35,7 @@ class WorkflowJob(models.Model):
     figure_parse_current = models.IntegerField(default=0)
     supplementary_figure_ids = models.JSONField(default=list)
     parse_logs = models.JSONField(default=list)
+    job_metadata = models.JSONField(default=dict, blank=True)
 
     # Visual builder — React Flow graph state (nodes, edges, viewport JSON)
     graph_data = models.JSONField(default=dict, blank=True)
