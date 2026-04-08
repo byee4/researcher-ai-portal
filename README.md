@@ -1,92 +1,122 @@
 # researcher-ai-portal
 
-Django portal for running the researcher-ai parsing workflow with per-user jobs, durable ORM state, and serial step execution.
+A Django portal that wraps the [`researcher-ai`](https://github.com/byee4/researcher-ai) package, letting researchers submit any publication (PubMed ID or PDF) and extract a fully structured computational workflow: figures, assay graphs, datasets, software, and an executable Snakemake/Nextflow pipeline config.
 
-## MVP Status (Phase 6)
+## What it does
 
-- Job state moved from in-memory dicts to Django ORM (`WorkflowJob`, `ComponentSnapshot`, `PaperCache`).
-- Parse steps run serially in-process for easier live progress tracking.
-- Progress and parser logs are read directly from durable DB snapshots.
-- LLM API keys are stored in session and passed to parser calls (not persisted in DB).
-- Dashboard now includes an assay DAG view (`dash-cytoscape`) rendered through `django-plotly-dash`.
-- Confidence scoring is computed from parsed method/figure/dataset/pipeline components and surfaced in dashboard context.
-- Dashboard now includes a Figure Gallery section with proxied image previews and source links.
-- Structured assay-step editing is available in dashboard for non-JSON users, while raw JSON editing remains for power users.
-- DAG node details now surface detected `nf-core` pipeline info and GitHub code links from method metadata.
-- Dashboard now includes a DAG-aware rebuild trigger that invalidates and reruns only downstream steps.
+1. Accept a PubMed ID, DOI, or uploaded PDF.
+2. Run a six-step LLM-powered parsing pipeline (Paper → Figures → Method → Datasets → Software → Pipeline).
+3. Let the user inspect, edit, and correct each parsed component through a web UI.
+4. Render an interactive assay DAG, figure gallery, and confidence dashboard.
+5. Expose a FastAPI layer under `/api/v1/` for the visual pipeline builder — submit publications, poll status, and read/write React Flow graph state via JSON API.
 
-## Run Locally (MVP)
+Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API keys are entered per-session and never stored in the database.
 
-Redis and Celery are not required in serial parser mode.
+---
 
-### Option A: One-command Docker Deploy (Recommended)
+## Release notes
+
+### v2.1.0 (April 8, 2026)
+
+- Added the `v2.1.0` annotated release tag to establish a stable baseline before the next major feature cycle.
+- Added a dedicated prep branch (`codex/feature-major-add-prep`) for major feature development.
+- Verified baseline environment health before feature work:
+  - `python manage.py check`
+  - `pytest -q` (117 passing tests at release time)
+
+---
+
+## Quick start
+
+### Docker (recommended)
+
+Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) and a local checkout of `researcher-ai`.
 
 ```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
-chmod +x run_portal.sh
+# Clone and enter the portal
+git clone <repo-url> researcher-ai-portal
+cd researcher-ai-portal
+
+# Point to your local researcher-ai source (or set RESEARCHER_AI_SRC in env)
+export RESEARCHER_AI_SRC=/path/to/researcher-ai
+
+# Launch Postgres + web server
 ./run_portal.sh
 ```
 
-This launches:
-- `db` (Postgres)
-- `web` (Django + Gunicorn, serial parser mode)
+Open **http://localhost:8000** — that's it.
 
-`run_portal.sh` vendors the local `researcher-ai` package and prebuilds a wheel,
-then installs that exact wheel in Docker for faster, more deterministic builds.
-Default source path:
-`/Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai`
-
-Override source path if needed:
-
-```bash
-RESEARCHER_AI_SRC=/absolute/path/to/researcher-ai ./run_portal.sh
-```
-
-Force image rebuild when dependencies change:
+Force a full image rebuild after dependency changes:
 
 ```bash
 FORCE_BUILD=1 ./run_portal.sh
 ```
 
-### Option B: Native (Conda) Run
-
-Use the helper scripts:
+### Local (native Python)
 
 ```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
-./scripts/setup_portal_local.sh
-./scripts/run_portal_local.sh
-```
+cd researcher-ai-portal
 
-`setup_portal_local.sh` installs portal requirements + local `researcher-ai`, writes `.env` defaults, and runs migrations.
-`run_portal_local.sh` runs migrations and launches Django in serial parser mode.
+# Install portal + researcher-ai
+pip install -r requirements.txt
+pip install -e /path/to/researcher-ai
 
-Manual alternative:
+# Copy and fill in the environment file
+cp .env.example .env   # edit DJANGO_SECRET_KEY at minimum
 
-```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
-python -m pip install -r requirements.txt
-# Install core package dependency (editable for local co-dev):
-# python -m pip install -e /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
-# OR install from package index/git source when available.
-
+# Set up the database and static files
 python manage.py migrate
-python manage.py runserver 0.0.0.0:8000
+python manage.py collectstatic --noinput
+
+# Start the server (ASGI, supports Django + FastAPI)
+uvicorn researcher_ai_portal.asgi:application --reload --host 0.0.0.0 --port 8000
 ```
 
-Optional dependency for full DAG canvas:
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [`docs/SETUP.md`](docs/SETUP.md) | Full setup guide: prerequisites, environment variables, local dev, Docker, and production deployment |
+| [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | End-to-end walkthrough: parsing a paper, editing components, reading the dashboard |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, component inventory, FastAPI integration design |
+
+---
+
+## Running tests
 
 ```bash
-python -m pip install dash-cytoscape
-```
-
-## Test
-
-```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai-portal
 python -m pytest researcher_ai_portal_app/tests -q
 ```
 
-## Tutorial
+---
 
-Full walkthrough: [`docs/TUTORIAL.md`](docs/TUTORIAL.md)
+## API reference
+
+Interactive Swagger docs are available at **http://localhost:8000/api/v1/docs** when the server is running.
+
+### Phase 2 endpoints (visual builder)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/parse-publication` | Submit a publication; returns `202` with a `job_id`. Runs all six pipeline steps in the background. |
+| `GET` | `/api/v1/jobs/{job_id}/status` | Poll parsing progress. Returns `status`, `progress` (0–100), `stage`, and `parse_logs`. |
+| `GET` | `/api/v1/graphs/{job_id}` | Retrieve the auto-generated React Flow graph once parsing completes. |
+| `PUT` | `/api/v1/graphs/{job_id}` | Persist the graph after the user rearranges nodes. |
+| `GET` | `/api/v1/graphs/{job_id}/nodes/{node_id}` | Full parsed payload for a single pipeline step. |
+
+All endpoints require the Django session cookie (`credentials: "include"` from the browser, or `--cookie sessionid=...` from curl).
+
+---
+
+## Environment variables
+
+See [`docs/SETUP.md`](docs/SETUP.md#environment-variables) for the full reference. The minimum set for local development:
+
+```env
+DJANGO_SECRET_KEY=any-long-random-string
+DJANGO_DEBUG=True
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+DATABASE_URL=                  # omit to use SQLite fallback
+```

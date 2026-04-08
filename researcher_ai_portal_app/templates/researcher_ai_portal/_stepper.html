@@ -1,0 +1,212 @@
+{% comment %}
+_stepper.html - shared journey-progression stepper partial
+
+Required context:
+  stepper_chips         list[{id, label, meta, stepper_state, action_count, confidence_score}]
+  job_id                str
+  stepper_current_step  str (the currently active step, or "" on dashboard)
+
+stepper_state values:
+  "running"      - blue pulsing (job is actively processing this step)
+  "confirmed"    - green check  (confidence >= 70% or found with no issues)
+  "needs-review" - amber warn   (confidence < 70% or has actionable items)
+  "not-started"  - grey         (status == "missing")
+{% endcomment %}
+<style>
+/* ── Stepper core ───────────────────────────────────────────────────────── */
+.stepper-wrap {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+/* Horizontal connector line drawn behind the dots */
+.stepper-connector {
+  position: absolute;
+  top: 13px;
+  left: 20px;
+  right: 60px;
+  height: 2px;
+  background: var(--border-2);
+  z-index: 0;
+}
+.stepper-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+  position: relative;
+  z-index: 1;
+}
+.stepper-item:last-child {
+  flex: 0 0 auto;
+  margin-left: 4px;
+}
+
+/* ── Dot ────────────────────────────────────────────────────────────────── */
+.stepper-dot-wrap {
+  position: relative;
+  width: 28px;
+  height: 28px;
+}
+.stepper-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  transition: all .2s;
+  /* default: not-started */
+  background: var(--surface);
+  border: 2px solid var(--border-2);
+  color: var(--text-3);
+}
+
+/* State modifiers */
+.stepper-dot[data-state="running"] {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 0 0 4px rgba(29,78,216,.12);
+  animation: stepper-pulse 1.4s ease-in-out infinite;
+}
+.stepper-dot[data-state="confirmed"] {
+  background: var(--success-soft);
+  border-color: var(--success);
+  color: var(--success);
+}
+.stepper-dot[data-state="needs-review"] {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+.stepper-dot[data-state="current"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
+  box-shadow: 0 0 0 4px var(--primary-soft);
+}
+/* Dashboard endpoint dot */
+.stepper-dot[data-state="dashboard"] {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+@keyframes stepper-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(29,78,216,.12); }
+  50%       { box-shadow: 0 0 0 7px rgba(29,78,216,.06); }
+}
+
+/* ── Action-count badge ─────────────────────────────────────────────────── */
+.stepper-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--danger, #ef4444);
+  color: white;
+  font-size: 0.6rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  border: 1.5px solid var(--surface);
+}
+
+/* ── Label ──────────────────────────────────────────────────────────────── */
+.stepper-label {
+  font-size: 0.7rem;
+  white-space: nowrap;
+  transition: color .2s;
+  /* default */
+  font-weight: 500;
+  color: var(--text-3);
+}
+.stepper-label[data-state="running"]      { color: var(--primary);  font-weight: 700; }
+.stepper-label[data-state="confirmed"]    { color: var(--success);  font-weight: 600; }
+.stepper-label[data-state="needs-review"] { color: var(--warning);  font-weight: 600; }
+.stepper-label[data-state="current"]      { color: var(--primary);  font-weight: 700; }
+.stepper-label[data-state="dashboard"]    { color: var(--teal);     font-weight: 600; }
+
+/* ── field-highlight animation (used by activateAction in dashboard) ────── */
+@keyframes field-flash {
+  0%, 100% { background: transparent; }
+  25%, 75%  { background: rgba(245,158,11,.18); }
+}
+.field-highlight {
+  animation: field-flash 1.2s ease-in-out 2;
+  border-color: var(--warning) !important;
+  outline: 2px solid rgba(245,158,11,.35);
+}
+</style>
+
+<div class="card card-sm mb-4" style="padding: 14px 20px;">
+  <div class="stepper-wrap">
+    <!-- connector line -->
+    <div class="stepper-connector"></div>
+
+    {% for chip in stepper_chips %}
+      {% comment %}
+        Determine the visual state for this chip:
+        1. If this is the page's current step (stepper_current_step) → "current"
+        2. Otherwise use chip.stepper_state computed by the view
+      {% endcomment %}
+      {% if chip.id == stepper_current_step %}
+        {% with dot_state="current" %}
+          <a href="{% url 'workflow_step' job_id=job_id step=chip.id %}"
+             class="stepper-item">
+            <div class="stepper-dot-wrap">
+              <div class="stepper-dot" data-state="{{ dot_state }}">
+                {{ forloop.counter }}
+              </div>
+              {% if chip.action_count > 0 and chip.id != stepper_current_step %}
+                <span class="stepper-badge">{{ chip.action_count }}</span>
+              {% endif %}
+            </div>
+            <span class="stepper-label" data-state="{{ dot_state }}">{{ chip.label }}</span>
+          </a>
+        {% endwith %}
+      {% else %}
+        {% with dot_state=chip.stepper_state %}
+          <a href="{% url 'workflow_step' job_id=job_id step=chip.id %}"
+             class="stepper-item">
+            <div class="stepper-dot-wrap">
+              <div class="stepper-dot" data-state="{{ dot_state }}">
+                {% if dot_state == "confirmed" %}✓
+                {% elif dot_state == "needs-review" %}⚠
+                {% elif dot_state == "running" %}
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+                    <circle cx="5" cy="5" r="3"/>
+                  </svg>
+                {% else %}{{ forloop.counter }}{% endif %}
+              </div>
+              {% if chip.action_count > 0 %}
+                <span class="stepper-badge">{{ chip.action_count }}</span>
+              {% endif %}
+            </div>
+            <span class="stepper-label" data-state="{{ dot_state }}">{{ chip.label }}</span>
+          </a>
+        {% endwith %}
+      {% endif %}
+    {% endfor %}
+
+    <!-- Dashboard endpoint node -->
+    <a href="{% url 'dashboard' job_id=job_id %}"
+       class="stepper-item">
+      <div class="stepper-dot-wrap">
+        <div class="stepper-dot" data-state="dashboard">⊞</div>
+      </div>
+      <span class="stepper-label" data-state="dashboard">Dashboard</span>
+    </a>
+  </div>
+</div>

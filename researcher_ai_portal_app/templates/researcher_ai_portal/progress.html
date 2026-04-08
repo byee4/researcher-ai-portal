@@ -1,7 +1,7 @@
 {% extends "researcher_ai_portal/base.html" %}
 {% block title %}Parsing… — researcher-ai{% endblock %}
 
-{% block max_width %}680{% endblock %}
+{% block max_width %}760{% endblock %}
 
 {% block breadcrumb %}
   <a href="{% url 'home' %}">New Analysis</a>
@@ -10,167 +10,536 @@
 {% endblock %}
 
 {% block content %}
+<style>
+  @keyframes spin   { to { transform: rotate(360deg); } }
+  @keyframes pulse  { 0%,100%{opacity:1} 50%{opacity:.45} }
+  @keyframes fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+  /* ── Step dots ────────────────────────────────────────────── */
+  .pg-stepper { display:flex; align-items:flex-start; gap:0; position:relative; }
+  .pg-connector {
+    position:absolute; top:14px; left:20px; right:60px;
+    height:2px; background:var(--border-2); z-index:0;
+  }
+  .pg-step {
+    flex:1; display:flex; flex-direction:column; align-items:center;
+    gap:5px; position:relative; z-index:1;
+  }
+  .pg-step:last-child { flex:0 0 auto; margin-left:4px; }
+  .pg-dot {
+    width:30px; height:30px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:.7rem; font-weight:700; transition:all .3s;
+    /* default: pending */
+    background:var(--surface); border:2px solid var(--border-2); color:var(--text-3);
+  }
+  .pg-dot[data-s="done"]    { background:var(--success); border-color:var(--success); color:#fff; }
+  .pg-dot[data-s="active"]  { background:var(--primary-soft); border-color:var(--primary); color:var(--primary);
+                               box-shadow:0 0 0 5px rgba(29,78,216,.12);
+                               animation:pulse 1.6s ease-in-out infinite; }
+  .pg-dot[data-s="error"]   { background:var(--danger,#ef4444); border-color:var(--danger,#ef4444); color:#fff; }
+  .pg-dot[data-s="dashboard"]{ background:var(--teal-soft); border-color:var(--teal); color:var(--teal); }
+  .pg-label {
+    font-size:.68rem; white-space:nowrap; transition:color .3s;
+    font-weight:500; color:var(--text-3);
+  }
+  .pg-label[data-s="done"]   { color:var(--success); font-weight:600; }
+  .pg-label[data-s="active"] { color:var(--primary);  font-weight:700; }
+  .pg-label[data-s="error"]  { color:var(--danger,#ef4444); font-weight:600; }
+  .pg-label[data-s="dashboard"]{ color:var(--teal); font-weight:600; }
+
+  /* ── Progress bar ──────────────────────────────────────────── */
+  .pg-bar-track {
+    height:8px; background:var(--surface-3); border-radius:999px; overflow:hidden;
+  }
+  .pg-bar-fill {
+    height:100%; border-radius:999px;
+    background:linear-gradient(90deg,var(--primary),#60a5fa);
+    transition:width .8s ease; min-width:4px;
+  }
+
+  /* ── Log stream ────────────────────────────────────────────── */
+  .log-stream {
+    max-height:260px; overflow-y:auto; display:flex; flex-direction:column;
+    gap:4px; padding-right:4px;
+    scrollbar-width:thin;
+  }
+  .log-entry {
+    display:grid; grid-template-columns:5.5rem 4.5rem 1fr;
+    gap:0 8px; font-size:.73rem; line-height:1.5;
+    border-radius:4px; padding:3px 6px;
+    animation:fadein .25s ease;
+  }
+  .log-entry:nth-child(odd)  { background:var(--surface); }
+  .log-entry:nth-child(even) { background:transparent; }
+  .log-ts   { color:var(--text-3); font-variant-numeric:tabular-nums; }
+  .log-step { font-weight:600; color:var(--primary); text-transform:uppercase; font-size:.65rem; letter-spacing:.03em; }
+  .log-msg  { color:var(--text-2); }
+  .log-entry[data-level="error"]   .log-msg { color:var(--danger,#ef4444); }
+  .log-entry[data-level="warning"] .log-msg { color:var(--warning); }
+
+  /* ── Stall banner ──────────────────────────────────────────── */
+  #stall-banner {
+    background:var(--warning-soft); border:1px solid var(--warning-mid);
+    border-radius:var(--radius); padding:10px 14px;
+    font-size:.85rem; color:var(--warning); line-height:1.5;
+    display:none;
+  }
+
+  /* ── Completion panel ──────────────────────────────────────── */
+  #completion-panel { display:none; animation:fadein .4s ease; }
+
+  .completion-stepper-wrap {
+    display:flex; align-items:flex-start; gap:0; position:relative;
+    padding:14px 20px;
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  }
+  .completion-stepper-wrap .pg-connector { right:56px; }
+</style>
+
 <div class="page">
+<div style="max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:14px;">
 
-  <div class="card" style="padding: 32px;">
-
-    <!-- Header -->
-    <div class="flex items-center gap-3 mb-6">
-      <div style="width: 40px; height: 40px; background: var(--primary-soft); border: 1.5px solid var(--primary-mid);
-                  border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <circle cx="9" cy="9" r="7.5" stroke="#1d4ed8" stroke-width="1.5" stroke-dasharray="4 2"/>
-          <circle cx="9" cy="9" r="3" fill="#1d4ed8"/>
-        </svg>
+  {% comment %} ── 1. Header card ─────────────────────────────────────── {% endcomment %}
+  <div class="card" style="padding:22px 28px;">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+      <div id="header-icon"
+           style="width:42px;height:42px;background:var(--primary-soft);border:1.5px solid var(--primary-mid);
+                  border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <div id="header-spinner"
+             style="width:18px;height:18px;border:2px solid var(--primary-mid);
+                    border-top-color:var(--primary);border-radius:50%;
+                    animation:spin .8s linear infinite;"></div>
       </div>
-      <div>
-        <h1 style="font-size: 1.25rem;">Parsing paper</h1>
-        <p class="text-sm text-muted mt-1">Job <code>{{ job_id }}</code></p>
+      <div style="flex:1;min-width:180px;">
+        <h1 id="header-title" style="font-size:1.2rem;margin-bottom:3px;">Parsing paper…</h1>
+        <p class="text-sm text-muted">
+          Job <code>{{ job_id }}</code>
+          &nbsp;·&nbsp;
+          <span id="elapsed-display" style="font-variant-numeric:tabular-nums;">0:00</span> elapsed
+        </p>
+      </div>
+      <div id="step-counter" style="text-align:right;flex-shrink:0;">
+        <p class="text-xs text-muted">Step</p>
+        <p style="font-size:1.4rem;font-weight:800;color:var(--primary);line-height:1;" id="step-num">—</p>
+        <p class="text-xs text-muted">of {{ stages|length }}</p>
       </div>
     </div>
+  </div>
 
-    <!-- Progress bar -->
-    <div class="progress-track progress-track-lg mb-2">
-      <div id="progress-bar" class="progress-fill progress-fill-lg" style="width: 0%;">0%</div>
-    </div>
-    <p id="stage" class="text-sm text-muted mb-6" style="text-align: center;">Starting…</p>
-
-    <!-- Stage indicators -->
-    <div id="stage-indicators" style="display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; margin-bottom: 28px;">
+  {% comment %} ── 2. Step stepper ────────────────────────────────────── {% endcomment %}
+  <div class="card card-sm" style="padding:16px 20px;">
+    <div class="pg-stepper">
+      <div class="pg-connector"></div>
       {% for s in stages %}
-        <div class="stage-step" data-stage="{{ s.id }}"
-             style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;">
-          <div class="stage-dot"
-               style="width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border-2);
-                      background: var(--surface-3); display: flex; align-items: center; justify-content: center;
-                      font-size: 0.7rem; font-weight: 700; color: var(--text-3); transition: all .3s;
-                      position: relative;">
-            {{ forloop.counter }}
-          </div>
-          <span style="font-size: 0.7rem; color: var(--text-3); font-weight: 500; transition: color .3s; max-width: 60px; line-height: 1.3;">
-            {{ s.label }}
-          </span>
+        <div class="pg-step">
+          <div class="pg-dot" id="dot-{{ s.id }}" data-s="pending">{{ forloop.counter }}</div>
+          <span class="pg-label" id="lbl-{{ s.id }}" data-s="pending">{{ s.label }}</span>
         </div>
-      {% empty %}
-        {% for s in default_stages %}
-          <div class="stage-step" data-stage="{{ s.id }}"
-               style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;">
-            <div class="stage-dot"
-                 style="width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border-2);
-                        background: var(--surface-3); display: flex; align-items: center; justify-content: center;
-                        font-size: 0.7rem; font-weight: 700; color: var(--text-3); transition: all .3s;">
+      {% endfor %}
+      <a href="{% url 'dashboard' job_id=job_id %}" class="pg-step" style="text-decoration:none;">
+        <div class="pg-dot" data-s="dashboard">⊞</div>
+        <span class="pg-label" data-s="dashboard">Dashboard</span>
+      </a>
+    </div>
+  </div>
+
+  {% comment %} ── 3. Current step activity card ──────────────────────── {% endcomment %}
+  <div class="card card-sm" id="activity-card" style="padding:16px 20px;display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+      <span id="activity-step-label" style="font-weight:700;font-size:.95rem;color:var(--primary);">—</span>
+      <span id="activity-step-timer" class="text-xs text-muted"
+            style="font-variant-numeric:tabular-nums;">0s</span>
+    </div>
+    <div class="pg-bar-track mb-2">
+      <div class="pg-bar-fill" id="activity-bar" style="width:0%;"></div>
+    </div>
+    <p id="activity-stage" class="text-sm" style="color:var(--text-2);min-height:1.4em;"></p>
+    <p id="activity-hint"  class="text-xs text-muted" style="margin-top:6px;font-style:italic;"></p>
+  </div>
+
+  {% comment %} ── 4. Stall warning banner ───────────────────────────── {% endcomment %}
+  <div id="stall-banner">
+    <strong>⏳ LLM call in progress</strong> — <span id="stall-msg">waiting for model response…</span>
+    <br>Large models can take 1–10 minutes to respond. The server is still running.
+  </div>
+
+  {% comment %} ── 5. Error area ─────────────────────────────────────── {% endcomment %}
+  <div id="error-area" class="alert alert-error" style="display:none;"></div>
+
+  {% comment %} ── 6. Live event log ──────────────────────────────────── {% endcomment %}
+  <div class="card card-sm" style="padding:14px 16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <p class="text-xs font-600 text-muted" style="text-transform:uppercase;letter-spacing:.04em;">Live events</p>
+      <span id="log-count" class="text-xs text-muted">No events yet</span>
+    </div>
+    <div class="log-stream" id="log-stream">
+      <p class="text-xs text-muted" style="padding:4px 6px;">Waiting for first event…</p>
+    </div>
+  </div>
+
+  {% comment %} ── 7. Completion panel (hidden until done) ────────────── {% endcomment %}
+  <div id="completion-panel">
+    <div class="card card-sm" style="padding:16px 20px;background:var(--success-soft);border-color:var(--success);">
+      <div style="display:flex;align-items:flex-start;gap:12px;">
+        <div style="width:36px;height:36px;background:var(--success);border-radius:10px;
+                    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+                    font-size:1.1rem;color:#fff;">✓</div>
+        <div style="flex:1;">
+          <p style="font-weight:700;color:var(--success);margin-bottom:3px;">All steps complete!</p>
+          <p class="text-sm text-muted">Paper, figures, methods, datasets, software, and pipeline have all been parsed.</p>
+        </div>
+        <span id="total-time-badge" class="text-xs text-muted" style="white-space:nowrap;"></span>
+      </div>
+      <p id="redirect-countdown" class="text-xs text-muted"
+         style="margin-top:10px;text-align:right;display:none;">
+        Redirecting to dashboard in <strong id="countdown-secs">3</strong>s…
+        <a href="{% url 'dashboard' job_id=job_id %}" style="margin-left:4px;">Go now →</a>
+      </p>
+    </div>
+
+    <div class="card card-sm" style="padding:14px 20px;margin-top:0;">
+      <p class="text-xs font-600 text-muted mb-3" style="text-transform:uppercase;letter-spacing:.04em;">Step results</p>
+      <div class="completion-stepper-wrap">
+        <div class="pg-connector"></div>
+        {% for s in completion_steps %}
+          <div class="pg-step">
+            <div class="pg-dot completion-dot" id="cdot-{{ s.id }}" data-step="{{ s.id }}" data-s="pending">
               {{ forloop.counter }}
             </div>
-            <span style="font-size: 0.7rem; color: var(--text-3); font-weight: 500; transition: color .3s; max-width: 60px; line-height: 1.3;">
+            <span class="pg-label completion-label" id="clbl-{{ s.id }}" data-step="{{ s.id }}" data-s="pending">
               {{ s.label }}
             </span>
           </div>
         {% endfor %}
-      {% endfor %}
+        <a id="completion-dash-link" href="{% url 'dashboard' job_id=job_id %}"
+           class="pg-step" style="text-decoration:none;">
+          <div class="pg-dot" data-s="dashboard">⊞</div>
+          <span class="pg-label" data-s="dashboard">Dashboard →</span>
+        </a>
+      </div>
     </div>
 
-    <!-- Error area -->
-    <div id="error-area" style="display: none;" class="alert alert-error mb-4"></div>
-
-    <div class="flex items-center gap-3">
-      <div id="spinner" style="width: 18px; height: 18px; border: 2px solid var(--border-2);
-                                border-top-color: var(--primary); border-radius: 50;
-                                animation: spin 0.8s linear infinite; flex-shrink: 0;"></div>
-      <p class="text-sm text-muted">This may take a minute or two depending on paper complexity and LLM latency.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;">
+      <a id="review-cta-btn" href="#"
+         class="btn btn-primary" style="flex:1;min-width:160px;justify-content:center;">
+        Review pipeline →
+      </a>
+      <a id="workflow-btn" href="#"
+         class="btn btn-ghost btn-sm" style="align-self:center;">
+        Step-by-step editor
+      </a>
     </div>
-
-    <hr class="section-divider" />
-    <a class="btn btn-ghost btn-sm" href="{% url 'home' %}">← Cancel and start over</a>
   </div>
 
+  <a href="{% url 'home' %}" id="cancel-link"
+     class="text-xs text-muted" style="text-align:center;display:block;padding:4px 0;">
+    ← Cancel and start over
+  </a>
+
+</div>
 </div>
 
-<style>
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .stage-step[data-active="true"] .stage-dot {
-    border-color: var(--primary) !important;
-    background: var(--primary-soft) !important;
-    color: var(--primary) !important;
-    box-shadow: 0 0 0 4px rgba(29,78,216,.10);
-  }
-  .stage-step[data-active="true"] > span { color: var(--primary) !important; }
-
-  .stage-step[data-done="true"] .stage-dot {
-    border-color: var(--success) !important;
-    background: var(--success) !important;
-    color: white !important;
-  }
-  .stage-step[data-done="true"] > span { color: var(--success) !important; }
-</style>
-
 <script>
-  const statusUrl   = "{% url 'job_status' job_id=job_id %}";
-  const dashboardUrl = "{% url 'dashboard' job_id=job_id %}";
-  const bar    = document.getElementById("progress-bar");
-  const stageEl = document.getElementById("stage");
-  const errBox  = document.getElementById("error-area");
-  const spinner  = document.getElementById("spinner");
+(function () {
+  /* ── Constants ──────────────────────────────────────────────────────── */
+  const STATUS_URL    = "{% url 'job_status' job_id=job_id %}";
+  const DASHBOARD_URL = "{% url 'dashboard' job_id=job_id %}";
+  const WORKFLOW_URL  = "{% url 'workflow_step' job_id=job_id step='paper' %}";
+  const STEP_ORDER    = {{ step_order_json|safe }};
+  const STEP_LABELS   = {{ step_labels_json|safe }};
+  const POLL_INTERVAL = 1200;  // ms between status polls
 
-  // Map stage label text → stage step element
-  const stageMap = {
-    "parse_paper":    "paper",
-    "paper":          "paper",
-    "parse_figures":  "figures",
-    "figures":        "figures",
-    "parse_methods":  "methods",
-    "methods":        "methods",
-    "parse_datasets": "datasets",
-    "datasets":       "datasets",
-    "parse_software": "software",
-    "software":       "software",
-    "build_pipeline": "pipeline",
-    "pipeline":       "pipeline",
+  /* ── Time hints shown while a step is running ───────────────────────── */
+  const STEP_HINTS = {
+    paper:    "Fetching and parsing paper text. Typically 30–60 seconds.",
+    figures:  "Parsing figure images with vision AI. Each figure takes ~20–45 s.",
+    method:   "Extracting methods using RAG + LLM. This is the slowest step — expect 3–10 minutes. Long silences between log events are normal.",
+    datasets: "Resolving dataset accessions (GEO, SRA). One network call per accession.",
+    software: "Identifying software tools from the methods section. ~30–60 s.",
+    pipeline: "Assembling the computational pipeline graph. ~30–60 s.",
   };
 
-  function markStages(activeStageId, pct) {
-    const steps = document.querySelectorAll(".stage-step");
-    const stageIds = Array.from(steps).map(s => s.dataset.stage);
-    const activeIdx = stageIds.indexOf(activeStageId);
-    steps.forEach((step, i) => {
-      step.removeAttribute("data-active");
-      step.removeAttribute("data-done");
-      if (i < activeIdx) step.setAttribute("data-done", "true");
-      else if (i === activeIdx) step.setAttribute("data-active", "true");
+  /* ── Stall warning thresholds ───────────────────────────────────────── */
+  const STALL_WARN_SEC  = 45;   // show soft banner after 45 s of silence
+  const STALL_ALERT_SEC = 180;  // upgrade to alert tone after 3 min
+
+  /* ── DOM refs ───────────────────────────────────────────────────────── */
+  const elTitle        = document.getElementById("header-title");
+  const elSpinner      = document.getElementById("header-spinner");
+  const elHeaderIcon   = document.getElementById("header-icon");
+  const elElapsed      = document.getElementById("elapsed-display");
+  const elStepNum      = document.getElementById("step-num");
+  const elActivityCard = document.getElementById("activity-card");
+  const elStepLabel    = document.getElementById("activity-step-label");
+  const elStepTimer    = document.getElementById("activity-step-timer");
+  const elBar          = document.getElementById("activity-bar");
+  const elStage        = document.getElementById("activity-stage");
+  const elHint         = document.getElementById("activity-hint");
+  const elStallBanner  = document.getElementById("stall-banner");
+  const elStallMsg     = document.getElementById("stall-msg");
+  const elError        = document.getElementById("error-area");
+  const elLogStream    = document.getElementById("log-stream");
+  const elLogCount     = document.getElementById("log-count");
+  const elCompletion   = document.getElementById("completion-panel");
+  const elReviewBtn    = document.getElementById("review-cta-btn");
+  const elWorkflowBtn  = document.getElementById("workflow-btn");
+  const elCancelLink   = document.getElementById("cancel-link");
+  const elTotalBadge   = document.getElementById("total-time-badge");
+  if (elReviewBtn)    elReviewBtn.href  = DASHBOARD_URL;
+  if (elWorkflowBtn)  elWorkflowBtn.href = WORKFLOW_URL;
+
+  /* ── State ──────────────────────────────────────────────────────────── */
+  let startMs        = Date.now();
+  let stepStartMs    = Date.now();
+  let currentStep    = "";
+  let lastLogTs      = Date.now();
+  let lastLogCount   = 0;
+  let renderedLogs   = [];
+  let done           = false;
+  let tickTimer      = null;
+
+  /* ── Helpers ────────────────────────────────────────────────────────── */
+  function fmtSec(s) {
+    s = Math.max(0, Math.floor(s));
+    const m = Math.floor(s / 60);
+    return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+  }
+  function fmtMs(ms) { return fmtSec(ms / 1000); }
+
+  function stepIndex(id) { return STEP_ORDER.indexOf(id); }
+
+  function setDotState(id, state) {
+    const dot = document.getElementById("dot-" + id);
+    const lbl = document.getElementById("lbl-" + id);
+    if (dot) dot.dataset.s = state;
+    if (lbl) lbl.dataset.s = state;
+    /* update inner icon for done */
+    if (dot) dot.textContent = state === "done" ? "✓" : (state === "error" ? "✗" : String(stepIndex(id) + 1));
+  }
+
+  function updateStepDots(activeStep, failed) {
+    const activeIdx = stepIndex(activeStep);
+    STEP_ORDER.forEach((id, i) => {
+      if (failed && id === activeStep) setDotState(id, "error");
+      else if (i < activeIdx)         setDotState(id, "done");
+      else if (id === activeStep)     setDotState(id, "active");
+      else                            setDotState(id, "pending");
     });
-    // If 100%, mark all done
-    if (pct >= 100) steps.forEach(s => { s.removeAttribute("data-active"); s.setAttribute("data-done", "true"); });
   }
 
-  async function poll() {
-    try {
-      const res = await fetch(statusUrl, { credentials: "same-origin" });
-      if (!res.ok) { stageEl.textContent = "Failed to read job status."; return; }
-      const data = await res.json();
-      const pct = Math.max(0, Math.min(100, data.progress || 0));
-      bar.style.width = pct + "%";
-      bar.textContent = pct + "%";
-      const stageLabel = data.stage || data.status || "";
-      stageEl.textContent = stageLabel;
-      const mappedStage = stageMap[stageLabel.toLowerCase()] || stageMap[stageLabel] || null;
-      if (mappedStage) markStages(mappedStage, pct);
+  function markAllDone() {
+    STEP_ORDER.forEach(id => setDotState(id, "done"));
+  }
 
-      if (data.status === "completed") {
-        spinner.style.display = "none";
-        window.location.assign(dashboardUrl);
-        return;
+  /* ── Tick (updates elapsed + step timers + stall warning) ───────────── */
+  function tick() {
+    if (done) return;
+    const totalSec  = (Date.now() - startMs)   / 1000;
+    const stepSec   = (Date.now() - stepStartMs) / 1000;
+    const stallSec  = (Date.now() - lastLogTs)  / 1000;
+
+    elElapsed.textContent = fmtSec(totalSec);
+    if (elStepTimer) elStepTimer.textContent = fmtSec(stepSec);
+
+    /* stall detection */
+    if (currentStep && stallSec >= STALL_WARN_SEC) {
+      elStallBanner.style.display = "";
+      if (stallSec >= STALL_ALERT_SEC) {
+        elStallMsg.textContent = `LLM model has been processing for ${fmtSec(stallSec)}. `
+          + "This is normal for long methods sections. Please wait.";
+        elStallBanner.style.borderColor = "var(--danger,#ef4444)";
+        elStallBanner.style.background  = "rgba(239,68,68,.06)";
+        elStallBanner.style.color       = "var(--danger,#ef4444)";
+      } else {
+        elStallMsg.textContent = `No new events for ${fmtSec(stallSec)} — LLM call in progress.`;
+        elStallBanner.style.borderColor = "";
+        elStallBanner.style.background  = "";
+        elStallBanner.style.color       = "";
       }
-      if (data.status === "failed") {
-        spinner.style.display = "none";
-        errBox.style.display = "";
-        errBox.textContent = data.error || "Workflow failed.";
-        return;
-      }
-    } catch (e) {
-      // network hiccup — keep polling
+    } else {
+      elStallBanner.style.display = "none";
     }
-    setTimeout(poll, 1500);
   }
+
+  /* ── Log rendering ───────────────────────────────────────────────────── */
+  function renderLogs(logs) {
+    if (!Array.isArray(logs) || logs.length === lastLogCount) return;
+    lastLogCount = logs.length;
+    lastLogTs    = Date.now();
+
+    /* Only render new entries to avoid full DOM reflows */
+    const newLogs = logs.slice(renderedLogs.length);
+    renderedLogs  = logs;
+
+    if (renderedLogs.length === logs.length && newLogs.length === logs.length) {
+      /* First render — replace placeholder */
+      elLogStream.innerHTML = "";
+    }
+
+    newLogs.forEach(row => {
+      const ts  = row.ts ? new Date(row.ts).toLocaleTimeString() : "--:--:--";
+      const stp = (row.step || "").toUpperCase().slice(0, 8);
+      const msg = row.message || "";
+      const lvl = (row.level || "info").toLowerCase();
+      const el  = document.createElement("div");
+      el.className   = "log-entry";
+      el.dataset.level = lvl;
+      el.innerHTML =
+        `<span class="log-ts">${escHtml(ts)}</span>` +
+        `<span class="log-step">${escHtml(stp)}</span>` +
+        `<span class="log-msg">${escHtml(msg)}</span>`;
+      elLogStream.appendChild(el);
+    });
+
+    elLogStream.scrollTop = elLogStream.scrollHeight;
+    elLogCount.textContent = `${logs.length} event${logs.length === 1 ? "" : "s"}`;
+  }
+
+  function escHtml(s) {
+    return String(s || "")
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  /* ── Apply completion stepper colours from component_meta ───────────── */
+  const STATUS_DOT = {
+    found:    { bg:"var(--success)", border:"var(--success)", color:"#fff", icon:"✓" },
+    inferred: { bg:"var(--warning-soft)", border:"var(--warning)", color:"var(--warning)", icon:"~" },
+    missing:  { bg:"var(--surface)", border:"var(--border-2)", color:"var(--text-3)", icon:null },
+  };
+  function applyCompletionMeta(componentMeta) {
+    if (!componentMeta) return;
+    document.querySelectorAll(".completion-dot").forEach(dot => {
+      const id  = dot.dataset.step;
+      const st  = (componentMeta[id] || {}).status || "missing";
+      const cfg = STATUS_DOT[st] || STATUS_DOT.missing;
+      dot.style.background  = cfg.bg;
+      dot.style.borderColor = cfg.border;
+      dot.style.color       = cfg.color;
+      dot.textContent       = cfg.icon || String(stepIndex(id) + 1);
+      dot.dataset.s         = st === "found" ? "done" : st === "inferred" ? "active" : "pending";
+    });
+    document.querySelectorAll(".completion-label").forEach(lbl => {
+      const st = (componentMeta[lbl.dataset.step] || {}).status || "missing";
+      lbl.dataset.s = st === "found" ? "done" : st === "inferred" ? "active" : "pending";
+    });
+  }
+
+  /* ── Show completion panel ───────────────────────────────────────────── */
+  function showCompletion(data) {
+    done = true;
+    clearInterval(tickTimer);
+
+    markAllDone();
+    elStallBanner.style.display   = "none";
+    if (elActivityCard) elActivityCard.style.display = "none";
+    if (elCancelLink)   elCancelLink.style.display   = "none";
+
+    /* Update header */
+    elTitle.textContent = "Parsing complete!";
+    elHeaderIcon.style.background  = "var(--success-soft)";
+    elHeaderIcon.style.borderColor = "var(--success)";
+    elSpinner.style.display        = "none";
+    elHeaderIcon.textContent       = "✓";
+    elHeaderIcon.style.fontSize    = "1.2rem";
+    elHeaderIcon.style.color       = "var(--success)";
+
+    const totalSec = Math.round((Date.now() - startMs) / 1000);
+    elElapsed.textContent = fmtSec(totalSec);
+    if (elStepNum) elStepNum.textContent = STEP_ORDER.length;
+    if (elTotalBadge) elTotalBadge.textContent = `Total: ${fmtSec(totalSec)}`;
+
+    applyCompletionMeta(data && data.component_meta);
+    elCompletion.style.display = "";
+
+    /* Auto-redirect countdown */
+    const elCountdownWrap = document.getElementById("redirect-countdown");
+    const elCountdownSecs = document.getElementById("countdown-secs");
+    if (elCountdownWrap) elCountdownWrap.style.display = "";
+    let secsLeft = 3;
+    const redirectTimer = setInterval(() => {
+      secsLeft--;
+      if (elCountdownSecs) elCountdownSecs.textContent = secsLeft;
+      if (secsLeft <= 0) {
+        clearInterval(redirectTimer);
+        window.location.assign(DASHBOARD_URL);
+      }
+    }, 1000);
+  }
+
+  /* ── Show failure ────────────────────────────────────────────────────── */
+  function showError(msg, step) {
+    done = true;
+    clearInterval(tickTimer);
+    elSpinner.style.display = "none";
+    elStallBanner.style.display = "none";
+    if (step) updateStepDots(step, true);
+    elError.style.display = "";
+    elError.textContent   = msg || "Parsing failed. Check the logs above for details.";
+    elTitle.textContent   = "Parsing failed";
+    elHeaderIcon.style.background = "rgba(239,68,68,.1)";
+    elHeaderIcon.style.borderColor = "var(--danger,#ef4444)";
+    elSpinner.style.display = "none";
+    elHeaderIcon.innerHTML = `<span style="color:var(--danger,#ef4444);font-size:1.1rem;">✗</span>`;
+  }
+
+  /* ── Poll ────────────────────────────────────────────────────────────── */
+  async function poll() {
+    if (done) return;
+    try {
+      const res = await fetch(STATUS_URL, { credentials: "same-origin" });
+      if (!res.ok) return;
+      const data = await res.json();
+
+      /* step tracking */
+      const step = data.current_step || "";
+      if (step && step !== currentStep) {
+        currentStep = step;
+        stepStartMs = Date.now();
+        lastLogTs   = Date.now();
+      }
+
+      /* update step dots and activity card */
+      if (step) {
+        updateStepDots(step, false);
+        const idx = stepIndex(step);
+        if (elStepNum) elStepNum.textContent = idx + 1;
+
+        if (elActivityCard) elActivityCard.style.display = "";
+        if (elStepLabel) elStepLabel.textContent = STEP_LABELS[step] || step;
+        if (elHint) elHint.textContent = STEP_HINTS[step] || "";
+        if (elStage) elStage.textContent = data.stage || "";
+
+        /* progress bar: blend overall % with sub-step figure progress */
+        const overall = Math.max(0, Math.min(100, Number(data.progress || 0)));
+        let pct = overall;
+        if (step === "figures" && data.figure_parse_total > 0) {
+          const sub = Math.round((data.figure_parse_current / data.figure_parse_total) * 100);
+          /* blend: figure step spans 20% of overall, so scale within that */
+          pct = Math.max(pct, sub);
+          if (elStage && data.figure_parse_total > 0) {
+            elStage.textContent = `Parsing figure ${data.figure_parse_current} of ${data.figure_parse_total}` +
+              (data.stage ? ` — ${data.stage}` : "");
+          }
+        }
+        if (elBar) elBar.style.width = pct + "%";
+      }
+
+      /* render logs */
+      if (Array.isArray(data.logs)) renderLogs(data.logs);
+
+      /* terminal states */
+      if (data.status === "completed") { showCompletion(data); return; }
+      if (data.status === "failed")    { showError(data.error, step); return; }
+
+    } catch (_) { /* network hiccup — keep polling */ }
+
+    setTimeout(poll, POLL_INTERVAL);
+  }
+
+  /* ── Start ───────────────────────────────────────────────────────────── */
+  tickTimer = setInterval(tick, 1000);
   poll();
+})();
 </script>
 {% endblock %}

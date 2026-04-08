@@ -195,6 +195,112 @@ CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_PORT = True
 
+# ---------------------------------------------------------------------------
+# HuggingFace Hub — suppress unauthenticated-request warnings from the
+# sentence-transformers model loaded by the researcher-ai RAG layer.
+# HF_HUB_DISABLE_IMPLICIT_TOKEN tells the hub client not to warn about
+# missing tokens when running in an environment without one.
+# TOKENIZERS_PARALLELISM=false silences the tokenizer fork-safety warning
+# that appears in forked worker processes (e.g. Celery / Gunicorn prefork).
+# ---------------------------------------------------------------------------
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# ---------------------------------------------------------------------------
+# Logging
+#
+# Suppresses noisy third-party INFO/WARNING output that is not actionable:
+#
+#  sentence_transformers / transformers
+#    - BertModel LOAD REPORT (embeddings.position_ids UNEXPECTED) — benign
+#      when loading a checkpoint trained for a different task head.
+#
+#  LiteLLM / litellm
+#    - "HTTP transport error on attempt N, retrying" — transient; LiteLLM
+#      already retries automatically.
+#    - "If you need to debug this error, use litellm._turn_on_debug()" —
+#      informational noise on every retry.
+#
+#  httpx
+#    - Low-level transport debug lines emitted when LiteLLM retries.
+#
+# Application loggers (django, researcher_ai_portal*) are left at their
+# default WARNING level.  Set DJANGO_LOG_LEVEL=DEBUG in .env to get
+# full debug output for the portal app.
+# ---------------------------------------------------------------------------
+_LOG_LEVEL = os.environ.get("DJANGO_LOG_LEVEL", "WARNING").upper()
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "loggers": {
+        # Portal application — use DJANGO_LOG_LEVEL (default WARNING).
+        "researcher_ai_portal": {
+            "handlers": ["console"],
+            "level": _LOG_LEVEL,
+            "propagate": False,
+        },
+        "django": {
+            "handlers": ["console"],
+            "level": _LOG_LEVEL,
+            "propagate": False,
+        },
+        # Suppress BertModel load-report noise from sentence-transformers.
+        "sentence_transformers": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        "transformers": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        # Suppress LiteLLM retry info messages.
+        "LiteLLM": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "litellm": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        # Suppress low-level httpx transport lines emitted during LiteLLM retries.
+        "httpx": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "httpcore": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",
+    },
+}
+
 SESSION_COOKIE_SAMESITE = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
 CSRF_COOKIE_SAMESITE = os.environ.get('CSRF_COOKIE_SAMESITE', 'Lax')
 

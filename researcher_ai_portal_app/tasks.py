@@ -38,7 +38,7 @@ def run_workflow_step(
     llm_model: str = "",
     force_reparse: bool = False,
 ) -> dict[str, Any]:
-    from .views import STEP_LABELS, _progress_for_step, _run_step
+    from .views import STEP_LABELS, _humanize_step_error, _progress_for_step, _run_step
 
     label = STEP_LABELS.get(step, step)
     job = get_job(job_id)
@@ -77,18 +77,19 @@ def run_workflow_step(
         cache.set(_cache_key(job_id), merge_logs(complete_payload, job_id), timeout=3600)
         return {"ok": True, "job_id": job_id, "step": step}
     except Exception as exc:
-        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=str(exc))
-        append_job_log(job_id, f"Step failed: {label}: {exc}", level="error", step=step)
+        user_error = _humanize_step_error(exc)
+        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=user_error)
+        append_job_log(job_id, f"Step failed: {label}: {user_error}", level="error", step=step)
         fail_payload = {
             "status": "failed",
             "progress": (get_job(job_id) or {}).get("progress", 0),
             "stage": f"{label} failed",
             "current_step": step,
-            "error": str(exc),
+            "error": user_error,
             "user_id": user_id,
         }
         cache.set(_cache_key(job_id), merge_logs(fail_payload, job_id), timeout=3600)
-        return {"ok": False, "job_id": job_id, "step": step, "error": str(exc)}
+        return {"ok": False, "job_id": job_id, "step": step, "error": user_error}
 
 
 @shared_task(bind=True, max_retries=0)

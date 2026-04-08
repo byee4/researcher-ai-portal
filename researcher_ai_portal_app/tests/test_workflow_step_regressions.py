@@ -141,3 +141,18 @@ def test_job_status_merges_cached_logs():
     views_path = Path(__file__).resolve().parents[1] / "views.py"
     text = views_path.read_text(encoding="utf-8")
     assert "payload = merge_logs(payload, job_id)" in text
+
+
+def test_workflow_step_only_builds_figure_media_rows_on_figures_step():
+    views_path = Path(__file__).resolve().parents[1] / "views.py"
+    text = views_path.read_text(encoding="utf-8")
+    assert 'if step == "figures":' in text
+    assert "figure_media_rows = _figure_media_rows(figures_for_ui, paper_for_ui, job_id, validate_urls=False)" in text
+
+
+def test_figure_proxy_writes_and_reads_disk_cache():
+    views_path = Path(__file__).resolve().parents[1] / "views.py"
+    text = views_path.read_text(encoding="utf-8")
+    assert "def _read_cached_figure_proxy_image" in text
+    assert "def _write_cached_figure_proxy_image" in text
+    assert "cached_image = _read_cached_figure_proxy_image(url)" in text

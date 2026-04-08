@@ -5,11 +5,13 @@ import os
 import re
 import tempfile
 import threading
+import time
 import base64
 import hashlib
 from html import unescape
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse
 from cryptography.fernet import Fernet, InvalidToken
@@ -20,7 +22,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
-from .confidence import compute_confidence
+from .confidence import compute_actionable_items, compute_confidence
 from .dag_app import build_dag_app
 from .dashboards import build_dashboard_app
 from .forms import ComponentJSONForm, FigureGroundTruthForm
@@ -31,6 +33,7 @@ from .job_store import create_job, get_job, update_job
 
 DJANGO_ROOT = Path(__file__).resolve().parents[1]
 RESULT_DIR = DJANGO_ROOT / "parse_results"
+PDF_STAGE_DIR = RESULT_DIR / "uploaded_pdfs"
 
 STEP_ORDER = ["paper", "figures", "method", "datasets", "software", "pipeline"]
 STEP_LABELS = {
@@ -55,6 +58,8 @@ COMMON_LLM_MODELS = [
     "gpt-5.3-codex",
     "gpt-5.2",
     "o4-mini",
+    "gemini-3.1-pro",
+    "gemini-2.5-pro",
     "claude-sonnet-4-6",
     "claude-opus-4-1",
 ]
@@ -81,6 +86,8 @@ _SUPP_FIG_ID_RE = re.compile(r"(?i)\b(?:supplementary|supp\.?)\s*(?:figure|fig\.
 _EXT_DATA_FIG_ID_RE = re.compile(r"(?i)\bextended\s+data\s+(?:figure|fig\.?)\s*(\d{1,3})\b")
 _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
+_FIGURE_PROXY_CACHE_DIR = Path(settings.MEDIA_ROOT) / "figure_proxy_cache"
+_FIGURE_PROXY_CACHE_TTL_SEC = max(60, int(os.environ.get("FIGURE_PROXY_CACHE_TTL_SEC", "604800") or "604800"))
 
 
 def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
@@ -109,7 +116,15 @@ def _infer_provider(model: str) -> str:
     m = (model or "").strip().lower()
     if m.startswith("claude"):
         return "anthropic"
-    if m.startswith("gpt") or m.startswith("chatgpt") or m.startswith(("o1", "o3", "o4")):
+    if m.startswith("gemini"):
+        return "gemini"
+    if (
+        m.startswith("gpt")
+        or m.startswith("chatgpt")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    ):
         return "openai"
     return "anthropic"
 
@@ -127,8 +142,10 @@ def _validate_llm_api_key(api_key: str, provider: str) -> str:
         raise ValueError("LLM API key is required.")
     if provider == "anthropic" and not value.startswith("sk-ant-"):
         raise ValueError("Invalid Anthropic API key format. Expected 'sk-ant-...'.")
-    if provider == "openai" and not value.startswith("sk-"):
-        raise ValueError("Invalid OpenAI API key format. Expected 'sk-...'.")
+    if provider == "openai" and not (value.startswith("sk-") or value.startswith("sk-proj-")):
+        raise ValueError("Invalid OpenAI API key format. Expected 'sk-' or 'sk-proj-...'.")
+    if provider == "gemini" and not re.fullmatch(r"[A-Za-z0-9_-]{39}", value):
+        raise ValueError("Invalid Gemini API key format. Expected 39 URL-safe characters.")
     if len(value) < 20:
         raise ValueError("API key appears too short.")
     return value
@@ -200,17 +217,33 @@ def _canonical_paper_cache_id(source_type: str, source: str) -> str:
     return f"{(source_type or '').strip().lower()}:{(source or '').strip()}"
 
 
+def _stage_uploaded_pdf(uploaded_file) -> Path:
+    """Persist an uploaded PDF to a durable portal-managed staging path."""
+    PDF_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(str(getattr(uploaded_file, "name", "") or "")).suffix.lower()
+    if suffix != ".pdf":
+        suffix = ".pdf"
+    staged_path = (PDF_STAGE_DIR / f"{uuid4().hex}{suffix}").resolve()
+    with staged_path.open("wb") as fh:
+        for chunk in uploaded_file.chunks():
+            fh.write(chunk)
+    return staged_path
+
+
 @contextmanager
 def _llm_env(job: dict[str, Any]):
     provider = _infer_provider(job.get("llm_model", ""))
     old_openai = os.environ.get("OPENAI_API_KEY")
     old_anthropic = os.environ.get("ANTHROPIC_API_KEY")
+    old_gemini = os.environ.get("GEMINI_API_KEY")
     old_model = os.environ.get("RESEARCHER_AI_MODEL")
     with _LLM_ENV_LOCK:
         try:
             os.environ["RESEARCHER_AI_MODEL"] = job.get("llm_model", "")
             if provider == "openai":
                 os.environ["OPENAI_API_KEY"] = job.get("llm_api_key", "")
+            elif provider == "gemini":
+                os.environ["GEMINI_API_KEY"] = job.get("llm_api_key", "")
             else:
                 os.environ["ANTHROPIC_API_KEY"] = job.get("llm_api_key", "")
             yield
@@ -223,6 +256,10 @@ def _llm_env(job: dict[str, Any]):
                 os.environ.pop("ANTHROPIC_API_KEY", None)
             else:
                 os.environ["ANTHROPIC_API_KEY"] = old_anthropic
+            if old_gemini is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = old_gemini
             if old_model is None:
                 os.environ.pop("RESEARCHER_AI_MODEL", None)
             else:
@@ -358,7 +395,7 @@ def _figure_uncertainty_rows(figures_payload: Any) -> list[dict[str, Any]]:
                 dedup.append(reason)
         if dedup:
             rows.append({"figure_id": figure_id, "reasons": dedup})
-    return rows
+    return sorted(rows, key=lambda row: _alphanumeric_sort_key(str(row.get("figure_id") or "")))
 
 
 def _figure_provenance_rows(figures_payload: Any) -> list[dict[str, Any]]:
@@ -401,7 +438,7 @@ def _figure_provenance_rows(figures_payload: Any) -> list[dict[str, Any]]:
             )
         if panel_rows:
             rows.append({"figure_id": figure_id, "panels": panel_rows})
-    return rows
+    return sorted(rows, key=lambda row: _alphanumeric_sort_key(str(row.get("figure_id") or "")))
 
 
 def _figure_merged_rows(
@@ -409,8 +446,7 @@ def _figure_merged_rows(
     uncertainty_rows: list[dict[str, Any]],
     provenance_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Merge the three figure data sources into one unified list, sorted
-    so uncertain / low-confidence figures appear first.
+    """Merge the three figure data sources into one unified list.
 
     Each row has:
         figure_id, figure_key, title, caption, entries, deferred_parser,
@@ -462,8 +498,8 @@ def _figure_merged_rows(
             "min_confidence": min_conf,
         })
 
-    # Sort: uncertain figures first, then by min_confidence ascending
-    merged.sort(key=lambda r: (not r["is_uncertain"], r["min_confidence"]))
+    # Keep figure ordering stable and predictable across all views.
+    merged.sort(key=lambda r: _alphanumeric_sort_key(str(r.get("figure_id") or "")))
     return merged
 
 
@@ -532,7 +568,7 @@ def _is_supplementary_figure_id(figure_id: str) -> bool:
 def _primary_figure_number(figure_id: str) -> str | None:
     if _is_supplementary_figure_id(figure_id):
         return None
-    match = re.search(r"(?i)\b(?:fig(?:ure)?\.?)\s*(\d+)", figure_id or "")
+    match = re.search(r"(?i)\b(?:f|fig(?:ure)?\.?)\s*(\d+)", figure_id or "")
     if not match:
         return None
     return match.group(1)
@@ -585,8 +621,57 @@ def _infer_figure_ids_from_paper_text(paper: Any) -> list[str]:
 def _figure_id_key(figure_id: str) -> str:
     text = (figure_id or "").strip().lower()
     text = re.sub(r"(?i)\bfig(?:ure)?\.?\b", "figure", text)
+    text = re.sub(r"(?i)\bf(?=\s*\d)", "figure", text)
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
+
+
+def _alphanumeric_sort_key(value: str) -> tuple[tuple[int, Any], ...]:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"(?i)\bfig(?:ure)?\.?\b", "figure", text)
+    text = re.sub(r"(?i)\bf(?=\s*\d)", "figure", text)
+    text = re.sub(r"\s+", " ", text)
+    parts = re.findall(r"\d+|[a-z]+", text)
+    key: list[tuple[int, Any]] = []
+    for token in parts:
+        if token.isdigit():
+            key.append((1, int(token)))
+        else:
+            key.append((0, token))
+    # Add normalized text as a stable tie-breaker.
+    key.append((2, text))
+    return tuple(key)
+
+
+def _sort_figures_and_panels_alphanumerically(figures_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    for fig in figures_payload or []:
+        if not isinstance(fig, dict):
+            continue
+        fig_copy = dict(fig)
+        subfigures = fig_copy.get("subfigures")
+        if isinstance(subfigures, list):
+            fig_copy["subfigures"] = sorted(
+                [dict(sf) for sf in subfigures if isinstance(sf, dict)],
+                key=lambda sf: _alphanumeric_sort_key(str(sf.get("label") or "")),
+            )
+        ordered.append(fig_copy)
+    return sorted(ordered, key=lambda fig: _alphanumeric_sort_key(str(fig.get("figure_id") or "")))
+
+
+def _sort_figure_ids_alphanumerically(figure_ids: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for fid in figure_ids or []:
+        text = str(fid or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return sorted(out, key=_alphanumeric_sort_key)
 
 
 def _build_pmc_figure_url(pmcid: str, figure_id: str) -> str | None:
@@ -614,6 +699,59 @@ def _candidate_pmc_figure_urls(pmcid: str, figure_id: str) -> list[str]:
         f"{base}/F{number}/",
         f"{base}/Fig{number}/",
     ]
+
+
+def _figure_proxy_cache_paths(url: str) -> tuple[Path, Path]:
+    digest = hashlib.sha256(url.casefold().encode("utf-8")).hexdigest()
+    bucket = _FIGURE_PROXY_CACHE_DIR / digest[:2] / digest[2:4]
+    return bucket / f"{digest}.meta.json", bucket / f"{digest}.bin"
+
+
+def _read_cached_figure_proxy_image(url: str) -> tuple[bytes, str] | None:
+    meta_path, blob_path = _figure_proxy_cache_paths(url)
+    if not meta_path.exists() or not blob_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        expires_at = float(meta.get("expires_at", 0) or 0)
+        if expires_at and expires_at < time.time():
+            meta_path.unlink(missing_ok=True)
+            blob_path.unlink(missing_ok=True)
+            return None
+        content_type = str(meta.get("content_type") or "application/octet-stream")
+        return blob_path.read_bytes(), content_type
+    except Exception:
+        return None
+
+
+def _write_cached_figure_proxy_image(url: str, *, content_type: str, body: bytes) -> None:
+    meta_path, blob_path = _figure_proxy_cache_paths(url)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    expires_at = time.time() + _FIGURE_PROXY_CACHE_TTL_SEC
+    meta = {
+        "content_type": content_type,
+        "size": len(body),
+        "cached_at": int(time.time()),
+        "expires_at": int(expires_at),
+    }
+    fd_blob, tmp_blob = tempfile.mkstemp(prefix="figproxy_", suffix=".bin", dir=str(meta_path.parent))
+    fd_meta, tmp_meta = tempfile.mkstemp(prefix="figproxy_", suffix=".json", dir=str(meta_path.parent))
+    try:
+        with os.fdopen(fd_blob, "wb") as fb:
+            fb.write(body)
+        with os.fdopen(fd_meta, "w", encoding="utf-8") as fm:
+            json.dump(meta, fm)
+        os.replace(tmp_blob, blob_path)
+        os.replace(tmp_meta, meta_path)
+    except Exception:
+        try:
+            os.unlink(tmp_blob)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_meta)
+        except OSError:
+            pass
 
 
 def _pick_first_valid_url(candidates: list[str]) -> str | None:
@@ -676,7 +814,13 @@ def _resolved_primary_preview_map(pmcid: str, figure_ids: list[str]) -> dict[str
     return {fid: url for fid, url in zip(ordered_ids, urls)}
 
 
-def _figure_media_rows(figures_payload: Any, paper_payload: Any, job_id: str) -> list[dict[str, Any]]:
+def _figure_media_rows(
+    figures_payload: Any,
+    paper_payload: Any,
+    job_id: str,
+    *,
+    validate_urls: bool = True,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not isinstance(figures_payload, list):
         return rows
@@ -702,16 +846,36 @@ def _figure_media_rows(figures_payload: Any, paper_payload: Any, job_id: str) ->
             mapped = preview_map.get(f"Figure {int(canonical)}")
             if mapped:
                 urls = [mapped] + urls
-        valid_urls: list[str] = []
+        filtered_urls: list[str] = []
+        seen_urls: set[str] = set()
         for candidate in urls:
-            picked = _pick_first_valid_url([candidate])
-            if picked:
-                valid_urls.append(picked)
-        urls = valid_urls
+            c = str(candidate or "").strip()
+            if not c:
+                continue
+            lower = c.lower()
+            if any(hint in lower for hint in _BLOCKED_IMG_HINTS):
+                continue
+            if c in seen_urls:
+                continue
+            seen_urls.add(c)
+            filtered_urls.append(c)
+        if validate_urls:
+            valid_urls: list[str] = []
+            for candidate in filtered_urls:
+                picked = _pick_first_valid_url([candidate])
+                if picked:
+                    valid_urls.append(picked)
+            urls = valid_urls
+        else:
+            urls = filtered_urls
         if not urls and pmcid and figure_id and not is_supplementary:
-            pmc_url = _pick_first_valid_url(_candidate_pmc_figure_urls(pmcid, figure_id))
-            if pmc_url:
-                urls.append(pmc_url)
+            candidates = _candidate_pmc_figure_urls(pmcid, figure_id)
+            if validate_urls:
+                pmc_url = _pick_first_valid_url(candidates)
+                if pmc_url:
+                    urls.append(pmc_url)
+            elif candidates:
+                urls.append(candidates[0])
         if not urls:
             rows.append(
                 {
@@ -747,7 +911,7 @@ def _figure_media_rows(figures_payload: Any, paper_payload: Any, job_id: str) ->
                 "deferred_parser": "",
             }
         )
-    return rows
+    return sorted(rows, key=lambda row: _alphanumeric_sort_key(str(row.get("figure_id") or "")))
 
 
 def _inject_figure_ground_truth(figures_payload: Any, cleaned: dict[str, Any]) -> list[dict[str, Any]]:
@@ -957,8 +1121,18 @@ def _run_step(
             _log_job_event(job_id, "Initializing paper parser", step=step)
             source_type_key = str(job.get("source_type") or "pmid").strip().lower()
             source_type = mods["PaperSource"].PMID
+            source_value = str(job.get("source") or "")
             if source_type_key == "pdf":
                 source_type = mods["PaperSource"].PDF
+                pdf_path = Path(source_value).expanduser()
+                if not pdf_path.is_absolute():
+                    pdf_path = pdf_path.resolve()
+                if not pdf_path.exists() or not pdf_path.is_file():
+                    raise FileNotFoundError(
+                        "Uploaded PDF is no longer available for parsing. "
+                        "Please re-upload the PDF and retry."
+                    )
+                source_value = str(pdf_path)
             elif source_type_key == "pmcid":
                 source_type = mods["PaperSource"].PMCID
             elif source_type_key == "doi":
@@ -980,7 +1154,7 @@ def _run_step(
             _log_job_event(job_id, f"Paper cache miss; parsing source ({source_type_key})", step=step)
 
             parser = mods["PaperParser"](llm_model=model)
-            paper = parser.parse(job["source"], source_type=source_type)
+            paper = parser.parse(source_value, source_type=source_type)
             paper_json = paper.model_dump(mode="json")
             _persist_component(job_id, "paper", paper_json, "parsed")
             _log_job_event(job_id, "Paper parsing complete", step=step)
@@ -1000,6 +1174,15 @@ def _run_step(
 
         if step == "figures":
             _log_job_event(job_id, "Initializing figure parser", step=step)
+            if getattr(paper, "source", None) == mods["PaperSource"].PDF:
+                pdf_path = Path(str(getattr(paper, "source_path", "") or "")).expanduser()
+                if not pdf_path.is_absolute():
+                    pdf_path = pdf_path.resolve()
+                if not pdf_path.exists() or not pdf_path.is_file():
+                    raise FileNotFoundError(
+                        "Staged PDF for figure parsing was not found. "
+                        "Please restart the parse with the original PDF."
+                    )
             parser = mods["FigureParser"](llm_model=model)
             figure_ids = list(getattr(paper, "figure_ids", []) or [])
             if not figure_ids:
@@ -1009,6 +1192,8 @@ def _run_step(
             if not figure_ids:
                 figure_ids = _infer_figure_ids_from_paper_text(paper)
             primary_figure_ids, supplementary_figure_ids = _split_primary_and_supplementary_figure_ids(figure_ids)
+            primary_figure_ids = sorted(primary_figure_ids, key=_alphanumeric_sort_key)
+            supplementary_figure_ids = sorted(supplementary_figure_ids, key=_alphanumeric_sort_key)
             update_job(job_id, supplementary_figure_ids=supplementary_figure_ids)
             figure_ids = primary_figure_ids
             _log_job_event(
@@ -1022,7 +1207,7 @@ def _run_step(
                 _log_job_event(job_id, "No primary figures detected", step=step)
                 return
 
-            parsed_figures = []
+            parsed_figures: list[dict[str, Any]] = []
             total = len(figure_ids)
             update_job(job_id, figure_parse_total=total, figure_parse_current=0)
             prev_pct = _progress_for_step("paper")
@@ -1038,7 +1223,11 @@ def _run_step(
                 single = paper.model_copy(update={"figure_ids": [fig_id]})
                 chunk = parser.parse_all_figures(single)
                 if chunk:
-                    parsed_figures.append(chunk[0])
+                    first = chunk[0]
+                    if isinstance(first, dict):
+                        parsed_figures.append(dict(first))
+                    else:
+                        parsed_figures.append(first.model_dump(mode="json"))
                 stage = f"Parsing {fig_id} ({idx}/{total})"
                 pct = prev_pct + int(round(((end_pct - prev_pct) * idx) / max(total, 1)))
                 update_job(
@@ -1051,11 +1240,11 @@ def _run_step(
                 _persist_component(
                     job_id,
                     "figures",
-                    [f.model_dump(mode="json") for f in parsed_figures],
+                    _sort_figures_and_panels_alphanumerically(parsed_figures),
                     "parsed_partial",
                 )
                 _log_job_event(job_id, f"Parsed {fig_id}; {idx}/{total} complete", step=step)
-            figures_json = [f.model_dump(mode="json") for f in parsed_figures]
+            figures_json = _sort_figures_and_panels_alphanumerically(parsed_figures)
             _persist_component(job_id, "figures", figures_json, "parsed")
             _log_job_event(job_id, f"Figure parsing complete: {len(figures_json)} figure records", step=step)
             source_type_key = str(job.get("source_type") or "pmid").strip().lower()
@@ -1075,8 +1264,41 @@ def _run_step(
         figures = _typed_component(job, "figures", mods) or []
         if step == "method":
             _log_job_event(job_id, "Running methods parser", step=step)
-            parser = mods["MethodsParser"](llm_model=model)
-            method = parser.parse(paper, figures=figures, computational_only=True)
+            rag_mode = str(os.environ.get("RESEARCHER_AI_RAG_MODE", "per_job") or "per_job").strip().lower()
+            rag_base = str(os.environ.get("RESEARCHER_AI_RAG_BASE_DIR", "") or "").strip()
+            n_sections = len(paper.sections or [])
+            n_figs = len(figures or [])
+            _log_job_event(
+                job_id,
+                f"Indexing {n_sections} paper sections + {n_figs} figure captions into RAG store",
+                step=step,
+            )
+            update_job(job_id, stage="Methods: Building RAG index")
+            if rag_mode == "shared":
+                if rag_base:
+                    shared_dir = Path(rag_base).expanduser().resolve()
+                else:
+                    shared_dir = (DJANGO_ROOT / ".rag_chroma").resolve()
+                shared_dir.mkdir(parents=True, exist_ok=True)
+                parser = mods["MethodsParser"](llm_model=model, rag_persist_dir=str(shared_dir))
+                update_job(job_id, stage="Methods: Sending LLM request (may take 3–10 min)")
+                _log_job_event(job_id, f"Sending methods extraction request to {model}…", step=step)
+                method = parser.parse(paper, figures=figures, computational_only=True)
+            else:
+                temp_parent = Path(rag_base).expanduser().resolve() if rag_base else None
+                if temp_parent is not None:
+                    temp_parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(
+                    prefix=f"researcher_ai_rag_{job_id}_",
+                    dir=str(temp_parent) if temp_parent is not None else None,
+                ) as rag_tmp_dir:
+                    parser = mods["MethodsParser"](llm_model=model, rag_persist_dir=rag_tmp_dir)
+                    update_job(job_id, stage="Methods: Sending LLM request (may take 3–10 min)")
+                    _log_job_event(job_id, f"Sending methods extraction request to {model}…", step=step)
+                    method = parser.parse(paper, figures=figures, computational_only=True)
+            n_assays = len((method.assay_graph.assays if hasattr(method, "assay_graph") and method.assay_graph else []) or [])
+            _log_job_event(job_id, f"LLM response received — {n_assays} assay(s) extracted", step=step)
+            update_job(job_id, stage="Methods: Persisting results")
             _persist_component(job_id, "method", method.model_dump(mode="json"), "parsed")
             _log_job_event(job_id, "Methods parsing complete", step=step)
             return
@@ -1112,35 +1334,55 @@ def _run_step(
                 ]
             )
             accessions = _collect_accessions(combined)
-            _log_job_event(job_id, f"Found {len(accessions)} accession candidates", step=step)
+            capped = accessions[:25]
+            _log_job_event(job_id, f"Found {len(accessions)} accession candidates; resolving up to {len(capped)}", step=step)
             datasets = []
-            for acc in accessions[:25]:
-                if acc.startswith(("GSE", "GSM", "GDS", "GPL")):
-                    ds = geo.parse(acc)
-                elif acc.startswith(("SRP", "SRX", "SRR", "ERP", "ERR", "PRJNA", "PRJEB")):
-                    ds = sra.parse(acc)
-                else:
-                    ds = None
-                if ds is not None:
-                    datasets.append(ds.model_dump(mode="json"))
+            for idx, acc in enumerate(capped, 1):
+                update_job(job_id, stage=f"Datasets: Resolving {acc} ({idx}/{len(capped)})")
+                _log_job_event(job_id, f"Resolving {acc} ({idx}/{len(capped)})", step=step)
+                try:
+                    if acc.startswith(("GSE", "GSM", "GDS", "GPL")):
+                        ds = geo.parse(acc)
+                    elif acc.startswith(("SRP", "SRX", "SRR", "ERP", "ERR", "PRJNA", "PRJEB")):
+                        ds = sra.parse(acc)
+                    else:
+                        ds = None
+                    if ds is not None:
+                        datasets.append(ds.model_dump(mode="json"))
+                        _log_job_event(job_id, f"Resolved {acc} → {getattr(ds, 'title', acc)[:60]}", step=step)
+                    else:
+                        _log_job_event(job_id, f"Skipped {acc} (unrecognised prefix)", step=step)
+                except Exception as ds_exc:
+                    _log_job_event(job_id, f"Failed to resolve {acc}: {ds_exc}", level="warning", step=step)
             _persist_component(job_id, "datasets", datasets, "parsed")
-            _log_job_event(job_id, f"Dataset parsing complete: {len(datasets)} datasets", step=step)
+            _log_job_event(job_id, f"Dataset parsing complete: {len(datasets)} datasets resolved", step=step)
             return
 
         datasets = _typed_component(job, "datasets", mods) or []
         if step == "software":
             _log_job_event(job_id, "Running software parser", step=step)
+            update_job(job_id, stage=f"Software: Sending LLM request to {model}…")
+            _log_job_event(job_id, f"Extracting software tools via LLM ({model})", step=step)
             parser = mods["SoftwareParser"](llm_model=model)
             software = parser.parse_from_method(method) if method else []
             _persist_component(job_id, "software", [s.model_dump(mode="json") for s in software], "parsed")
-            _log_job_event(job_id, f"Software parsing complete: {len(software)} entries", step=step)
+            _log_job_event(job_id, f"Software parsing complete: {len(software)} tool(s) identified", step=step)
             return
 
         software = _typed_component(job, "software", mods) or []
         if step == "pipeline":
             _log_job_event(job_id, "Building pipeline from parsed components", step=step)
+            update_job(job_id, stage=f"Pipeline: Sending LLM request to {model}…")
+            _log_job_event(
+                job_id,
+                f"Assembling execution graph from {len(software)} tool(s), "
+                f"{len(datasets)} dataset(s) via LLM",
+                step=step,
+            )
             builder = mods["PipelineBuilder"](llm_model=model)
             pipeline = builder.build(method, datasets, software, figures)
+            n_steps = len((pipeline.config.steps if hasattr(pipeline, "config") and pipeline.config else []) or [])
+            _log_job_event(job_id, f"LLM response received — {n_steps} pipeline step(s)", step=step)
             _persist_component(job_id, "pipeline", pipeline.model_dump(mode="json"), "parsed")
             _log_job_event(job_id, "Pipeline build complete", step=step)
             return
@@ -1151,6 +1393,118 @@ def _run_step(
 def _progress_for_step(step: str) -> int:
     idx = STEP_ORDER.index(step)
     return int(round((idx / (len(STEP_ORDER) - 1)) * 100))
+
+
+def _run_all_steps_async(
+    job_id: str,
+    *,
+    llm_api_key: str,
+    llm_model: str,
+    force_reparse: bool = False,
+) -> None:
+    """Run all parsing steps in sequence.
+
+    Designed to execute in a daemon thread started by ``start_parse``.
+    Progress, stage, and log events are written to the job store so the
+    ``/jobs/<id>/status/`` endpoint can stream them to the progress page.
+    """
+    try:
+        for step in STEP_ORDER:
+            # Bail out if the job was explicitly failed or deleted externally
+            job = get_job(job_id)
+            if job is None:
+                return
+            if str(job.get("status") or "") == "failed":
+                return
+            _dispatch_workflow_step(
+                job_id,
+                step,
+                llm_api_key=llm_api_key,
+                llm_model=llm_model,
+                force_reparse=force_reparse,
+            )
+        # All six steps finished successfully
+        update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            stage="All steps complete — ready for review",
+        )
+        _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
+    except Exception as exc:
+        # _dispatch_workflow_step already marks the job as failed and logs the
+        # step-level error; log an extra top-level note for clarity.
+        _log_job_event(
+            job_id,
+            f"Pipeline run aborted: {exc}",
+            level="error",
+            step="",
+        )
+
+
+def _build_step_chips_enhanced(
+    job: dict[str, Any],
+    step_confidence_scores: dict[str, float | None] | None = None,
+    step_action_counts: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return per-step stepper chips with derived presentation state.
+
+    Each chip has::
+
+        {
+            "id":               str,    # step key
+            "label":            str,    # human label
+            "meta":             dict,   # component_meta entry
+            "stepper_state":    str,    # "running" | "confirmed" | "needs-review" | "not-started"
+            "action_count":     int,    # actionable items targeting this step
+            "confidence_score": float | None,  # None if not applicable
+        }
+    """
+    meta_map = job.get("component_meta") or {}
+    current_step = job.get("current_step") or ""
+    job_status = job.get("status") or ""
+    scores = step_confidence_scores or {}
+    counts = step_action_counts or {}
+    chips = []
+    for s in STEP_ORDER:
+        meta = meta_map.get(s) or {"status": "missing", "source": "none", "missing": []}
+        status = meta.get("status") or "missing"
+        conf = scores.get(s)
+        action_count = counts.get(s, 0)
+
+        if job_status == "in_progress" and current_step == s:
+            stepper_state = "running"
+        elif status == "missing":
+            stepper_state = "not-started"
+        elif conf is not None and conf < 70.0:
+            stepper_state = "needs-review"
+        elif status in ("found", "inferred") and conf is None:
+            # Non-method steps: found/inferred → confirmed; action items → needs-review
+            stepper_state = "needs-review" if action_count > 0 else "confirmed"
+        elif conf is not None and conf >= 70.0:
+            stepper_state = "confirmed"
+        else:
+            stepper_state = "not-started"
+
+        chips.append(
+            {
+                "id": s,
+                "label": STEP_LABELS[s],
+                "meta": meta,
+                "stepper_state": stepper_state,
+                "action_count": action_count,
+                "confidence_score": conf,
+            }
+        )
+    return chips
+
+
+def _humanize_step_error(exc: Exception) -> str:
+    text = str(exc or "").strip()
+    lower = text.lower()
+    if "429" in lower or "rate limit" in lower or "too many requests" in lower:
+        return "Vision model rate limit reached. Please try again in 1 minute."
+    return text or exc.__class__.__name__
 
 
 def _job_result_from_components(job: dict[str, Any]) -> dict[str, Any]:
@@ -1168,11 +1522,39 @@ def _job_result_from_components(job: dict[str, Any]) -> dict[str, Any]:
 def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     result = _job_result_from_components(job)
     paper = result["paper"]
-    figures = result["figures"]
+    figures = _sort_figures_and_panels_alphanumerically(result["figures"] or [])
+    result["figures"] = figures
     method = result["method"]
-    datasets = result["datasets"]
+    # Normalise dataset dicts: older parsed jobs store the repository type as
+    # "source"; templates that pre-date this fix also reference "source_type".
+    # Add both keys so the template works with either name.
+    raw_datasets = result["datasets"] or []
+    datasets: list[dict] = []
+    for ds in raw_datasets:
+        if not isinstance(ds, dict):
+            continue
+        d = dict(ds)
+        src = d.get("source") or d.get("source_type") or ""
+        d.setdefault("source", src)
+        d.setdefault("source_type", src)
+        datasets.append(d)
+    result["datasets"] = datasets
     software = result["software"]
-    pipeline = result["pipeline"]
+    # Normalise pipeline dict: ensure pipeline.config.steps always exists so
+    # the template can iterate it safely without variable-ref default filters.
+    raw_pipeline = result["pipeline"]
+    if not isinstance(raw_pipeline, dict):
+        raw_pipeline = {}
+    raw_config = raw_pipeline.get("config")
+    if not isinstance(raw_config, dict):
+        raw_pipeline = dict(raw_pipeline)
+        raw_pipeline["config"] = {"steps": []}
+    elif not isinstance(raw_config.get("steps"), list):
+        raw_pipeline = dict(raw_pipeline)
+        raw_pipeline["config"] = dict(raw_config)
+        raw_pipeline["config"]["steps"] = []
+    pipeline = raw_pipeline
+    result["pipeline"] = pipeline
     meta = job.get("component_meta") or {}
 
     status_counts = {"found": 0, "inferred": 0, "missing": 0}
@@ -1194,6 +1576,37 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     confidence = compute_confidence(result)
     summary["overall_confidence"] = confidence.get("overall", 50.0)
 
+    actionable_items = compute_actionable_items(result, confidence)
+
+    # Per-step confidence summary keyed by step name — used by the stepper
+    # to colour-code circles on both workflow_step.html and dashboard.html.
+    # We map each parsing step to the mean assay confidence that depends on it.
+    assay_confidences = confidence.get("assay_confidences") or {}
+    step_confidence_scores: dict[str, float | None] = {}
+    for s in STEP_ORDER:
+        if s == "method" and assay_confidences:
+            step_confidence_scores[s] = round(
+                sum(v.get("overall", 50.0) for v in assay_confidences.values())
+                / len(assay_confidences),
+                1,
+            )
+        else:
+            step_confidence_scores[s] = None  # use component status for non-method steps
+
+    # Count actionable items per step-target for stepper badges
+    step_action_counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
+    tab_to_step = {
+        "editing": "method",
+        "datasets": "datasets",
+        "figures": "figures",
+        "advanced": "pipeline",
+        "workflow-graph": "method",
+    }
+    for item in actionable_items:
+        mapped = tab_to_step.get(item["fix_target_tab"])
+        if mapped:
+            step_action_counts[mapped] = step_action_counts.get(mapped, 0) + 1
+
     return {
         "paper": paper,
         "figures": figures,
@@ -1202,6 +1615,9 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
         "software": software,
         "pipeline": pipeline,
         "confidence": confidence,
+        "actionable_items": actionable_items,
+        "step_confidence_scores": step_confidence_scores,
+        "step_action_counts": step_action_counts,
         "summary": summary,
         "paper_json": json.dumps(paper, indent=2),
         "figures_json": json.dumps(figures, indent=2),
@@ -1236,8 +1652,9 @@ def _dispatch_workflow_step(
         update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
         _log_job_event(job_id, f"Step completed: {label}", step=step)
     except Exception as exc:
-        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=str(exc))
-        _log_job_event(job_id, f"Step failed: {label}: {exc}", level="error", step=step)
+        user_error = _humanize_step_error(exc)
+        update_job(job_id, status="failed", current_step=step, stage=f"{label} failed", error=user_error)
+        _log_job_event(job_id, f"Step failed: {label}: {user_error}", level="error", step=step)
         raise
 
 
@@ -1340,10 +1757,7 @@ def start_parse(request):
         )
 
     if pdf_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            for chunk in pdf_file.chunks():
-                tmp.write(chunk)
-            source = tmp.name
+        source = str(_stage_uploaded_pdf(pdf_file))
         source_type = "pdf"
         input_value = pdf_file.name
     else:
@@ -1369,20 +1783,26 @@ def start_parse(request):
         current_step="paper",
     )
     _log_job_event(job_id, f"Parse job created for {source_type}: {input_value}", step="paper")
-    try:
-        update_job(job_id, user=request.user, stage=f"Running {STEP_LABELS['paper']}", current_step="paper")
-        _log_job_event(job_id, "Starting Paper Parser", step="paper")
-        _dispatch_workflow_step(
-            job_id,
-            "paper",
-            llm_api_key=llm_api_key,
-            llm_model=llm_model,
-            force_reparse=force_reparse,
-        )
-    except Exception as exc:  # pragma: no cover - user/network-driven
-        update_job(job_id, user=request.user, status="failed", error=str(exc), stage=f"{STEP_LABELS['paper']} failed")
-        _log_job_event(job_id, f"Paper Parser failed: {exc}", step="paper", level="error")
-    return redirect("workflow_step", job_id=job_id, step="paper")
+    _log_job_event(job_id, f"Starting full pipeline parse with {llm_model}", step="paper")
+
+    # Launch all six parsing steps in a background daemon thread so the HTTP
+    # response returns immediately and the user sees live progress on the
+    # parse_progress page.
+    thread = threading.Thread(
+        target=_run_all_steps_async,
+        kwargs={
+            "job_id": job_id,
+            "llm_api_key": llm_api_key,
+            "llm_model": llm_model,
+            "force_reparse": force_reparse,
+        },
+        daemon=True,
+        name=f"parse-{job_id[:8]}",
+    )
+    thread.start()
+
+    # Redirect immediately to the live progress page.
+    return redirect("parse_progress", job_id=job_id)
 
 
 @login_required
@@ -1393,6 +1813,37 @@ def job_progress(request, job_id: str):
         raise Http404("Unknown job id")
     step = job.get("current_step", "paper")
     return redirect("workflow_step", job_id=job_id, step=step)
+
+
+@login_required
+@require_GET
+def parse_progress(request, job_id: str):
+    """Render the parsing-progress / completion page for a job.
+
+    On load the page immediately polls the job status endpoint.  If parsing is
+    already done (synchronous flow) it shows the completion panel with a
+    colour-coded stepper and "Review pipeline →" CTA.  If still running it
+    animates the stage indicators until done.
+    """
+    job = get_job(job_id, user=request.user)
+    if job is None:
+        raise Http404("Unknown job id")
+
+    # Build the stage list for the stepper indicators
+    stages = [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER]
+
+    return render(
+        request,
+        "researcher_ai_portal/progress.html",
+        {
+            "job_id": job_id,
+            "stages": stages,
+            "completion_steps": stages,
+            # JSON blobs consumed by progress.html JS
+            "step_order_json": json.dumps(STEP_ORDER),
+            "step_labels_json": json.dumps(STEP_LABELS),
+        },
+    )
 
 
 @login_required
@@ -1410,6 +1861,8 @@ def job_status(request, job_id: str):
         "current_step": job.get("current_step", "paper"),
         "figure_parse_current": job.get("figure_parse_current", 0),
         "figure_parse_total": job.get("figure_parse_total", 0),
+        # Phase 5: include component_meta for the progress page completion stepper
+        "component_meta": job.get("component_meta") or {},
     }
     payload = merge_logs(payload, job_id)
     return JsonResponse(payload)
@@ -1428,6 +1881,10 @@ def figure_image_proxy(request, job_id: str):
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return HttpResponse("Invalid image URL.", status=400, content_type="text/plain")
+    cached_image = _read_cached_figure_proxy_image(url)
+    if cached_image is not None:
+        body, content_type = cached_image
+        return HttpResponse(body, content_type=content_type)
 
     timeout = httpx.Timeout(20.0, connect=8.0)
     try:
@@ -1441,6 +1898,7 @@ def figure_image_proxy(request, job_id: str):
             if content_type.startswith("image/"):
                 if "svg" in content_type and any(hint in response.text.lower() for hint in _BLOCKED_IMG_HINTS):
                     return HttpResponse("Blocked placeholder image detected.", status=502, content_type="text/plain")
+                _write_cached_figure_proxy_image(url, content_type=content_type, body=response.content)
                 return HttpResponse(response.content, content_type=content_type)
             if "html" in content_type:
                 html = response.text
@@ -1469,6 +1927,9 @@ def figure_image_proxy(request, job_id: str):
                         continue
                     if "svg" in img_type and any(hint in img_resp.text.lower() for hint in _BLOCKED_IMG_HINTS):
                         continue
+                    _write_cached_figure_proxy_image(url, content_type=img_type, body=img_resp.content)
+                    if img_url != url:
+                        _write_cached_figure_proxy_image(img_url, content_type=img_type, body=img_resp.content)
                     return HttpResponse(img_resp.content, content_type=img_type)
     except Exception as exc:  # pragma: no cover - network-dependent
         return HttpResponse(f"Failed to fetch image: {exc}", status=502, content_type="text/plain")
@@ -1490,7 +1951,7 @@ def workflow_step(request, job_id: str, step: str):
     form_prefix = f"step_{step}"
     gt_form_prefix = f"gt_{step}"
     components_now = job.get("components") or {}
-    figures_now = components_now.get("figures") or []
+    figures_now = _sort_figures_and_panels_alphanumerically(components_now.get("figures") or [])
     figure_ids_for_gt = [
         str(f.get("figure_id"))
         for f in figures_now
@@ -1499,6 +1960,7 @@ def workflow_step(request, job_id: str, step: str):
     if not figure_ids_for_gt:
         paper_comp = components_now.get("paper") or {}
         figure_ids_for_gt = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
+    figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
     figure_gt_form: FigureGroundTruthForm | None = None
 
     if request.method == "POST":
@@ -1563,26 +2025,33 @@ def workflow_step(request, job_id: str, step: str):
     job = get_job(job_id, user=request.user) or job
     component = (job.get("components") or {}).get(step)
     component_meta = (job.get("component_meta") or {}).get(step, {"status": "missing", "missing": [], "source": "none"})
-    figures_for_ui = (job.get("components") or {}).get("figures") or []
+    figures_for_ui = _sort_figures_and_panels_alphanumerically((job.get("components") or {}).get("figures") or [])
     paper_for_ui = (job.get("components") or {}).get("paper") or {}
-    figure_uncertain_rows = _figure_uncertainty_rows(figures_for_ui)
-    figure_provenance_rows = _figure_provenance_rows(figures_for_ui)
-    figure_media_rows = _figure_media_rows(figures_for_ui, paper_for_ui, job_id)
-    merged_figure_rows = _figure_merged_rows(figure_media_rows, figure_uncertain_rows, figure_provenance_rows)
+    figure_uncertain_rows: list[dict[str, Any]] = []
+    figure_provenance_rows: list[dict[str, Any]] = []
+    figure_media_rows: list[dict[str, Any]] = []
+    merged_figure_rows: list[dict[str, Any]] = []
     figure_parse_current = int(job.get("figure_parse_current", 0) or 0)
     figure_parse_total = int(job.get("figure_parse_total", len(figures_for_ui) if step == "figures" else 0) or 0)
     if figure_parse_total < figure_parse_current:
         figure_parse_total = figure_parse_current
     figure_parse_percent = int(round((figure_parse_current / max(figure_parse_total, 1)) * 100)) if figure_parse_total else 0
-    figure_ids_for_ui = [
-        str(f.get("figure_id"))
-        for f in figures_for_ui
-        if isinstance(f, dict) and str(f.get("figure_id") or "").strip()
-    ]
-    if not figure_ids_for_ui:
-        paper_comp = (job.get("components") or {}).get("paper") or {}
-        figure_ids_for_ui = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
-    supplementary_figure_ids = list(job.get("supplementary_figure_ids") or [])
+    figure_ids_for_ui: list[str] = []
+    if step == "figures":
+        figure_uncertain_rows = _figure_uncertainty_rows(figures_for_ui)
+        figure_provenance_rows = _figure_provenance_rows(figures_for_ui)
+        figure_media_rows = _figure_media_rows(figures_for_ui, paper_for_ui, job_id, validate_urls=False)
+        merged_figure_rows = _figure_merged_rows(figure_media_rows, figure_uncertain_rows, figure_provenance_rows)
+        figure_ids_for_ui = [
+            str(f.get("figure_id"))
+            for f in figures_for_ui
+            if isinstance(f, dict) and str(f.get("figure_id") or "").strip()
+        ]
+        if not figure_ids_for_ui:
+            paper_comp = (job.get("components") or {}).get("paper") or {}
+            figure_ids_for_ui = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
+        figure_ids_for_ui = _sort_figure_ids_alphanumerically(figure_ids_for_ui)
+    supplementary_figure_ids = _sort_figure_ids_alphanumerically(list(job.get("supplementary_figure_ids") or []))
     i = STEP_ORDER.index(step)
     prev_step = STEP_ORDER[i - 1] if i > 0 else None
     next_step = STEP_ORDER[i + 1] if i < len(STEP_ORDER) - 1 else None
@@ -1603,6 +2072,35 @@ def workflow_step(request, job_id: str, step: str):
             initial={"figure_id": figure_ids_for_ui[0] if figure_ids_for_ui else "Figure 1"},
         )
 
+    # Phase 5: compute confidence to colour-code stepper circles.
+    # Done after the job reload so we reflect the latest component state.
+    _step_conf_result = compute_confidence(_job_result_from_components(job))
+    _step_assay_confidences = _step_conf_result.get("assay_confidences") or {}
+    _step_confidence_scores: dict[str, float | None] = {}
+    for _s in STEP_ORDER:
+        if _s == "method" and _step_assay_confidences:
+            _step_confidence_scores[_s] = round(
+                sum(v.get("overall", 50.0) for v in _step_assay_confidences.values())
+                / len(_step_assay_confidences),
+                1,
+            )
+        else:
+            _step_confidence_scores[_s] = None
+    _step_action_items = compute_actionable_items(_job_result_from_components(job), _step_conf_result)
+    _step_action_counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
+    _tab_to_step = {
+        "editing": "method",
+        "datasets": "datasets",
+        "figures": "figures",
+        "advanced": "pipeline",
+    }
+    for _item in _step_action_items:
+        _mapped = _tab_to_step.get(_item["fix_target_tab"])
+        if _mapped:
+            _step_action_counts[_mapped] = _step_action_counts.get(_mapped, 0) + 1
+
+    stepper_chips = _build_step_chips_enhanced(job, _step_confidence_scores, _step_action_counts)
+
     return render(
         request,
         "researcher_ai_portal/workflow_step.html",
@@ -1613,7 +2111,9 @@ def workflow_step(request, job_id: str, step: str):
             "step_label": STEP_LABELS[step],
             "step_order": STEP_ORDER,
             "step_labels": STEP_LABELS,
-            "step_chips": [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER],
+            "step_chips": stepper_chips,
+            "stepper_chips": stepper_chips,
+            "stepper_current_step": step,
             "component_meta": component_meta,
             "form": form,
             "figure_gt_form": figure_gt_form,
@@ -1641,7 +2141,7 @@ def dashboard(request, job_id: str):
     if job is None:
         raise Http404("Unknown job id")
 
-    figures_now = ((job.get("components") or {}).get("figures") or [])
+    figures_now = _sort_figures_and_panels_alphanumerically(((job.get("components") or {}).get("figures") or []))
     figure_ids_for_gt = [
         str(f.get("figure_id"))
         for f in figures_now
@@ -1650,6 +2150,7 @@ def dashboard(request, job_id: str):
     if not figure_ids_for_gt:
         paper_comp = (job.get("components") or {}).get("paper") or {}
         figure_ids_for_gt = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
+    figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
 
     if request.method == "POST":
         action = request.POST.get("action", "save_component")
@@ -1669,49 +2170,12 @@ def dashboard(request, job_id: str):
             except Exception as exc:
                 update_job(job_id, user=request.user, error=f"Dashboard ground-truth injection failed: {exc}")
             return redirect("dashboard", job_id=job_id)
-        if action == "save_structured_step":
-            try:
-                assay_name = str(request.POST.get("assay_name") or "").strip()
-                step_index = int(str(request.POST.get("step_index") or "0"))
-                software = str(request.POST.get("software") or "").strip()
-                software_version = str(request.POST.get("software_version") or "").strip()
-                input_data = str(request.POST.get("input_data") or "").strip()
-                output_data = str(request.POST.get("output_data") or "").strip()
-                raw_params = str(request.POST.get("parameters_json") or "").strip()
-                params = json.loads(raw_params) if raw_params else {}
-                if not isinstance(params, dict):
-                    raise ValueError("Parameters JSON must be an object.")
-
-                method_payload = dict(((job.get("components") or {}).get("method") or {}))
-                assay_graph = dict(method_payload.get("assay_graph") or {})
-                assays = list(assay_graph.get("assays") or [])
-                target = None
-                for assay in assays:
-                    if str(assay.get("name") or "").strip() == assay_name:
-                        target = assay
-                        break
-                if target is None:
-                    raise ValueError(f"Assay '{assay_name}' not found.")
-                steps = list(target.get("steps") or [])
-                if step_index < 0 or step_index >= len(steps):
-                    raise ValueError("Invalid step index.")
-                step = dict(steps[step_index] or {})
-                step["software"] = software
-                step["software_version"] = software_version
-                step["input_data"] = input_data
-                step["output_data"] = output_data
-                step["parameters"] = params
-                steps[step_index] = step
-                target["steps"] = steps
-                assay_graph["assays"] = assays
-                method_payload["assay_graph"] = assay_graph
-
-                mods = _import_runtime_modules()
-                validated = _validate_component_json("method", method_payload, mods)
-                _persist_component(job_id, "method", validated, "corrected_structured_dashboard")
-            except Exception as exc:
-                update_job(job_id, user=request.user, error=f"Structured step edit failed: {exc}")
-            return redirect("dashboard", job_id=job_id)
+        # NOTE: save_structured_step (legacy Django form POST) was removed in
+        # Phase 2 when the Step Editing tab was migrated to PATCH autosave via
+        # PATCH /api/v1/jobs/{job_id}/components/method.  All structured-step
+        # mutations now go through the FastAPI endpoint, which re-validates via
+        # _validate_component_json and recomputes confidence in a single round
+        # trip.  No Django form POST is needed or accepted for this action.
         if action == "rebuild_pipeline":
             try:
                 edited_step = str(request.POST.get("edited_step") or _infer_last_edited_step(job)).strip()
@@ -1805,7 +2269,7 @@ def dashboard(request, job_id: str):
     dashboard_form_media = ComponentJSONForm().media
     figure_uncertain_rows = _figure_uncertainty_rows(components["figures"])
     figure_provenance_rows = _figure_provenance_rows(components["figures"])
-    figure_media_rows = _figure_media_rows(components["figures"], components["paper"], job_id)
+    figure_media_rows = _figure_media_rows(components["figures"], components["paper"], job_id, validate_urls=False)
     merged_figure_rows = _figure_merged_rows(figure_media_rows, figure_uncertain_rows, figure_provenance_rows)
     figure_gt_form = FigureGroundTruthForm(
         prefix="gt_dashboard",
@@ -1830,6 +2294,57 @@ def dashboard(request, job_id: str):
             "figure_gt_form": figure_gt_form,
             "edited_step": _infer_last_edited_step(job),
             "rebuild_steps": invalidated_steps(job, _infer_last_edited_step(job)),
+            # Step metadata for the React Flow pipeline builder tab.
+            # Passed as a raw Python list so Django's json_script filter
+            # serialises it exactly once (pre-encoding via json.dumps would
+            # cause double-encoding, leaving STEP_META as a string in JS and
+            # crashing STEP_META.find() with a TypeError).
+            "step_rows_json": [
+                {"id": r["id"], "label": r["label"], "meta": r["meta"]}
+                for r in step_rows
+            ],
+            # Tool data for the redesigned Pipeline Builder tab.
+            # Each entry is a minimal projection of the Software model sufficient
+            # for the node card and edit panel; passed as raw Python so
+            # json_script encodes it exactly once.
+            "software_tools_json": [
+                {
+                    "name": (sw.get("name") or ""),
+                    "version": sw.get("version") or "",
+                    "description": sw.get("description") or "",
+                    "language": sw.get("language") or "",
+                    "source_url": sw.get("source_url") or "",
+                    "commands": sw.get("commands") or [],
+                    "environment": sw.get("environment") or {},
+                }
+                for sw in (context.get("software") or [])
+                if isinstance(sw, dict)
+            ],
+            # Pipeline steps for default edge wiring and per-tool metadata.
+            "pipeline_steps_json": (
+                ((context.get("pipeline") or {}).get("config") or {}).get("steps") or []
+            ),
+            # Method assay graph data for the Pipeline Builder assay selector.
+            "method_assays_json": [
+                assay
+                for assay in raw_structured_assays
+                if isinstance(assay, dict)
+            ],
+            # ── Phase 0: Confidence Command Center ─────────────────────
+            # Passed via json_script so the React layer can read them later
+            # without double-encoding. The plain Python objects are also
+            # available in the template for the server-rendered first paint.
+            "actionable_items": context.get("actionable_items") or [],
+            "confidence_json": context.get("confidence") or {},
+            "step_confidence_scores": context.get("step_confidence_scores") or {},
+            "step_action_counts": context.get("step_action_counts") or {},
+            # ── Phase 5: Journey stepper ────────────────────────────────
+            "stepper_chips": _build_step_chips_enhanced(
+                job,
+                context.get("step_confidence_scores"),
+                context.get("step_action_counts"),
+            ),
+            "stepper_current_step": "",  # Dashboard has no "current" step
         }
     )
     return render(request, "researcher_ai_portal/dashboard.html", context)

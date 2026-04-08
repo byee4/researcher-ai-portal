@@ -2,7 +2,38 @@
 {% load plotly_dash %}
 {% block title %}{{ summary.title|default:"Dashboard" }} — researcher-ai{% endblock %}
 
-{% block extra_head %}{{ dashboard_form_media }}{% endblock %}
+{% block extra_head %}
+{{ dashboard_form_media }}
+
+{# ── Pipeline Builder: inject step metadata as JSON (XSS-safe via json_script) ── #}
+{{ step_rows_json|json_script:"_pb-step-rows" }}
+{# ── Tool-based Pipeline Builder data ── #}
+{{ software_tools_json|json_script:"_pb-software-tools" }}
+{{ pipeline_steps_json|json_script:"_pb-pipeline-steps" }}
+{{ method_assays_json|json_script:"_pb-method-assays" }}
+{# ── Phase 0: Command Center data (App Island seed) ── #}
+{{ actionable_items|json_script:"_cc-actionable-items" }}
+{{ confidence_json|json_script:"_cc-confidence" }}
+{# ── Phase 2: Structured editor seed data (raw Python → XSS-safe JSON) ── #}
+{{ datasets|json_script:"_ed-datasets" }}
+{{ software|json_script:"_ed-software" }}
+
+{# ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── #}
+<link rel="stylesheet" href="https://unpkg.com/@xyflow/react@12.3.6/dist/style.css" />
+
+{# ── ES module import map — must be in <head>, before any <script type="module"> ── #}
+<script type="importmap">
+{
+  "imports": {
+    "react":          "https://esm.sh/react@18.3.1",
+    "react/":         "https://esm.sh/react@18.3.1/",
+    "react-dom":      "https://esm.sh/react-dom@18.3.1",
+    "react-dom/":     "https://esm.sh/react-dom@18.3.1/",
+    "@xyflow/react":  "https://esm.sh/@xyflow/react@12.3.6?deps=react@18.3.1,react-dom@18.3.1"
+  }
+}
+</script>
+{% endblock %}
 
 {% block breadcrumb %}
   <a href="{% url 'home' %}">Home</a>
@@ -83,6 +114,50 @@
   /* ── Figure card hover ───────────────────────────────────── */
   .fig-card { transition: box-shadow .15s, border-color .15s; }
   .fig-card:hover { box-shadow: var(--shadow); border-color: var(--border-2); }
+
+  /* ── Phase 0: field-highlight animation ─────────────────── */
+  @keyframes field-flash {
+    0%   { box-shadow: 0 0 0 0 rgba(217,119,6,.7); border-color: var(--warning); }
+    50%  { box-shadow: 0 0 0 6px rgba(217,119,6,.2); border-color: var(--warning); }
+    100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); border-color: var(--border-2); }
+  }
+  .field-highlight {
+    animation: field-flash 1.4s ease-out;
+    border-color: var(--warning) !important;
+  }
+
+  /* ── Command Center: confidence factor bar ───────────────── */
+  .conf-factor-bar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; gap: 2px; background: var(--surface-3); }
+  .conf-factor-bar-seg { height: 100%; border-radius: 999px; transition: width .3s; }
+
+  /* ── Command Center: assay card ──────────────────────────── */
+  .assay-conf-card {
+    padding: 14px 16px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .assay-conf-card:hover { border-color: var(--border-2); box-shadow: var(--shadow-sm); }
+
+  /* ── Command Center: action item card ────────────────────── */
+  .action-item-card {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 16px;
+    border: 1.5px solid var(--border);
+    border-left-width: 4px;
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .action-item-card.sev-high  { border-left-color: var(--danger); }
+  .action-item-card.sev-medium { border-left-color: var(--warning); }
+  .action-item-card.sev-low   { border-left-color: var(--teal); }
+
+  /* ── Responsive adjustments ──────────────────────────────── */
+  @media (max-width: 768px) {
+    .cc-grid { grid-template-columns: 1fr !important; }
+    .cc-assay-grid { grid-template-columns: 1fr !important; }
+  }
 
   /* ── Accordion form fields ───────────────────────────────── */
   .accordion .form-group select,
@@ -186,7 +261,7 @@
   </div>
 
   <!-- ── Stat tiles ─────────────────────────────────────────── -->
-  <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px;">
+  <div class="stat-grid-5" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px;">
     <div class="card card-sm" style="text-align: center; padding: 12px 8px; background: var(--surface);">
       <div style="font-size: 1.625rem; font-weight: 800; color: var(--primary); line-height: 1; margin-bottom: 3px;">
         {{ summary.figure_count|default:"—" }}</div>
@@ -214,24 +289,317 @@
     </div>
   </div>
 
+  <!-- ── Journey stepper (Phase 5) ────────────────────────── -->
+  {% include "researcher_ai_portal/_stepper.html" %}
+
+  {# ── Completion banner: shown only when pipeline is fully ready ── #}
+  {% if summary.overall_confidence >= 90 and not actionable_items and summary.status_counts.missing == 0 %}
+  <div class="alert" style="background: var(--success-soft); border: 1.5px solid var(--success);
+                             border-radius: var(--radius); padding: 14px 20px; margin-bottom: 18px;
+                             display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+    <span style="font-size: 1.25rem; flex-shrink: 0;">🎉</span>
+    <div style="flex: 1; min-width: 180px;">
+      <p style="font-weight: 700; color: var(--success); margin-bottom: 2px;">Pipeline fully ready!</p>
+      <p class="text-sm text-muted">All components parsed and confirmed — confidence {{ summary.overall_confidence|floatformat:0 }}%. You can now compile and run this pipeline.</p>
+    </div>
+    <a href="#tab-pipeline" onclick="showTab('pipeline', document.querySelector('[onclick*=pipeline]'))"
+       class="btn btn-success btn-sm" style="white-space: nowrap; flex-shrink: 0;">
+      ▶ Compile &amp; Run →
+    </a>
+  </div>
+  {% endif %}
+
   <!-- ── Tab bar ────────────────────────────────────────────── -->
   <div style="display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 22px;
               overflow-x: auto; -webkit-overflow-scrolling: touch;">
-    <button class="dash-tab active" onclick="showTab('overview',this)">Overview</button>
-    <button class="dash-tab" onclick="showTab('dag',this)">Workflow Graph</button>
+    <button class="dash-tab active" onclick="showTab('command-center',this)">
+      Command Center
+      {% if actionable_items %}<span class="tab-badge">{{ actionable_items|length }}</span>{% endif %}
+    </button>
+    <button class="dash-tab" onclick="showTab('pipeline',this)" id="tab-btn-pipeline">Pipeline Builder</button>
+    <button class="dash-tab" onclick="showTab('datasets',this)">
+      Datasets{% if summary.dataset_count %}<span class="tab-badge">{{ summary.dataset_count }}</span>{% endif %}
+    </button>
     <button class="dash-tab" onclick="showTab('figures',this)">
       Figures{% if merged_figure_rows %}<span class="tab-badge">{{ merged_figure_rows|length }}</span>{% endif %}
     </button>
     <button class="dash-tab" onclick="showTab('editing',this)">
       Step Editing{% if structured_assays %}<span class="tab-badge">{{ structured_assays|length }}</span>{% endif %}
     </button>
+    <button class="dash-tab" onclick="showTab('dag',this)">Workflow Graph</button>
     <button class="dash-tab" onclick="showTab('advanced',this)">Advanced</button>
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
-       TAB: Overview
+       TAB: Command Center (default)
   ═══════════════════════════════════════════════════════════ -->
-  <div class="tab-panel active" id="tab-overview">
+  <div class="tab-panel active" id="tab-command-center">
+
+    {# ── Section 1: Score bar ─────────────────────────────── #}
+    <div class="cc-grid" style="display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; margin-bottom: 24px;">
+
+      {# Confidence ring — server-rendered for instant first paint #}
+      <div class="card" style="padding: 24px; text-align: center; min-width: 172px;">
+        {% with conf=confidence.overall|default:50 %}
+          {% if conf >= 80 %}{% with ring_color="#16a34a" track_color="#bbf7d0" %}
+            <div class="conf-ring" style="width: 128px; height: 128px; margin: 0 auto 12px;">
+              <svg width="128" height="128" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ track_color }}" stroke-width="10"/>
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ ring_color }}" stroke-width="10"
+                  stroke-linecap="round"
+                  style="stroke-dasharray: calc({{ conf }} * 3.393px) 339.3px;"/>
+              </svg>
+              <div class="conf-ring-label">
+                <span class="conf-ring-pct" style="color: {{ ring_color }}; font-size: 1.75rem;">{{ conf }}%</span>
+                <span class="conf-ring-sub">confidence</span>
+              </div>
+            </div>{% endwith %}
+          {% elif conf >= 50 %}{% with ring_color="#d97706" track_color="#fde68a" %}
+            <div class="conf-ring" style="width: 128px; height: 128px; margin: 0 auto 12px;">
+              <svg width="128" height="128" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ track_color }}" stroke-width="10"/>
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ ring_color }}" stroke-width="10"
+                  stroke-linecap="round"
+                  style="stroke-dasharray: calc({{ conf }} * 3.393px) 339.3px;"/>
+              </svg>
+              <div class="conf-ring-label">
+                <span class="conf-ring-pct" style="color: {{ ring_color }}; font-size: 1.75rem;">{{ conf }}%</span>
+                <span class="conf-ring-sub">confidence</span>
+              </div>
+            </div>{% endwith %}
+          {% else %}{% with ring_color="#dc2626" track_color="#fecaca" %}
+            <div class="conf-ring" style="width: 128px; height: 128px; margin: 0 auto 12px;">
+              <svg width="128" height="128" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ track_color }}" stroke-width="10"/>
+                <circle cx="64" cy="64" r="54" fill="none" stroke="{{ ring_color }}" stroke-width="10"
+                  stroke-linecap="round"
+                  style="stroke-dasharray: calc({{ conf }} * 3.393px) 339.3px;"/>
+              </svg>
+              <div class="conf-ring-label">
+                <span class="conf-ring-pct" style="color: {{ ring_color }}; font-size: 1.75rem;">{{ conf }}%</span>
+                <span class="conf-ring-sub">confidence</span>
+              </div>
+            </div>{% endwith %}
+          {% endif %}
+        {% endwith %}
+
+        {# Validation badge #}
+        {% if confidence.validation_passed %}
+          <span class="pill pill-found" style="margin-bottom: 8px; display: inline-block;">✓ Validated</span>
+        {% else %}
+          <span class="pill pill-missing" style="margin-bottom: 8px; display: inline-block;">✗ Unvalidated</span>
+        {% endif %}
+
+        {# Factors resolved summary #}
+        {% with total=actionable_items|length %}
+          <p class="text-xs text-muted">
+            {% if total == 0 %}
+              All factors resolved
+            {% else %}
+              <strong style="color: var(--warning);">{{ total }} issue{{ total|pluralize }}</strong> to resolve
+            {% endif %}
+          </p>
+        {% endwith %}
+      </div>
+
+      {# Per-assay confidence cards #}
+      <div>
+        <h2 class="mb-3">Assay confidence breakdown</h2>
+        {% if confidence.assay_confidences %}
+          <div class="cc-assay-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px;">
+            {% for assay_name, assay_conf in confidence.assay_confidences.items %}
+              <div class="assay-conf-card">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm font-600" style="color: var(--text);">{{ assay_name|truncatechars:32 }}</span>
+                  <span class="text-sm font-600"
+                        style="color: {% if assay_conf.overall >= 80 %}var(--success){% elif assay_conf.overall >= 50 %}var(--warning){% else %}var(--danger){% endif %};">
+                    {{ assay_conf.overall|floatformat:0 }}%
+                  </span>
+                </div>
+
+                {# Weighted factor bar: step 50% | figure 20% | dataset 15% | warnings 15% #}
+                {% with step_w=assay_conf.step_confidences|length %}
+                  <div class="conf-factor-bar mb-2">
+                    {# Step completeness (50%) #}
+                    {% with sc_mean=assay_conf.step_confidences %}
+                      <div class="conf-factor-bar-seg"
+                           style="width: 50%; background: {% if assay_conf.overall >= 80 %}var(--success){% elif assay_conf.overall >= 50 %}var(--warning){% else %}var(--danger){% endif %}; opacity: .85;"
+                           title="Step completeness (50% weight)"></div>
+                    {% endwith %}
+                    {# Figure evidence (20%) #}
+                    <div class="conf-factor-bar-seg"
+                         style="width: 20%; background: {% if assay_conf.figure_confidence_mean >= 80 %}var(--success){% elif assay_conf.figure_confidence_mean >= 50 %}var(--warning){% else %}var(--danger){% endif %}; opacity: .7;"
+                         title="Figure evidence (20% weight): {{ assay_conf.figure_confidence_mean|floatformat:0 }}%"></div>
+                    {# Dataset resolution (15%) #}
+                    <div class="conf-factor-bar-seg"
+                         style="width: 15%; background: {% if assay_conf.dataset_resolved %}var(--success){% else %}var(--danger){% endif %}; opacity: .7;"
+                         title="Dataset resolved (15% weight)"></div>
+                    {# Warnings (15%) #}
+                    <div class="conf-factor-bar-seg"
+                         style="width: 15%; background: {% if assay_conf.parse_warning_count == 0 %}var(--success){% else %}var(--warning){% endif %}; opacity: .7;"
+                         title="Parse warnings (15% weight): {{ assay_conf.parse_warning_count }}"></div>
+                  </div>
+                {% endwith %}
+
+                {# Factor pills row #}
+                <div class="flex" style="flex-wrap: wrap; gap: 4px;">
+                  <span class="pill" style="font-size: 0.68rem; padding: 2px 6px;
+                    background: {% if assay_conf.dataset_resolved %}var(--success-soft){% else %}var(--danger-soft){% endif %};
+                    color: {% if assay_conf.dataset_resolved %}var(--success){% else %}var(--danger){% endif %};
+                    border: 1px solid {% if assay_conf.dataset_resolved %}var(--success-mid){% else %}var(--danger-mid){% endif %};">
+                    {% if assay_conf.dataset_resolved %}✓{% else %}✗{% endif %} dataset
+                  </span>
+                  <span class="pill" style="font-size: 0.68rem; padding: 2px 6px;
+                    background: {% if assay_conf.figure_confidence_mean >= 60 %}var(--success-soft){% else %}var(--warning-soft){% endif %};
+                    color: {% if assay_conf.figure_confidence_mean >= 60 %}var(--success){% else %}var(--warning){% endif %};
+                    border: 1px solid {% if assay_conf.figure_confidence_mean >= 60 %}var(--success-mid){% else %}var(--warning-mid){% endif %};">
+                    {{ assay_conf.figure_confidence_mean|floatformat:0 }}% figure conf
+                  </span>
+                  {% if assay_conf.parse_warning_count > 0 %}
+                    <span class="pill" style="font-size: 0.68rem; padding: 2px 6px; background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-mid);">
+                      ⚠ {{ assay_conf.parse_warning_count }} warning{{ assay_conf.parse_warning_count|pluralize }}
+                    </span>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="card" style="padding: 28px; text-align: center;">
+            <p class="text-muted mb-3">No assay confidence data yet. Complete the Methods step first.</p>
+            <a class="btn btn-ghost btn-sm" href="{% url 'workflow_step' job_id=job_id step='method' %}">Go to Methods →</a>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Section 2: Next recommended action banner (id for JS live-update) ── #}
+    <div id="cc-top-action-banner">
+    {% if actionable_items %}
+      {% with top=actionable_items.0 %}
+        <div style="margin-bottom: 20px; padding: 16px 20px;
+                    border: 1.5px solid
+                      {% if top.severity == 'high' %}var(--danger-mid){% elif top.severity == 'medium' %}var(--warning-mid){% else %}var(--border-2){% endif %};
+                    background:
+                      {% if top.severity == 'high' %}var(--danger-soft){% elif top.severity == 'medium' %}var(--warning-soft){% else %}var(--surface-2){% endif %};
+                    border-radius: var(--radius); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <p class="text-xs font-600 text-muted mb-1" style="text-transform: uppercase; letter-spacing: .04em;">Next recommended action</p>
+            <p class="font-600" style="color: var(--text); margin-bottom: 2px;">{{ top.reason }}</p>
+            <p class="text-xs" style="color:
+              {% if top.severity == 'high' %}var(--danger){% elif top.severity == 'medium' %}var(--warning){% else %}var(--text-3){% endif %};">
+              +{{ top.confidence_impact|floatformat:1 }}% confidence if resolved
+            </p>
+          </div>
+          <button class="btn btn-primary btn-sm"
+                  onclick="activateAction(JSON.parse(document.getElementById('_cc-actionable-items').textContent)[0])">
+            {{ top.fix_label }}
+          </button>
+        </div>
+      {% endwith %}
+    {% else %}
+      <div style="margin-bottom: 20px; padding: 16px 20px; border: 1.5px solid var(--success-mid);
+                  background: var(--success-soft); border-radius: var(--radius);
+                  display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 1.4rem;">🎉</span>
+        <div>
+          <p class="font-600" style="color: var(--success);">Pipeline ready</p>
+          <p class="text-sm text-muted">All tracked factors are resolved.</p>
+        </div>
+      </div>
+    {% endif %}
+    </div>
+
+    {# ── Section 3: Actionable items list (id + inner id for live re-render) ── #}
+    <h2 id="cc-issues-header" class="mb-3"
+        {% if not actionable_items %}style="display:none;"{% endif %}>
+      Issues to resolve
+      <span id="cc-issues-count-badge" class="tab-badge"
+            style="background: var(--danger-soft); color: var(--danger);">
+        {{ actionable_items|length }}
+      </span>
+    </h2>
+    <div id="cc-actionable-items-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px;">
+      {% for item in actionable_items %}
+        <div class="action-item-card sev-{{ item.severity }}">
+          <div style="flex: 1;">
+            <p class="text-sm font-600" style="color: var(--text); margin-bottom: 2px;">{{ item.reason }}</p>
+            <p class="text-xs" style="color:
+              {% if item.severity == 'high' %}var(--danger){% elif item.severity == 'medium' %}var(--warning){% else %}var(--text-3){% endif %};">
+              {{ item.severity|title }} · +{{ item.confidence_impact|floatformat:1 }}% if resolved
+            </p>
+          </div>
+          <button class="btn btn-ghost btn-sm"
+                  style="flex-shrink: 0; white-space: nowrap;"
+                  data-action-tab="{{ item.fix_target_tab }}"
+                  data-action-field="{{ item.fix_target_field|default:'' }}"
+                  onclick="activateActionFromBtn(this)">
+            {{ item.fix_label }} →
+          </button>
+        </div>
+      {% endfor %}
+    </div>
+
+    {# ── Section 4: Dataset readiness table ───────────────── #}
+    {% if datasets %}
+      <h2 class="mb-3">Dataset readiness</h2>
+      <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 8px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+          <thead>
+            <tr style="background: var(--surface-2); border-bottom: 1px solid var(--border);">
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Accession</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Source</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Status</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em;">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ds in datasets %}
+              {% if forloop.counter <= 10 %}
+                <tr style="border-bottom: 1px solid var(--border); cursor: pointer;"
+                    onclick="showTab('datasets', document.querySelectorAll('.dash-tab')[2])"
+                    onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
+                  <td style="padding: 9px 14px;">
+                    <code style="font-size: 0.82rem;">{{ ds.accession|default:"—" }}</code>
+                  </td>
+                  <td style="padding: 9px 14px; color: var(--text-2);">{{ ds.source|default:"—" }}</td>
+                  <td style="padding: 9px 14px;">
+                    {% if ds.accession %}
+                      <span class="pill pill-found" style="font-size: 0.68rem; padding: 2px 7px;">Resolved</span>
+                    {% else %}
+                      <span class="pill pill-missing" style="font-size: 0.68rem; padding: 2px 7px;">Unresolved</span>
+                    {% endif %}
+                  </td>
+                  <td style="padding: 9px 14px; color: var(--text-3); font-size: 0.8125rem; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    {{ ds.description|default:"—"|truncatechars:60 }}
+                  </td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if datasets|length > 10 %}
+          <div style="padding: 10px 14px; text-align: center; border-top: 1px solid var(--border); background: var(--surface-2);">
+            <button class="btn btn-ghost btn-sm"
+                    onclick="showTab('datasets', document.querySelectorAll('.dash-tab')[2])">
+              View all {{ datasets|length }} datasets →
+            </button>
+          </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="card" style="padding: 20px; text-align: center;">
+        <p class="text-muted text-sm">No datasets found yet.</p>
+        <a class="btn btn-ghost btn-sm mt-2" href="{% url 'workflow_step' job_id=job_id step='datasets' %}">Run Datasets step →</a>
+      </div>
+    {% endif %}
+
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Overview (parser status + charts — now secondary)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-overview">
 
     <div style="display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start;">
 
@@ -357,6 +725,178 @@
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
+       TAB: Pipeline Builder (React Flow visual editor)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-pipeline">
+    <div class="card" style="padding: 0; overflow: hidden;">
+
+      <!-- Header -->
+      <div style="padding: 16px 22px; border-bottom: 1px solid var(--border);
+                  display: flex; align-items: center; justify-content: space-between;
+                  flex-wrap: wrap; gap: 10px;">
+        <div>
+          <h2 style="margin-bottom: 4px;">Visual Pipeline Builder</h2>
+          <p class="text-sm text-muted">
+            Drag nodes to rearrange · Connect tools by dragging between handles ·
+            Click a node to edit parameters, inputs, and outputs.
+          </p>
+        </div>
+      </div>
+
+      <!-- React Flow mount point -->
+      <div style="padding: 16px;">
+        <div id="pipeline-builder-root" style="height: 760px; width: 100%;">
+          <!-- Loading placeholder shown before React mounts -->
+          <div style="height: 100%; display: flex; align-items: center; justify-content: center;
+                      background: var(--surface-2); border: 1px dashed var(--border-2);
+                      border-radius: var(--radius); color: var(--text-3); font-size: 0.875rem;">
+            Loading pipeline builder…
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    {# ── Phase 2d: Pipeline step configuration accordion ──────────── #}
+    <details id="pc-config-panel" style="margin-top:16px;">
+      <summary style="cursor:pointer;font-weight:600;font-size:0.9375rem;padding:12px 16px;
+                       background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);
+                       list-style:none;display:flex;align-items:center;justify-content:space-between;">
+        <span>⚙ Configure pipeline steps</span>
+        <span style="font-size:0.75rem;font-weight:400;color:var(--text-2);" id="pc-save-status"></span>
+      </summary>
+      <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius);padding:16px;">
+        {% if pipeline %}
+          <p class="text-sm text-muted mb-3">
+            Edit step metadata below. Changes autosave after 800 ms.
+            <code style="font-size:0.8rem;">depends_on</code> values must be existing step names.
+          </p>
+          <div id="pc-steps-root">
+            {% with pipe_steps=pipeline.config.steps|default:"" %}
+            {% if pipe_steps %}
+              {% for ps in pipe_steps %}
+              <div class="pc-step-block" data-step-idx="{{ forloop.counter0 }}"
+                   style="padding:14px;margin-bottom:8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                  <span style="font-size:0.8rem;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">
+                    Step {{ forloop.counter }}
+                    <span class="pc-step-status" data-step-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.7rem;font-weight:400;margin-left:6px;text-transform:none;"></span>
+                  </span>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">
+                  <div class="form-group">
+                    <label class="form-label">Step name</label>
+                    <input class="step-edit-input pc-field"
+                           data-patch-path="config.steps[{{ forloop.counter0 }}].name"
+                           value="{{ ps.name|default:'' }}" placeholder="e.g. alignment" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Software</label>
+                    <input class="step-edit-input pc-field"
+                           data-patch-path="config.steps[{{ forloop.counter0 }}].software"
+                           value="{{ ps.software|default:'' }}" placeholder="e.g. STAR" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Depends on (comma-sep)</label>
+                    <input class="step-edit-input pc-field" data-json-array="true"
+                           data-patch-path="config.steps[{{ forloop.counter0 }}].depends_on"
+                           value="{{ ps.depends_on|join:', '|default:'' }}" placeholder="e.g. qc, trimming" />
+                  </div>
+                </div>
+              </div>
+              {% endfor %}
+            {% else %}
+              <p class="text-sm text-muted">No pipeline steps defined yet. Complete the Pipeline step first.</p>
+              <a class="btn btn-ghost btn-sm" href="{% url 'workflow_step' job_id=job_id step='pipeline' %}">Go to Pipeline step →</a>
+            {% endif %}
+            {% endwith %}
+          </div>
+        {% else %}
+          <p class="text-sm text-muted">No pipeline configuration found.</p>
+        {% endif %}
+      </div>
+    </details>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       TAB: Datasets  (Phase 2b — inline editing + PATCH autosave)
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-datasets">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 style="margin-bottom: 4px;">Datasets</h2>
+        <p class="text-sm text-muted">Inline edits autosave after 800 ms. Accession format is validated client-side.</p>
+      </div>
+      <span id="ds-save-status" style="font-size:0.8125rem;color:var(--text-2);"></span>
+    </div>
+    <div id="ds-editor-root">
+      {% if datasets %}
+        <div class="card" style="padding:0;overflow:hidden;">
+          <table id="ds-table" style="width:100%;border-collapse:collapse;font-size:0.875rem;">
+            <thead>
+              <tr style="background:var(--surface-2);border-bottom:1px solid var(--border);">
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Accession</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Source</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Organism</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Experiment&nbsp;type</th>
+                <th style="padding:10px 14px;text-align:left;font-size:0.75rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Status</th>
+              </tr>
+            </thead>
+            <tbody id="ds-tbody">
+              {% for ds in datasets %}
+              <tr data-ds-idx="{{ forloop.counter0 }}" style="border-bottom:1px solid var(--border);">
+                <td style="padding:7px 10px;">
+                  <div style="position:relative;">
+                    <input class="step-edit-input ds-field" style="font-family:var(--mono);font-size:0.82rem;"
+                           data-field="accession" data-idx="{{ forloop.counter0 }}"
+                           value="{{ ds.accession|default:'' }}" placeholder="GSE12345" />
+                    <span class="ds-field-status" data-field="accession" data-idx="{{ forloop.counter0 }}"
+                          style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:0.7rem;pointer-events:none;"></span>
+                  </div>
+                </td>
+                <td style="padding:7px 10px;">
+                  <select class="step-edit-input ds-field" data-field="source" data-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.82rem;cursor:pointer;">
+                    {% with cur=ds.source|default:"other" %}
+                    <option value="geo" {% if cur == "geo" %}selected{% endif %}>GEO</option>
+                    <option value="sra" {% if cur == "sra" %}selected{% endif %}>SRA</option>
+                    <option value="encode" {% if cur == "encode" %}selected{% endif %}>ENCODE</option>
+                    <option value="supplementary" {% if cur == "supplementary" %}selected{% endif %}>Supplementary</option>
+                    <option value="other" {% if cur == "other" %}selected{% endif %}>Other</option>
+                    {% endwith %}
+                  </select>
+                </td>
+                <td style="padding:7px 10px;">
+                  <input class="step-edit-input ds-field" data-field="organism" data-idx="{{ forloop.counter0 }}"
+                         value="{{ ds.organism|default:'' }}" placeholder="Homo sapiens" />
+                </td>
+                <td style="padding:7px 10px;">
+                  <input class="step-edit-input ds-field" data-field="experiment_type" data-idx="{{ forloop.counter0 }}"
+                         value="{{ ds.experiment_type|default:'' }}" placeholder="RNA-seq" />
+                </td>
+                <td style="padding:7px 10px;">
+                  {% if ds.accession %}
+                    <span class="pill pill-found" style="font-size:0.68rem;padding:2px 7px;">Resolved</span>
+                  {% else %}
+                    <span class="pill pill-missing" style="font-size:0.68rem;padding:2px 7px;">Unresolved</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="card" style="padding:40px;text-align:center;">
+          <p class="text-muted mb-4">No datasets found. Complete the Datasets step first.</p>
+          <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='datasets' %}">Go to Datasets step →</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
        TAB: Figures
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-figures">
@@ -383,14 +923,15 @@
   </div>
 
   <!-- ══════════════════════════════════════════════════════════
-       TAB: Step Editing
+       TAB: Step Editing  (Phase 2c — PATCH autosave, 800 ms debounce)
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-editing">
     <div class="flex items-center justify-between mb-4">
       <div>
         <h2 style="margin-bottom: 4px;">Structured Step Editing</h2>
-        <p class="text-sm text-muted">Edit assay steps without touching raw JSON. Changes save immediately.</p>
+        <p class="text-sm text-muted">Edit assay steps without touching raw JSON. Changes autosave after 800 ms.</p>
       </div>
+      <span id="se-save-status" style="font-size:0.8125rem;color:var(--text-2);"></span>
     </div>
     {% if structured_assays %}
       {% for assay in structured_assays %}
@@ -400,47 +941,84 @@
             <span class="pill pill-neutral" style="margin-left: 8px;">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
           </summary>
           <div class="accordion-body">
+            <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+              <button type="button"
+                      class="btn btn-ghost btn-sm se-add-step-btn"
+                      data-assay-idx="{{ forloop.counter0 }}"
+                      style="padding:4px 10px;font-size:0.75rem;">
+                + Add Step
+              </button>
+            </div>
             {% for step in assay.steps %}
-              <form method="post"
-                    style="padding: 14px 0;{% if not forloop.last %} border-bottom: 1px solid var(--border);{% endif %}">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="save_structured_step" />
-                <input type="hidden" name="assay_name" value="{{ assay.name }}" />
-                <input type="hidden" name="step_index" value="{{ forloop.counter0 }}" />
-                <p class="text-xs font-600 text-muted mb-2" style="text-transform: uppercase; letter-spacing: .04em;">
-                  Step {{ forloop.counter }}
-                </p>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 10px;">
+              <div class="se-step-block" data-assay="{{ assay.name|escapejs }}" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
+                   style="padding:14px 0;{% if not forloop.last %}border-bottom:1px solid var(--border);{% endif %}">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+                  <p class="text-xs font-600 text-muted" style="margin:0;text-transform:uppercase;letter-spacing:.04em;">
+                    Step {{ forloop.counter }}
+                    <span class="se-step-status" data-assay-idx="{{ forloop.parentloop.counter0 }}" data-step-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.7rem;margin-left:8px;font-weight:400;text-transform:none;"></span>
+                  </p>
+                  <button type="button"
+                          class="btn btn-ghost btn-sm se-remove-step-btn"
+                          data-assay-idx="{{ forloop.parentloop.counter0 }}"
+                          data-step-idx="{{ forloop.counter0 }}"
+                          style="padding:3px 9px;font-size:0.72rem;color:var(--danger);border-color:var(--danger-mid);">
+                    Remove
+                  </button>
+                </div>
+                {# IDs follow the pattern used by compute_actionable_items field selectors:
+                   #id-step-{assay-slug}-step-{idx}-{field} #}
+                {% with astep_id="id-step-"|add:assay.name|slugify|add:"-step-"|add:forloop.counter0|stringformat:"s" %}
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-bottom:10px;">
                   <div class="form-group">
-                    <label class="form-label">Software</label>
-                    <input class="step-edit-input" type="text" name="software" value="{{ step.software|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-software">Software</label>
+                    <input id="{{ astep_id }}-software" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].software"
+                           type="text" value="{{ step.software|default:'' }}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Version</label>
-                    <input class="step-edit-input" type="text" name="software_version" value="{{ step.software_version|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-version">Version</label>
+                    <input id="{{ astep_id }}-version" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].software_version"
+                           type="text" value="{{ step.software_version|default:'' }}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Input Data</label>
-                    <input class="step-edit-input" type="text" name="input_data" value="{{ step.input_data|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-input-data">Input Data</label>
+                    <input id="{{ astep_id }}-input-data" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].input_data"
+                           type="text" value="{{ step.input_data|default:'' }}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Output Data</label>
-                    <input class="step-edit-input" type="text" name="output_data" value="{{ step.output_data|default:'' }}" />
+                    <label class="form-label" for="{{ astep_id }}-output-data">Output Data</label>
+                    <input id="{{ astep_id }}-output-data" class="step-edit-input se-field"
+                           data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].output_data"
+                           type="text" value="{{ step.output_data|default:'' }}" />
                   </div>
                 </div>
-                <div class="form-group" style="margin-bottom: 10px;">
-                  <label class="form-label">Parameters JSON</label>
-                  <textarea class="step-edit-input" name="parameters_json" rows="2"
-                            style="font-family: var(--mono); font-size: 0.8125rem; resize: vertical;">{{ step.parameters_json }}</textarea>
+                <div class="form-group" style="margin-bottom:10px;">
+                  <label class="form-label" for="{{ astep_id }}-parameters">Parameters JSON</label>
+                  <textarea id="{{ astep_id }}-parameters" class="step-edit-input se-field"
+                            data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].parameters"
+                            data-json="true" rows="2"
+                            style="font-family:var(--mono);font-size:0.8125rem;resize:vertical;">{{ step.parameters_json }}</textarea>
                 </div>
-                <button class="btn btn-success btn-sm" type="submit">✓ Save step</button>
-              </form>
+                <div class="form-group" style="margin-bottom:2px;">
+                  <label class="form-label" for="{{ astep_id }}-command">Command</label>
+                  <textarea id="{{ astep_id }}-command" class="step-edit-input se-field se-command-field"
+                            data-patch-path="assay_graph.assays[{{ forloop.parentloop.counter0 }}].steps[{{ forloop.counter0 }}].code_reference"
+                            rows="2"
+                            style="font-family:var(--mono);font-size:0.8125rem;resize:vertical;"
+                            placeholder="Command preview appears after I/O + parameters save. You can edit it.">{{ step.code_reference|default:'' }}</textarea>
+                  <p class="text-xs text-muted" style="margin-top:4px;">Auto-generated after input/output/parameters updates and fully editable.</p>
+                </div>
+                {% endwith %}
+              </div>
             {% endfor %}
           </div>
         </details>
       {% endfor %}
     {% else %}
-      <div class="card" style="padding: 40px; text-align: center;">
+      <div class="card" style="padding:40px;text-align:center;">
         <p class="text-muted mb-4">No assay steps found. Complete the Methods step first.</p>
         <a class="btn btn-ghost" href="{% url 'workflow_step' job_id=job_id step='method' %}">Go to Methods step →</a>
       </div>
@@ -491,9 +1069,51 @@
     if (panel) panel.classList.add('active');
     if (btn) btn.classList.add('active');
     sessionStorage.setItem('dash-tab-{{ job_id }}', name);
+    // Notify the React Flow app that the canvas is now visible so it can
+    // recalculate the viewport (React Flow's fitView needs the element to
+    // have non-zero dimensions).
+    if (name === 'pipeline') {
+      window.dispatchEvent(new CustomEvent('pb-tab-activated'));
+    }
   }
 
-  // Restore last active tab on load
+  // ── Phase 0: Confidence Command Center ─────────────────────────
+  // activateAction — switch tab, scroll to field, and flash it yellow
+  function activateAction(item) {
+    if (!item) return;
+    const tabName = item.fix_target_tab || 'command-center';
+    const btn = Array.from(document.querySelectorAll('.dash-tab'))
+      .find(b => (b.getAttribute('onclick') || '').includes("'" + tabName + "'"));
+    showTab(tabName, btn || null);
+
+    const fieldSel = item.fix_target_field;
+    if (fieldSel) {
+      // Defer slightly so the tab panel becomes visible before scrolling
+      setTimeout(() => {
+        const el = document.querySelector(fieldSel);
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.focus();
+        el.classList.remove('field-highlight');
+        void el.offsetWidth; // reflow to restart animation
+        el.classList.add('field-highlight');
+        setTimeout(() => el.classList.remove('field-highlight'), 2000);
+        // Auto-open accordion parent if inside a <details> element
+        const details = el.closest('details');
+        if (details) details.open = true;
+      }, 80);
+    }
+  }
+
+  // activateActionFromBtn — called from data-attribute buttons in the template
+  function activateActionFromBtn(btn) {
+    activateAction({
+      fix_target_tab: btn.dataset.actionTab || 'command-center',
+      fix_target_field: btn.dataset.actionField || null,
+    });
+  }
+
+  // Restore last active tab on load (default: command-center)
   (function() {
     const saved = sessionStorage.getItem('dash-tab-{{ job_id }}');
     if (!saved) return;
@@ -501,5 +1121,2132 @@
       .find(b => (b.getAttribute('onclick') || '').includes("'" + saved + "'"));
     if (btn) showTab(saved, btn);
   })();
+
+  // Handle URL hash deep-links.
+  //
+  // Supported formats:
+  //   #fix-tab=editing&fix-field=#id-step-...
+  //     Classic format: directly specifies tab and CSS selector.
+  //
+  //   #fix-assay=<assay-slug>&step=<step-idx>&field=<field-key>
+  //     Structured format: derives the step editor CSS selector from
+  //     assay slug + step index + field key.
+  //     field-key can be: software | version | parameters | input-data | output-data
+  //
+  //   #fix-tab=confidence&poll=1
+  //     Triggers an immediate confidence poll from the API so the
+  //     Command Center is fresh after navigating from a bookmark.
+  //
+  (function() {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+
+    // Structured assay deep-link: #fix-assay=rna-seq&step=0&field=version
+    const assay  = params.get('fix-assay');
+    const sIdx   = params.get('step');
+    const fKey   = params.get('field');
+    if (assay && sIdx !== null && fKey) {
+      const fieldSel = `#id-step-${assay}-step-${sIdx}-${fKey}`;
+      activateAction({ fix_target_tab: 'editing', fix_target_field: fieldSel });
+      return; // Don't also process the classic format
+    }
+
+    // Classic format: #fix-tab=editing&fix-field=#id-step-...
+    const tab = params.get('fix-tab');
+    const field = params.get('fix-field');
+    if (tab) {
+      activateAction({ fix_target_tab: tab, fix_target_field: field });
+    }
+
+    // Optional immediate confidence poll (use after saving from another page)
+    if (params.get('poll') === '1') {
+      fetch(`/api/v1/jobs/{{ job_id }}/confidence`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      }).then(r => r.ok ? r.json() : null).then(data => {
+        if (data) {
+          // Synthesise a saveResponse-shaped object for refreshConfidenceHint
+          // (defined in the Phase 2 script block below; call it after DOMContentLoaded)
+          window._pendingConfidencePoll = data;
+        }
+      }).catch(() => {});
+    }
+  })();
+
+  // Apply any pending confidence poll result (written above, consumed here after
+  // the Phase 2 script block has defined refreshConfidenceHint).
+  window.addEventListener('load', function() {
+    if (window._pendingConfidencePoll) {
+      const d = window._pendingConfidencePoll;
+      // refreshConfidenceHint is defined in the Phase 2 <script> block below
+      if (typeof window._refreshConfidenceHint === 'function') {
+        window._refreshConfidenceHint({
+          confidence: { overall: d.overall, assay_confidences: d.assay_confidences },
+          actionable_items: d.actionable_items,
+        });
+      }
+      window._pendingConfidencePoll = null;
+    }
+  });
+
+  // ── Phase 3: Rebuild progress overlay ───────────────────────────
+  //
+  // Intercepts the "Rebuild pipeline" form submit (action=rebuild_pipeline).
+  // Shows a full-page overlay that polls /api/v1/jobs/{job_id}/status every
+  // 1.5 s, displaying the current pipeline step + the last 5 log lines.
+  // When the job reaches "completed" or "failed" it reloads the page.
+  //
+  (function () {
+    const JOB_ID = '{{ job_id }}';
+    const STEP_LABELS = {
+      paper: 'Paper',
+      figures: 'Figures',
+      method: 'Methods',
+      datasets: 'Datasets',
+      software: 'Software',
+      pipeline: 'Pipeline',
+    };
+
+    // Create overlay DOM (hidden until needed)
+    const overlay = document.createElement('div');
+    overlay.id = 'rebuild-overlay';
+    overlay.style.cssText = [
+      'display:none', 'position:fixed', 'inset:0', 'z-index:9999',
+      'background:rgba(0,0,0,.6)', 'backdrop-filter:blur(3px)',
+      'align-items:center', 'justify-content:center',
+    ].join(';');
+    overlay.innerHTML = `
+      <div style="background:var(--surface);border-radius:var(--radius-lg);
+                  box-shadow:var(--shadow-lg);padding:32px 36px;min-width:360px;max-width:520px;width:90%;">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;">
+          <div id="rbo-spinner" style="width:28px;height:28px;border:3px solid var(--border-2);
+                border-top-color:var(--primary);border-radius:50%;
+                animation:spin 0.8s linear infinite;flex-shrink:0;"></div>
+          <div>
+            <p id="rbo-title" class="font-600" style="color:var(--text);margin:0;">Rebuilding pipeline…</p>
+            <p id="rbo-step" class="text-sm text-muted" style="margin:2px 0 0;">Starting…</p>
+          </div>
+        </div>
+        <div style="background:var(--surface-2);border-radius:var(--radius);padding:10px 12px;
+                    font-family:monospace;font-size:0.78rem;min-height:90px;max-height:140px;
+                    overflow-y:auto;color:var(--text-2);border:1px solid var(--border);">
+          <div id="rbo-logs">Waiting for first log entry…</div>
+        </div>
+        <p class="text-xs text-muted mt-3" style="text-align:center;">
+          Page will refresh automatically when complete.
+        </p>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    // Inject spinner keyframes once
+    if (!document.getElementById('_rbo-styles')) {
+      const sty = document.createElement('style');
+      sty.id = '_rbo-styles';
+      sty.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+      document.head.appendChild(sty);
+    }
+
+    let _pollTimer = null;
+
+    function showOverlay(startStep) {
+      overlay.style.display = 'flex';
+      document.getElementById('rbo-step').textContent =
+        'Starting: ' + (STEP_LABELS[startStep] || startStep || '…');
+      document.getElementById('rbo-logs').textContent = 'Waiting for first log entry…';
+    }
+
+    function stopPolling() {
+      if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    }
+
+    function formatLogLine(entry) {
+      if (typeof entry === 'string') return entry;
+      if (entry && entry.message) return entry.message;
+      return JSON.stringify(entry);
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch(`/api/v1/jobs/${JOB_ID}/status`, {
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin',
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update step label
+        const stepLabel = STEP_LABELS[data.current_step] || data.current_step || '';
+        const stageText = data.stage || stepLabel;
+        document.getElementById('rbo-step').textContent = stageText;
+
+        // Show last 5 log lines
+        const logs = Array.isArray(data.parse_logs) ? data.parse_logs : [];
+        const last5 = logs.slice(-5).map(formatLogLine).join('\n');
+        const logsEl = document.getElementById('rbo-logs');
+        logsEl.textContent = last5 || 'Running…';
+        logsEl.scrollTop = logsEl.scrollHeight;
+
+        // Terminal states
+        if (data.status === 'completed') {
+          stopPolling();
+          document.getElementById('rbo-title').textContent = '✓ Rebuild complete!';
+          document.getElementById('rbo-spinner').style.borderTopColor = '#16a34a';
+          document.getElementById('rbo-step').textContent = 'Refreshing…';
+          setTimeout(() => { window.location.replace(window.location.pathname + '#poll=1'); }, 900);
+        } else if (data.status === 'failed') {
+          stopPolling();
+          document.getElementById('rbo-title').textContent = '✗ Rebuild failed';
+          document.getElementById('rbo-spinner').style.borderTopColor = '#dc2626';
+          document.getElementById('rbo-spinner').style.animation = 'none';
+          document.getElementById('rbo-step').textContent = data.error || 'An error occurred.';
+          // Show a dismiss button
+          const dismissBtn = document.createElement('button');
+          dismissBtn.className = 'btn btn-ghost btn-sm';
+          dismissBtn.style.cssText = 'display:block;margin:14px auto 0;';
+          dismissBtn.textContent = 'Dismiss';
+          dismissBtn.onclick = () => { overlay.style.display = 'none'; };
+          overlay.querySelector('div > div').appendChild(dismissBtn);
+        }
+      } catch (_) { /* network hiccup — keep polling */ }
+    }
+
+    // Intercept all forms with action=rebuild_pipeline
+    document.addEventListener('submit', function (e) {
+      const form = e.target;
+      const actionInput = form.querySelector('input[name="action"]');
+      if (!actionInput || actionInput.value !== 'rebuild_pipeline') return;
+
+      const startStep = (form.querySelector('input[name="edited_step"]') || {}).value || 'method';
+      showOverlay(startStep);
+
+      // Let the form POST proceed normally (Django handles the rebuild);
+      // start polling immediately so we catch progress updates.
+      _pollTimer = setInterval(pollStatus, 1500);
+      // First poll after a brief delay for the server to start the job
+      setTimeout(pollStatus, 1200);
+    });
+  })();
+</script>
+
+{# ──────────────────────────────────────────────────────────────
+   Pipeline Builder — React Flow app (ESM module, no build step)
+────────────────────────────────────────────────────────────── #}
+<script type="module">
+import React, {
+  useState, useCallback, useEffect, useMemo, useRef,
+} from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  Panel,
+  Handle,
+  Position,
+  applyNodeChanges,
+  applyEdgeChanges,
+  useReactFlow,
+  ReactFlowProvider,
+  addEdge,
+  reconnectEdge,
+} from '@xyflow/react';
+
+/* ── Constants ─────────────────────────────────────────────── */
+const JOB_ID = '{{ job_id }}';
+
+/* Software tools injected from Django (array of tool objects) */
+const SOFTWARE_TOOLS = JSON.parse(
+  document.getElementById('_pb-software-tools').textContent
+);
+
+/* Parsed method assays for assay-centric graph rendering */
+const METHOD_ASSAYS = JSON.parse(
+  document.getElementById('_pb-method-assays').textContent
+);
+
+/* Confidence data for per-node quality badges */
+const CONFIDENCE_DATA = (() => {
+  const el = document.getElementById('_cc-confidence');
+  try { return el ? JSON.parse(el.textContent) : {}; } catch { return {}; }
+})();
+
+/* ── Language colour chips ──────────────────────────────────── */
+const LANG_COLORS = {
+  python: { bg: '#eff6ff', text: '#1d4ed8' },
+  r:      { bg: '#f0fdf4', text: '#15803d' },
+  'c++':  { bg: '#fef3c7', text: '#b45309' },
+  bash:   { bg: '#f5f3ff', text: '#6d28d9' },
+  perl:   { bg: '#fdf2f8', text: '#9d174d' },
+  java:   { bg: '#fff7ed', text: '#c2410c' },
+};
+function langColor(lang) {
+  return LANG_COLORS[(lang || '').toLowerCase()] || { bg: '#f1f5f9', text: '#475569' };
+}
+
+/* ── Slugify: mirror of graph_layout._slugify ───────────────── */
+function slugify(name, idx) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  return slug || `tool_${idx}`;
+}
+
+function toList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(v => String(v || '').trim())
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/[;,]/g)
+      .map(v => v.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function edgeStyle(edge) {
+  return {
+    ...edge,
+    sourceHandle: edge.sourceHandle ?? edge.source_handle ?? null,
+    targetHandle: edge.targetHandle ?? edge.target_handle ?? null,
+    style: { stroke: '#94a3b8', strokeWidth: 2 },
+    markerEnd: { type: 'arrowclosed', color: '#94a3b8' },
+  };
+}
+
+function buildAssayToolGraph(assays, tools) {
+  const byName = {};
+  tools.forEach((sw, i) => {
+    const name = String(sw?.name || `tool_${i}`).trim().toLowerCase();
+    if (name && !byName[name]) byName[name] = sw || {};
+  });
+
+  const assayOptions = [];
+  const nodes = [];
+  const edges = [];
+  const usedAssayKeys = new Set();
+  const usedNodeIds = new Set();
+
+  assays.forEach((assay, assayIndex) => {
+    const assayName = String(assay?.name || `Assay ${assayIndex + 1}`).trim();
+    let assayKey = slugify(assayName, assayIndex);
+    let assaySuffix = 0;
+    while (usedAssayKeys.has(assayKey)) {
+      assaySuffix += 1;
+      assayKey = `${slugify(assayName, assayIndex)}_${assaySuffix}`;
+    }
+    usedAssayKeys.add(assayKey);
+
+    const rawSteps = Array.isArray(assay?.steps) ? assay.steps : [];
+    const orderedSteps = rawSteps
+      .map((step, idx) => {
+        const parsedStepNum = Number(step?.step_number);
+        return {
+          step,
+          idx,
+          stepNum: Number.isFinite(parsedStepNum) ? parsedStepNum : (idx + 1),
+        };
+      })
+      .sort((a, b) => (a.stepNum - b.stepNum) || (a.idx - b.idx));
+
+    assayOptions.push({ key: assayKey, label: assayName, stepCount: orderedSteps.length });
+
+    let prevNodeId = null;
+    orderedSteps.forEach(({ step, idx, stepNum }) => {
+      const stepSoftware = String(step?.software || '').trim();
+      const nodeLabel = stepSoftware || `Step ${stepNum}`;
+      const sw = byName[stepSoftware.toLowerCase()] || {};
+      const commands = Array.isArray(sw?.commands) ? sw.commands : [];
+      const firstCmd = commands[0] || {};
+
+      let nodeId = `${assayKey}__s${stepNum}_${slugify(nodeLabel, idx)}`;
+      let nodeSuffix = 0;
+      while (usedNodeIds.has(nodeId)) {
+        nodeSuffix += 1;
+        nodeId = `${assayKey}__s${stepNum}_${slugify(nodeLabel, idx)}_${nodeSuffix}`;
+      }
+      usedNodeIds.add(nodeId);
+
+      const stepInputs = toList(step?.input_data);
+      const stepOutputs = toList(step?.output_data);
+      const stepParameters = step?.parameters && typeof step.parameters === 'object'
+        ? step.parameters
+        : {};
+
+      nodes.push({
+        id: nodeId,
+        type: 'tool_node',
+        position: { x: idx * 320, y: assayIndex * 260 },
+        data: {
+          name: nodeLabel,
+          version: step?.software_version || sw?.version || '',
+          description: step?.description || sw?.description || '',
+          language: sw?.language || '',
+          source_url: sw?.source_url || '',
+          commands,
+          selectedCommandIndex: 0,
+          inputs: stepInputs.length ? stepInputs : (firstCmd.required_inputs || []),
+          outputs: stepOutputs.length ? stepOutputs : (firstCmd.outputs || []),
+          parameters: Object.keys(stepParameters).length ? stepParameters : (firstCmd.parameters || {}),
+          container: (sw?.environment || {}).docker_image || '',
+          step_id: `${assayKey}__step_${stepNum}`,
+          assay_key: assayKey,
+          assay_name: assayName,
+          step_number: stepNum,
+        },
+      });
+
+      if (prevNodeId) {
+        edges.push({
+          id: `${prevNodeId}--${nodeId}`,
+          source: prevNodeId,
+          target: nodeId,
+          sourceHandle: `${prevNodeId}__out`,
+          targetHandle: `${nodeId}__in`,
+          data: { assay_key: assayKey },
+        });
+      }
+      prevNodeId = nodeId;
+    });
+  });
+
+  return { nodes, edges, assays: assayOptions };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ToolNode — the custom React Flow node component
+══════════════════════════════════════════════════════════════ */
+function ToolNode({ data, selected }) {
+  const lc  = langColor(data.language);
+  const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+
+  return React.createElement(React.Fragment, null,
+
+    /* ── Target handle (left) ──── */
+    React.createElement(Handle, {
+      type: 'target', position: Position.Left,
+      id: `${data._nodeId}__in`,
+      style: { background: '#94a3b8', width: 10, height: 10, border: '2px solid #fff', left: -6 },
+    }),
+
+    /* ── Card ─────────────────── */
+    React.createElement('div', {
+      onClick: () => data.onSelect && data.onSelect(data),
+      style: {
+        background:   selected ? '#eff6ff' : '#ffffff',
+        border:       `2px solid ${
+          selected            ? '#1d4ed8'
+          : data._issueLevel === 'error'   ? '#ef4444'
+          : data._issueLevel === 'warning' ? '#f59e0b'
+          : '#e2e8f0'
+        }`,
+        borderRadius: 12,
+        padding:      '12px 14px',
+        minWidth:     180,
+        maxWidth:     220,
+        cursor:       'pointer',
+        boxShadow:    selected
+          ? '0 0 0 3px rgba(29,78,216,.18)'
+          : data._issueLevel === 'error'
+          ? '0 0 0 3px rgba(239,68,68,.15)'
+          : data._issueLevel === 'warning'
+          ? '0 0 0 3px rgba(245,158,11,.10)'
+          : '0 2px 8px rgba(15,23,42,.07)',
+        fontFamily: "'Inter', system-ui, sans-serif",
+        transition: 'border-color .15s, box-shadow .15s',
+        userSelect: 'none',
+      },
+    },
+      /* Tool name */
+      React.createElement('div', {
+        style: { fontWeight: 700, fontSize: 13, color: '#0f172a', marginBottom: 6, lineHeight: 1.3 },
+      }, data.name),
+
+      /* Version + language row */
+      React.createElement('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8, flexWrap: 'wrap' },
+      },
+        data.version && React.createElement('span', {
+          style: { fontSize: 10, color: '#64748b', background: '#f1f5f9',
+                   borderRadius: 4, padding: '1px 5px', fontFamily: 'monospace' },
+        }, `v${data.version}`),
+        data.language && React.createElement('span', {
+          style: { fontSize: 10, fontWeight: 600, color: lc.text, background: lc.bg,
+                   borderRadius: 4, padding: '1px 6px' },
+        }, cap(data.language)),
+      ),
+
+      /* I/O summary */
+      (data.inputs.length > 0 || data.outputs.length > 0) && React.createElement('div', {
+        style: { fontSize: 10, color: '#64748b', lineHeight: 1.6 },
+      },
+        data.inputs.length > 0 && React.createElement('div', null,
+          React.createElement('span', { style: { color: '#0ea5e9', fontWeight: 600 } }, '→ '),
+          data.inputs.slice(0, 2).join(', '),
+          data.inputs.length > 2 && ` +${data.inputs.length - 2}`,
+        ),
+        data.outputs.length > 0 && React.createElement('div', null,
+          React.createElement('span', { style: { color: '#10b981', fontWeight: 600 } }, '← '),
+          data.outputs.slice(0, 2).join(', '),
+          data.outputs.length > 2 && ` +${data.outputs.length - 2}`,
+        ),
+      ),
+
+      /* Parameter count hint */
+      Object.keys(data.parameters || {}).length > 0 && React.createElement('div', {
+        style: { marginTop: 6, fontSize: 10, color: '#94a3b8' },
+      }, `${Object.keys(data.parameters).length} parameter${Object.keys(data.parameters).length !== 1 ? 's' : ''}`),
+
+      /* Phase 4 — Validation issue badge */
+      data._issueLevel && React.createElement('div', {
+        style: {
+          marginTop: 6, fontSize: 9, fontWeight: 700, lineHeight: 1.4,
+          color: data._issueLevel === 'error' ? '#dc2626' : '#b45309',
+          background: data._issueLevel === 'error' ? '#fef2f2' : '#fef3c7',
+          border: `1px solid ${data._issueLevel === 'error' ? '#fecaca' : '#fde68a'}`,
+          borderRadius: 3, padding: '2px 5px',
+        },
+        title: (data._issueMessages || []).join('\n') || data._issueLevel,
+      }, data._issueLevel === 'error' ? `✗ ${data._issueMessages?.[0] || 'Error'}` : `⚠ ${data._issueMessages?.[0] || 'Warning'}`),
+
+      /* Confidence quality badges */
+      (() => {
+        const assayConf = (CONFIDENCE_DATA.assay_confidences || {})[data.assay_name] || {};
+        const stepConfs = assayConf.step_confidences || [];
+        const sc = stepConfs[(data.step_number || 1) - 1] || null;
+        if (!sc) return null;
+        const missing = [];
+        if (!sc.has_version)      missing.push({ label: 'ver', title: 'Missing version' });
+        if (!sc.has_software)     missing.push({ label: 'sw',  title: 'Missing software name' });
+        if (!sc.has_parameters)   missing.push({ label: 'params', title: 'No parameters' });
+        if (!sc.has_input_output) missing.push({ label: 'i/o', title: 'Missing input/output' });
+        if (!missing.length) return null;
+        return React.createElement('div', {
+          style: { marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 3 },
+        },
+          missing.map(m => React.createElement('span', {
+            key: m.label, title: m.title,
+            style: {
+              fontSize: 9, fontWeight: 700, color: '#b45309',
+              background: '#fef3c7', border: '1px solid #fde68a',
+              borderRadius: 3, padding: '1px 4px', cursor: 'default',
+            },
+          }, `⚠ ${m.label}`))
+        );
+      })(),
+    ),
+
+    /* ── Source handle (right) ── */
+    React.createElement(Handle, {
+      type: 'source', position: Position.Right,
+      id: `${data._nodeId}__out`,
+      style: { background: '#94a3b8', width: 10, height: 10, border: '2px solid #fff', right: -6 },
+    }),
+  );
+}
+
+const NODE_TYPES = { tool_node: ToolNode };
+
+/* ══════════════════════════════════════════════════════════════
+   ListEditor — add / remove string items
+══════════════════════════════════════════════════════════════ */
+function ListEditor({ label, items, onChange }) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    onChange([...items, v]);
+    setDraft('');
+  };
+  return React.createElement('div', { style: { marginBottom: 12 } },
+    React.createElement('div', {
+      style: { fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+               letterSpacing: '.5px', marginBottom: 5 },
+    }, label),
+    items.map((item, idx) =>
+      React.createElement('div', {
+        key: idx,
+        style: { display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 },
+      },
+        React.createElement('span', {
+          style: { flex: 1, fontSize: 12, background: '#f8fafc', border: '1px solid #e2e8f0',
+                   borderRadius: 4, padding: '3px 7px', fontFamily: 'monospace', color: '#1e293b',
+                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        }, item),
+        React.createElement('button', {
+          onClick: () => onChange(items.filter((_, i) => i !== idx)),
+          title: 'Remove',
+          style: { background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8',
+                   fontSize: 14, lineHeight: 1, padding: '0 2px' },
+        }, '×'),
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', gap: 4 } },
+      React.createElement('input', {
+        value: draft,
+        onChange: e => setDraft(e.target.value),
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        placeholder: `Add ${label.toLowerCase()}…`,
+        style: { flex: 1, fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 4,
+                 padding: '3px 7px', outline: 'none', fontFamily: 'monospace' },
+      }),
+      React.createElement('button', {
+        onClick: add,
+        style: { fontSize: 12, padding: '3px 8px', background: '#f1f5f9', border: '1px solid #e2e8f0',
+                 borderRadius: 4, cursor: 'pointer', color: '#475569' },
+      }, '+'),
+    ),
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ParamEditor — add / remove key=value parameter pairs
+══════════════════════════════════════════════════════════════ */
+function ParamEditor({ params, onChange }) {
+  const [draftKey, setDraftKey]   = useState('');
+  const [draftVal, setDraftVal]   = useState('');
+  const entries = Object.entries(params || {});
+  const add = () => {
+    const k = draftKey.trim();
+    if (!k) return;
+    onChange({ ...params, [k]: draftVal });
+    setDraftKey(''); setDraftVal('');
+  };
+  return React.createElement('div', { style: { marginBottom: 12 } },
+    React.createElement('div', {
+      style: { fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+               letterSpacing: '.5px', marginBottom: 5 },
+    }, 'Parameters'),
+    entries.map(([k, v], idx) =>
+      React.createElement('div', {
+        key: idx,
+        style: { display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 },
+      },
+        React.createElement('span', {
+          style: { fontSize: 11, fontFamily: 'monospace', color: '#6d28d9',
+                   background: '#f5f3ff', border: '1px solid #ede9fe',
+                   borderRadius: 4, padding: '2px 5px', whiteSpace: 'nowrap' },
+        }, k),
+        React.createElement('span', { style: { fontSize: 11, color: '#94a3b8' } }, '='),
+        React.createElement('input', {
+          value: String(v),
+          onChange: e => {
+            const updated = { ...params };
+            updated[k] = e.target.value;
+            onChange(updated);
+          },
+          style: { flex: 1, fontSize: 11, fontFamily: 'monospace', border: '1px solid #e2e8f0',
+                   borderRadius: 4, padding: '2px 5px', outline: 'none' },
+        }),
+        React.createElement('button', {
+          onClick: () => {
+            const updated = { ...params };
+            delete updated[k];
+            onChange(updated);
+          },
+          style: { background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8',
+                   fontSize: 14, lineHeight: 1, padding: '0 2px' },
+          title: 'Remove',
+        }, '×'),
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', gap: 4 } },
+      React.createElement('input', {
+        value: draftKey,
+        onChange: e => setDraftKey(e.target.value),
+        placeholder: '--flag',
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        style: { width: 90, fontSize: 11, fontFamily: 'monospace', border: '1px solid #e2e8f0',
+                 borderRadius: 4, padding: '3px 5px', outline: 'none' },
+      }),
+      React.createElement('input', {
+        value: draftVal,
+        onChange: e => setDraftVal(e.target.value),
+        placeholder: 'value',
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        style: { flex: 1, fontSize: 11, fontFamily: 'monospace', border: '1px solid #e2e8f0',
+                 borderRadius: 4, padding: '3px 5px', outline: 'none' },
+      }),
+      React.createElement('button', {
+        onClick: add,
+        style: { fontSize: 12, padding: '3px 8px', background: '#f1f5f9', border: '1px solid #e2e8f0',
+                 borderRadius: 4, cursor: 'pointer', color: '#475569' },
+      }, '+'),
+    ),
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ToolEditPanel — right-side editing panel
+══════════════════════════════════════════════════════════════ */
+function ToolEditPanel({ node, onClose, onUpdate }) {
+  if (!node) return null;
+  const d = node.data;
+  const [version,    setVersion]    = useState(d.version    || '');
+  const [inputs,     setInputs]     = useState(d.inputs     || []);
+  const [outputs,    setOutputs]    = useState(d.outputs    || []);
+  const [parameters, setParameters] = useState(d.parameters || {});
+  const [container,  setContainer]  = useState(d.container  || '');
+  const [cmdIdx,     setCmdIdx]     = useState(d.selectedCommandIndex || 0);
+  const cmds = d.commands || [];
+
+  /* Sync state when a different node is selected */
+  const prevId = useRef(node.id);
+  useEffect(() => {
+    if (node.id !== prevId.current) {
+      prevId.current = node.id;
+      setVersion(d.version || '');
+      setInputs(d.inputs || []);
+      setOutputs(d.outputs || []);
+      setParameters(d.parameters || {});
+      setContainer(d.container || '');
+      setCmdIdx(d.selectedCommandIndex || 0);
+    }
+  }, [node.id]);
+
+  /* When user picks a different command, pre-fill I/O from that command */
+  const handleCmdChange = idx => {
+    setCmdIdx(idx);
+    const cmd = cmds[idx] || {};
+    setInputs(cmd.required_inputs || inputs);
+    setOutputs(cmd.outputs || outputs);
+    setParameters(cmd.parameters || parameters);
+  };
+
+  const save = () => {
+    onUpdate(node.id, {
+      ...d,
+      version,
+      inputs,
+      outputs,
+      parameters,
+      container,
+      selectedCommandIndex: cmdIdx,
+    });
+  };
+
+  const fieldRow = (label, child) =>
+    React.createElement('div', { style: { marginBottom: 12 } },
+      React.createElement('label', {
+        style: { display: 'block', fontSize: 11, fontWeight: 600, color: '#475569',
+                 textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 4 },
+      }, label),
+      child,
+    );
+
+  const inputStyle = {
+    width: '100%', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 4,
+    padding: '5px 8px', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace',
+  };
+
+  return React.createElement('div', {
+    style: {
+      width: 280, flexShrink: 0, overflowY: 'auto',
+      background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
+      padding: '16px 14px', fontFamily: "'Inter', system-ui, sans-serif",
+      display: 'flex', flexDirection: 'column',
+    },
+  },
+    /* Header */
+    React.createElement('div', {
+      style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 },
+    },
+      React.createElement('div', null,
+        React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: '#0f172a' } }, d.name),
+        d.source_url && React.createElement('a', {
+          href: d.source_url, target: '_blank', rel: 'noreferrer',
+          style: { fontSize: 11, color: '#3b82f6', textDecoration: 'none' },
+        }, 'View source →'),
+      ),
+      React.createElement('button', {
+        onClick: onClose,
+        style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: 18,
+                 color: '#94a3b8', lineHeight: 1, padding: 0 },
+      }, '×'),
+    ),
+
+    /* Description */
+    d.description && React.createElement('p', {
+      style: { fontSize: 11, color: '#64748b', marginBottom: 14, lineHeight: 1.5 },
+    }, d.description.length > 140 ? d.description.slice(0, 137) + '…' : d.description),
+
+    /* Version */
+    fieldRow('Version',
+      React.createElement('input', {
+        value: version, onChange: e => setVersion(e.target.value),
+        placeholder: 'e.g. 2.7.10', style: inputStyle,
+      }),
+    ),
+
+    /* Command selector */
+    cmds.length > 1 && fieldRow('Command',
+      React.createElement('select', {
+        value: cmdIdx, onChange: e => handleCmdChange(Number(e.target.value)),
+        style: { ...inputStyle, fontFamily: 'inherit' },
+      },
+        cmds.map((cmd, i) =>
+          React.createElement('option', { key: i, value: i },
+            cmd.description ? cmd.description.slice(0, 48) : `Command ${i + 1}`
+          )
+        ),
+      ),
+    ),
+
+    /* Command template preview */
+    cmds.length > 0 && cmds[cmdIdx]?.command_template && React.createElement('div', {
+      style: { marginBottom: 12, background: '#0f172a', borderRadius: 6, padding: '8px 10px',
+               fontFamily: 'monospace', fontSize: 10, color: '#e2e8f0',
+               overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+    }, cmds[cmdIdx].command_template),
+
+    /* Inputs */
+    React.createElement(ListEditor, {
+      label: 'Inputs', items: inputs, onChange: setInputs,
+    }),
+
+    /* Outputs */
+    React.createElement(ListEditor, {
+      label: 'Outputs', items: outputs, onChange: setOutputs,
+    }),
+
+    /* Parameters */
+    React.createElement(ParamEditor, {
+      params: parameters, onChange: setParameters,
+    }),
+
+    /* Container */
+    fieldRow('Container / image',
+      React.createElement('input', {
+        value: container, onChange: e => setContainer(e.target.value),
+        placeholder: 'docker.io/…', style: inputStyle,
+      }),
+    ),
+
+    /* Edit in Step Editor deep-link */
+    (() => {
+      if (!d.assay_name) return null;
+      const assaySlug = d.assay_name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const stepIdx   = (d.step_number || 1) - 1;
+      const fieldId   = `#id-step-${assaySlug}-step-${stepIdx}-version`;
+      return React.createElement('button', {
+        onClick: () => window.activateAction && window.activateAction({
+          fix_target_tab:     'editing',
+          fix_target_field:   fieldId,
+          fix_target_node_id: null,
+        }),
+        style: {
+          marginBottom: 8, padding: '7px 0', background: '#f1f5f9', color: '#1d4ed8',
+          border: '1px solid #dbeafe', borderRadius: 6, fontSize: 12, fontWeight: 600,
+          cursor: 'pointer', width: '100%',
+        },
+        title: `Jump to ${fieldId} in Step Editor tab`,
+      }, '✏ Edit in Step Editor →');
+    })(),
+
+    /* Save */
+    React.createElement('button', {
+      onClick: save,
+      style: {
+        marginTop: 'auto', padding: '9px 0', background: '#1d4ed8', color: '#fff',
+        border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600,
+        cursor: 'pointer', width: '100%',
+      },
+    }, 'Apply changes'),
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Main pipeline builder (inner — needs ReactFlowProvider context)
+══════════════════════════════════════════════════════════════ */
+function PipelineBuilderInner() {
+  const { fitView, getViewport } = useReactFlow();
+  const [allNodes, setAllNodes] = useState([]);
+  const [allEdges, setAllEdges] = useState([]);
+  const [assays, setAssays] = useState([]);
+  const [selectedAssay, setSelectedAssay] = useState('');
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState(null);
+  const [saveStatus,   setSaveStatus]   = useState('idle');
+  const [loadError,    setLoadError]    = useState('');
+  const [jobStatus,    setJobStatus]    = useState(null);
+  /* Phase 4 — compile + execute + logs */
+  const [compileResult,  setCompileResult]  = useState(null);  // CompileResponse | null
+  const [compileLoading, setCompileLoading] = useState(false);
+  const [runDialogOpen,  setRunDialogOpen]  = useState(false);
+  const [logEntries,     setLogEntries]     = useState([]);
+  const logSincTsRef   = useRef(null);      // watermark for incremental log fetch
+  const logPollRef     = useRef(null);      // setTimeout handle for log poll loop
+  const logScrollRef   = useRef(null);      // ref for auto-scroll log panel
+  const mountedRef     = useRef(true);
+  const hydratedRef    = useRef(false);  /* true once initial graph load completes */
+
+  /* Stable select / update callbacks.
+     onSelect receives node.data; we need to also capture the React Flow node
+     id so handleNodeUpdate can target the right node in the nodes array.
+     We attach `_nodeId` to data in attachCallbacks so it's always available. */
+  const handleSelect = useCallback(data => setSelectedNode(prev =>
+    /* toggle: clicking the already-selected node closes the panel */
+    prev?.id === data._nodeId ? null : { id: data._nodeId, data }
+  ), []);
+
+  const attachCallbacks = useCallback(ns =>
+    ns.map(n => ({
+      ...n,
+      data: { ...n.data, onSelect: handleSelect, _nodeId: n.id },
+    })),
+  [handleSelect]);
+
+  const visibleNodes = useMemo(() => {
+    if (!selectedAssay) return allNodes;
+    return allNodes.filter(n => n?.data?.assay_key === selectedAssay);
+  }, [allNodes, selectedAssay]);
+
+  const visibleNodeIds = useMemo(
+    () => new Set(visibleNodes.map(n => n.id)),
+    [visibleNodes]
+  );
+
+  const visibleEdges = useMemo(() =>
+    allEdges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target)),
+  [allEdges, visibleNodeIds]);
+
+  const schedFit = useCallback(
+    () => setTimeout(() => fitView({ padding: 0.28, duration: 250 }), 120),
+    [fitView],
+  );
+
+  const hydrateFromStoredGraph = useCallback((storedGraph = null) => {
+    const base = buildAssayToolGraph(METHOD_ASSAYS, SOFTWARE_TOOLS);
+    let nodes = base.nodes;
+    let edges = base.edges;
+
+    const storedNodes = Array.isArray(storedGraph?.nodes) ? storedGraph.nodes : [];
+    const storedEdges = Array.isArray(storedGraph?.edges) ? storedGraph.edges : [];
+    const storedById = new Map(storedNodes.map(n => [n.id, n]));
+    const isStoredAssayGraph = storedNodes.some(n => n?.data?.assay_key);
+
+    if (storedById.size > 0) {
+      nodes = nodes.map(n => {
+        const saved = storedById.get(n.id);
+        if (!saved) return n;
+        return {
+          ...n,
+          position: saved.position || n.position,
+          data: {
+            ...n.data,
+            version: saved?.data?.version ?? n.data.version,
+            inputs: Array.isArray(saved?.data?.inputs) ? saved.data.inputs : n.data.inputs,
+            outputs: Array.isArray(saved?.data?.outputs) ? saved.data.outputs : n.data.outputs,
+            parameters: (saved?.data?.parameters && typeof saved.data.parameters === 'object')
+              ? saved.data.parameters
+              : n.data.parameters,
+            container: saved?.data?.container ?? n.data.container,
+            selectedCommandIndex: Number.isFinite(saved?.data?.selectedCommandIndex)
+              ? saved.data.selectedCommandIndex
+              : n.data.selectedCommandIndex,
+          },
+        };
+      });
+    }
+
+    if (isStoredAssayGraph && storedEdges.length > 0) {
+      edges = storedEdges;
+    }
+
+    if (base.assays.length === 0 && !isStoredAssayGraph) {
+      setAssays([]);
+      setSelectedAssay('');
+      setAllNodes([]);
+      setAllEdges([]);
+      return;
+    }
+
+    setAssays(base.assays);
+    setSelectedAssay(prev => {
+      if (base.assays.some(a => a.key === prev)) return prev;
+      return base.assays[0]?.key || '';
+    });
+    setAllNodes(attachCallbacks(nodes));
+    setAllEdges(edges.map(edgeStyle));
+    /* Mark hydration complete so user edits can be tracked as unsaved */
+    setTimeout(() => { hydratedRef.current = true; }, 0);
+  }, [attachCallbacks]);
+
+  /* Fetch or default-build the graph */
+  useEffect(() => {
+    fetch(`/api/v1/graphs/${JOB_ID}`, { credentials: 'include' })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(graph => {
+        if (!mountedRef.current) return;
+        hydrateFromStoredGraph(graph);
+      })
+      .catch(err => {
+        if (!mountedRef.current) return;
+        hydrateFromStoredGraph(null);
+        if (err.message && !err.message.includes('401')) setLoadError(err.message);
+      });
+    return () => { mountedRef.current = false; };
+  }, [hydrateFromStoredGraph]);
+
+  useEffect(() => {
+    if (visibleNodes.length > 0) schedFit();
+  }, [schedFit, selectedAssay, visibleNodes.length]);
+
+  /* Re-fit when the tab is activated */
+  useEffect(() => {
+    const onActivated = () => setTimeout(() => fitView({ padding: 0.28 }), 50);
+    window.addEventListener('pb-tab-activated', onActivated);
+    return () => window.removeEventListener('pb-tab-activated', onActivated);
+  }, [fitView]);
+
+  /* Warn before leaving with unsaved pipeline edits */
+  useEffect(() => {
+    if (saveStatus !== 'unsaved') return;
+    const handler = e => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [saveStatus]);
+
+  /* Poll job status during active runs (2-second interval) */
+  useEffect(() => {
+    if (!JOB_ID) return;
+    let cancelled = false;
+    const poll = () => {
+      fetch(`/api/v1/jobs/${JOB_ID}/status`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (cancelled || !mountedRef.current) return;
+          if (data) setJobStatus(data);
+          if (data && (data.status === 'pending' || data.status === 'running')) {
+            setTimeout(poll, 2000);
+          }
+        })
+        .catch(() => {});
+    };
+    poll();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedNode) return;
+    const visible = visibleNodes.some(n => n.id === selectedNode.id);
+    if (!visible) setSelectedNode(null);
+  }, [selectedNode, visibleNodes]);
+
+  useEffect(() => {
+    if (!selectedEdgeId) return;
+    const visible = visibleEdges.some(e => e.id === selectedEdgeId);
+    if (!visible) setSelectedEdgeId(null);
+  }, [selectedEdgeId, visibleEdges]);
+
+  const onNodesChange = useCallback(changes => {
+    setAllNodes(ns => applyNodeChanges(changes, ns));
+    if (hydratedRef.current) setSaveStatus('unsaved');
+  }, []);
+
+  const onEdgesChange = useCallback(changes => {
+    setAllEdges(eds => applyEdgeChanges(changes, eds));
+    if (hydratedRef.current) setSaveStatus('unsaved');
+  }, []);
+
+  /* Allow manual edge drawing */
+  const onConnect = useCallback(params => {
+    const sourceNode = allNodes.find(n => n.id === params.source);
+    const assayKey = sourceNode?.data?.assay_key || selectedAssay || null;
+    setAllEdges(eds => addEdge(edgeStyle({
+      ...params,
+      data: { assay_key: assayKey },
+    }), eds));
+    if (hydratedRef.current) setSaveStatus('unsaved');
+  }, [allNodes, selectedAssay]);
+
+  /* Allow edge re-routing by dragging existing edge endpoints */
+  const onReconnect = useCallback((oldEdge, newConnection) => {
+    setAllEdges(eds => reconnectEdge(oldEdge, edgeStyle({
+      ...oldEdge,
+      ...newConnection,
+      data: oldEdge?.data || {},
+    }), eds));
+    if (hydratedRef.current) setSaveStatus('unsaved');
+  }, []);
+
+  const addStep = useCallback(() => {
+    if (!selectedAssay) return;
+    const assay = assays.find(a => a.key === selectedAssay);
+    const assayName = assay?.label || selectedAssay;
+    const assayNodes = allNodes.filter(n => n?.data?.assay_key === selectedAssay);
+    const maxStep = assayNodes.reduce((m, n) => Math.max(m, Number(n?.data?.step_number) || 0), 0);
+    const nextStep = maxStep + 1;
+    const x = assayNodes.length
+      ? Math.max(...assayNodes.map(n => Number(n?.position?.x) || 0)) + 320
+      : 0;
+    const y = assayNodes.length
+      ? Number(assayNodes[0]?.position?.y) || 0
+      : (assays.findIndex(a => a.key === selectedAssay) * 260);
+    let nodeId = `${selectedAssay}__s${nextStep}_custom`;
+    let suffix = 0;
+    const existing = new Set(allNodes.map(n => n.id));
+    while (existing.has(nodeId)) {
+      suffix += 1;
+      nodeId = `${selectedAssay}__s${nextStep}_custom_${suffix}`;
+    }
+    const node = {
+      id: nodeId,
+      type: 'tool_node',
+      position: { x, y },
+      data: {
+        name: `Step ${nextStep}`,
+        version: '',
+        description: '',
+        language: '',
+        source_url: '',
+        commands: [],
+        selectedCommandIndex: 0,
+        inputs: [],
+        outputs: [],
+        parameters: {},
+        container: '',
+        step_id: `${selectedAssay}__step_${nextStep}`,
+        assay_key: selectedAssay,
+        assay_name: assayName,
+        step_number: nextStep,
+      },
+    };
+    setAllNodes(ns => [
+      ...ns,
+      { ...node, data: { ...node.data, onSelect: handleSelect, _nodeId: node.id } },
+    ]);
+    setSelectedNode({ id: node.id, data: node.data });
+    setSelectedEdgeId(null);
+    setSaveStatus('unsaved');
+  }, [allNodes, assays, handleSelect, selectedAssay]);
+
+  const removeSelectedNode = useCallback(() => {
+    if (!selectedNode?.id) return;
+    const nid = selectedNode.id;
+    setAllNodes(ns => ns.filter(n => n.id !== nid));
+    setAllEdges(eds => eds.filter(e => e.source !== nid && e.target !== nid));
+    setSelectedNode(null);
+    setSaveStatus('unsaved');
+  }, [selectedNode]);
+
+  const removeSelectedEdge = useCallback(() => {
+    if (!selectedEdgeId) return;
+    setAllEdges(eds => eds.filter(e => e.id !== selectedEdgeId));
+    setSelectedEdgeId(null);
+    setSaveStatus('unsaved');
+  }, [selectedEdgeId]);
+
+  /* Update a single node's data from the edit panel */
+  const handleNodeUpdate = useCallback((nodeId, updatedData) => {
+    setAllNodes(ns => ns.map(n =>
+      n.id === nodeId
+        ? { ...n, data: { ...updatedData, onSelect: handleSelect, _nodeId: n.id } }
+        : n
+    ));
+    setSelectedNode({ id: nodeId, data: updatedData });
+    setSaveStatus('unsaved');
+  }, [handleSelect]);
+
+  /* Save layout to the API */
+  const saveLayout = useCallback(() => {
+    setSaveStatus('saving');
+    const payload = {
+      nodes: allNodes.map(({ id, type, position, data }) => ({
+        id, type, position,
+        data: {
+          name:                 data.name,
+          version:              data.version              ?? '',
+          description:          data.description          ?? '',
+          language:             data.language             ?? '',
+          source_url:           data.source_url           ?? '',
+          commands:             data.commands             ?? [],
+          selectedCommandIndex: data.selectedCommandIndex ?? 0,
+          inputs:               data.inputs               ?? [],
+          outputs:              data.outputs              ?? [],
+          parameters:           data.parameters           ?? {},
+          container:            data.container            ?? '',
+          step_id:              data.step_id              ?? id,
+          assay_key:            data.assay_key            ?? '',
+          assay_name:           data.assay_name           ?? '',
+          step_number:          data.step_number          ?? null,
+        },
+      })),
+      edges: allEdges.map(({ id, source, target, sourceHandle, targetHandle }) => ({
+        id, source, target,
+        source_handle: sourceHandle ?? null,
+        target_handle: targetHandle ?? null,
+      })),
+      viewport: getViewport(),
+    };
+    fetch(`/api/v1/graphs/${JOB_ID}`, {
+      method:      'PUT',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify(payload),
+    })
+      .then(r => {
+        setSaveStatus(r.ok ? 'saved' : 'error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      })
+      .catch(() => {
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      });
+  }, [allEdges, allNodes, getViewport]);
+
+  /* ── Phase 4: Dry Run (compile) ────────────────────────────── */
+  const handleDryRun = useCallback(async () => {
+    setCompileLoading(true);
+    setCompileResult(null);
+    try {
+      const res = await fetch(`/api/v1/graphs/${JOB_ID}/compile`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setCompileResult(data);
+      /* Build per-node issue level map and stamp it onto node data */
+      const issueMap = {};
+      for (const issue of (data.issues || [])) {
+        if (!issueMap[issue.node_id]) issueMap[issue.node_id] = { level: issue.severity, messages: [] };
+        if (issue.severity === 'error') issueMap[issue.node_id].level = 'error';
+        issueMap[issue.node_id].messages.push(issue.message);
+      }
+      setAllNodes(ns => ns.map(n => ({
+        ...n,
+        data: {
+          ...n.data,
+          _issueLevel:    issueMap[n.id]?.level    || null,
+          _issueMessages: issueMap[n.id]?.messages || [],
+        },
+      })));
+    } catch (err) {
+      console.error('Dry run failed:', err);
+      setCompileResult({ valid: false, execution_order: [], issues: [{ node_id: '', severity: 'error', message: `Request failed: ${err.message}` }] });
+    } finally {
+      setCompileLoading(false);
+    }
+  }, []);
+
+  /* ── Phase 4: Run Pipeline (execute) ───────────────────────── */
+  const handleRunPipeline = useCallback(async () => {
+    setRunDialogOpen(false);
+    setLogEntries([]);
+    logSincTsRef.current = null;
+    try {
+      const res = await fetch(`/api/v1/graphs/${JOB_ID}/execute`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.error('Execute failed:', err);
+      setLogEntries([{ ts: new Date().toISOString(), level: 'error', step: '', message: `Execute failed: ${err.message}` }]);
+    }
+  }, []);
+
+  /* ── Phase 4: incremental log polling ─────────────────────── */
+  useEffect(() => {
+    const ACTIVE = new Set(['queued', 'in_progress', 'running', 'pending']);
+    if (!jobStatus || !ACTIVE.has(jobStatus.status)) {
+      if (logPollRef.current) clearTimeout(logPollRef.current);
+      return;
+    }
+    let cancelled = false;
+    async function pollLogs() {
+      if (cancelled || !mountedRef.current) return;
+      try {
+        const qs = logSincTsRef.current ? `&since_ts=${encodeURIComponent(logSincTsRef.current)}` : '';
+        const res = await fetch(`/api/v1/jobs/${JOB_ID}/logs?limit=50${qs}`, { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.entries && data.entries.length > 0) {
+          setLogEntries(prev => [...prev, ...data.entries].slice(-200));
+          logSincTsRef.current = data.next_since_ts;
+        }
+        logPollRef.current = setTimeout(pollLogs, data.has_more ? 50 : 3000);
+      } catch {
+        logPollRef.current = setTimeout(pollLogs, 5000);
+      }
+    }
+    pollLogs();
+    return () => {
+      cancelled = true;
+      if (logPollRef.current) clearTimeout(logPollRef.current);
+    };
+  }, [jobStatus?.status]);
+
+  /* ── Phase 4: auto-scroll log panel ───────────────────────── */
+  useEffect(() => {
+    if (logScrollRef.current) logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
+  }, [logEntries]);
+
+  const saveBtnLabel = { idle: 'Save layout', unsaved: '● Save changes', saving: 'Saving…', saved: '✓ Saved', error: '✗ Error' };
+  const saveBtnColor = { idle: '#1d4ed8', unsaved: '#b45309', saving: '#6b7280', saved: '#16a34a', error: '#dc2626' };
+
+  if (!METHOD_ASSAYS.length) {
+    return React.createElement('div', {
+      style: { height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+               flexDirection: 'column', gap: 10, color: '#64748b', fontFamily: "'Inter', system-ui" },
+    },
+      React.createElement('div', { style: { fontSize: 32 } }, '🔬'),
+      React.createElement('div', { style: { fontWeight: 600, fontSize: 15 } }, 'No assay graph parsed yet'),
+      React.createElement('div', { style: { fontSize: 13, textAlign: 'center', maxWidth: 320 } },
+        'Run the Methods step to extract assay steps, then return here to build the assay-specific visual pipeline.'
+      ),
+    );
+  }
+
+  return React.createElement(React.Fragment, null,
+  /* ── Row: ReactFlow canvas + edit panel ──────────────────── */
+  React.createElement('div', {
+    style: { display: 'flex', gap: 12, height: '100%', alignItems: 'stretch' },
+  },
+    /* ── React Flow canvas ──────────────────────────────────── */
+    React.createElement('div', {
+      style: {
+        flex: 1, minWidth: 0,
+        border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden',
+        background: '#f8fafc',
+      },
+    },
+      React.createElement(ReactFlow, {
+        nodes: visibleNodes,
+        edges: visibleEdges,
+        onNodesChange, onEdgesChange,
+        onConnect,
+        onReconnect,
+        onEdgeClick: (_evt, edge) => {
+          setSelectedEdgeId(edge.id);
+          setSelectedNode(null);
+        },
+        onEdgeDoubleClick: (_evt, edge) => {
+          setAllEdges(eds => eds.filter(e => e.id !== edge.id));
+          setSelectedEdgeId(prev => (prev === edge.id ? null : prev));
+          if (hydratedRef.current) setSaveStatus('unsaved');
+        },
+        onPaneClick: () => {
+          setSelectedNode(null);
+          setSelectedEdgeId(null);
+        },
+        nodeTypes:            NODE_TYPES,
+        fitView:              true,
+        fitViewOptions:       { padding: 0.25 },
+        minZoom:              0.2,
+        maxZoom:              2.5,
+        deleteKeyCode:        'Backspace',
+        elevateEdgesOnSelect: true,
+        connectionLineStyle:  { stroke: '#94a3b8', strokeWidth: 2 },
+      },
+        React.createElement(Background, { variant: 'dots', gap: 20, size: 1.2, color: '#cbd5e1' }),
+        React.createElement(Controls, { style: { bottom: 12, left: 12 } }),
+        React.createElement(MiniMap, {
+          style: { bottom: 12, right: 12, borderRadius: 8, border: '1px solid #e2e8f0' },
+          nodeColor: () => '#94a3b8',
+          maskColor: 'rgba(240,244,248,.8)',
+        }),
+        React.createElement(Panel, { position: 'top-right' },
+          React.createElement('div', {
+            style: { display: 'flex', alignItems: 'center', gap: 10,
+                     background: '#fff', border: '1px solid #e2e8f0',
+                     borderRadius: 8, padding: '7px 12px' },
+          },
+            /* Job status pill */
+            jobStatus && (() => {
+              const st = jobStatus.status;
+              const colors = {
+                running:   { bg: '#eff6ff', text: '#1d4ed8', dot: '#3b82f6' },
+                pending:   { bg: '#fefce8', text: '#854d0e', dot: '#eab308' },
+                completed: { bg: '#f0fdf4', text: '#166534', dot: '#22c55e' },
+                failed:    { bg: '#fef2f2', text: '#991b1b', dot: '#ef4444' },
+              };
+              const c = colors[st] || { bg: '#f1f5f9', text: '#475569', dot: '#94a3b8' };
+              return React.createElement('span', {
+                title: jobStatus.message || st,
+                style: {
+                  fontSize: 11, fontWeight: 600, padding: '3px 8px',
+                  background: c.bg, color: c.text, borderRadius: 99,
+                  display: 'flex', alignItems: 'center', gap: 5,
+                },
+              },
+                React.createElement('span', {
+                  style: {
+                    width: 7, height: 7, borderRadius: '50%', background: c.dot,
+                    display: 'inline-block',
+                    animation: (st === 'running' || st === 'pending') ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                  },
+                }),
+                st.charAt(0).toUpperCase() + st.slice(1),
+              );
+            })(),
+            loadError && React.createElement('span', {
+              style: { fontSize: 11, color: '#dc2626' },
+            }, `⚠ ${loadError}`),
+            /* Phase 4 — Dry Run / Validate button */
+            React.createElement('button', {
+              onClick: handleDryRun,
+              disabled: compileLoading,
+              title: 'Validate pipeline DAG and check for issues',
+              style: {
+                padding: '6px 14px',
+                background: compileLoading ? '#6b7280'
+                  : compileResult === null   ? '#7c3aed'
+                  : compileResult.valid      ? '#16a34a'
+                  : '#dc2626',
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, cursor: compileLoading ? 'default' : 'pointer',
+              },
+            }, compileLoading ? 'Validating…'
+               : compileResult === null ? '⚡ Dry Run'
+               : compileResult.valid    ? '✓ Valid'
+               : `✗ ${compileResult.issues.filter(i => i.severity === 'error').length} error${compileResult.issues.filter(i => i.severity === 'error').length !== 1 ? 's' : ''}`),
+
+            /* Run Pipeline button — only shown after a passing dry run */
+            compileResult?.valid && React.createElement('button', {
+              onClick: () => setRunDialogOpen(true),
+              style: {
+                padding: '6px 14px', background: '#16a34a',
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              },
+            }, '▶ Run Pipeline'),
+
+            React.createElement('button', {
+              onClick: saveLayout,
+              disabled: saveStatus === 'saving',
+              style: {
+                padding: '6px 14px', background: saveBtnColor[saveStatus],
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              },
+            }, saveBtnLabel[saveStatus]),
+          ),
+        ),
+        React.createElement(Panel, { position: 'top-left' },
+          React.createElement('div', {
+            style: { background: '#fff', border: '1px solid #e2e8f0',
+                     borderRadius: 8, padding: '8px 10px', minWidth: 240 },
+          },
+            React.createElement('div', {
+              style: { fontSize: 10, fontWeight: 700, color: '#64748b',
+                       marginBottom: 5, textTransform: 'uppercase', letterSpacing: '.5px' },
+            }, 'Assay View'),
+            React.createElement('select', {
+              value: selectedAssay,
+              onChange: e => setSelectedAssay(e.target.value),
+              style: {
+                width: '100%', fontSize: 12, border: '1px solid #cbd5e1',
+                borderRadius: 6, padding: '6px 8px', background: '#fff',
+              },
+            },
+              assays.map(a =>
+                React.createElement('option', { key: a.key, value: a.key },
+                  `${a.label} (${a.stepCount})`
+                )
+              ),
+            ),
+            React.createElement('div', {
+              style: { marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' },
+            },
+              React.createElement('button', {
+                onClick: addStep,
+                style: {
+                  padding: '5px 9px', fontSize: 11, fontWeight: 600,
+                  background: '#eff6ff', color: '#1d4ed8',
+                  border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer',
+                },
+                title: 'Add a new step node to the selected assay',
+              }, '+ Step'),
+              React.createElement('button', {
+                onClick: removeSelectedNode,
+                disabled: !selectedNode,
+                style: {
+                  padding: '5px 9px', fontSize: 11, fontWeight: 600,
+                  background: selectedNode ? '#fef2f2' : '#f8fafc',
+                  color: selectedNode ? '#b91c1c' : '#94a3b8',
+                  border: '1px solid #fecaca', borderRadius: 6,
+                  cursor: selectedNode ? 'pointer' : 'default',
+                },
+                title: 'Remove selected step node',
+              }, '− Step'),
+              React.createElement('button', {
+                onClick: removeSelectedEdge,
+                disabled: !selectedEdgeId,
+                style: {
+                  padding: '5px 9px', fontSize: 11, fontWeight: 600,
+                  background: selectedEdgeId ? '#fff7ed' : '#f8fafc',
+                  color: selectedEdgeId ? '#c2410c' : '#94a3b8',
+                  border: '1px solid #fed7aa', borderRadius: 6,
+                  cursor: selectedEdgeId ? 'pointer' : 'default',
+                },
+                title: 'Remove selected edge (or double-click an edge)',
+              }, '− Edge'),
+            ),
+            React.createElement('div', {
+              style: { marginTop: 6, fontSize: 10, color: '#64748b' },
+            }, 'Drag from handles to add edges. Drag an edge endpoint to re-route.'),
+          ),
+        ),
+      ),
+    ),
+
+    /* ── Edit panel (shown when a node is selected) ─────────── */
+    React.createElement(ToolEditPanel, {
+      node:     selectedNode,   // already { id, data } from handleSelect
+      onClose:  () => setSelectedNode(null),
+      onUpdate: handleNodeUpdate,
+    }),
+  ), // end row flex div
+
+  /* ── Phase 4: Compile results panel ────────────────────────── */
+  compileResult && React.createElement('div', {
+    style: {
+      marginTop: 10,
+      border: `1px solid ${compileResult.valid ? '#bbf7d0' : '#fecaca'}`,
+      background: compileResult.valid ? '#f0fdf4' : '#fef2f2',
+      borderRadius: 8, padding: '12px 16px',
+    },
+  },
+    React.createElement('div', {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
+    },
+      React.createElement('div', {
+        style: { fontWeight: 700, fontSize: 13, color: compileResult.valid ? '#166534' : '#991b1b', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+      },
+        compileResult.valid ? '✓ Graph valid' : '✗ Validation failed',
+        compileResult.execution_order.length > 0 && React.createElement('span', {
+          style: { fontSize: 11, fontWeight: 400, color: '#374151' },
+        }, `— ${compileResult.execution_order.length} node${compileResult.execution_order.length !== 1 ? 's' : ''} in execution order`),
+        compileResult.issues.filter(i => i.severity === 'warning').length > 0 && React.createElement('span', {
+          style: { fontSize: 11, fontWeight: 600, color: '#d97706', background: '#fef3c7', borderRadius: 4, padding: '1px 6px' },
+        }, `${compileResult.issues.filter(i => i.severity === 'warning').length} warning${compileResult.issues.filter(i => i.severity === 'warning').length !== 1 ? 's' : ''}`),
+      ),
+      React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        compileResult.valid && React.createElement('button', {
+          onClick: () => setRunDialogOpen(true),
+          style: {
+            padding: '6px 14px', background: '#16a34a', color: '#fff',
+            border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+          },
+        }, '▶ Run Pipeline'),
+        React.createElement('button', {
+          onClick: () => setCompileResult(null),
+          style: {
+            padding: '6px 10px', background: 'transparent', color: '#6b7280',
+            border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+          },
+        }, '✕'),
+      ),
+    ),
+    compileResult.issues.length > 0 && React.createElement('ul', {
+      style: { margin: '10px 0 0', paddingLeft: 18, fontSize: 12, color: '#374151' },
+    },
+      compileResult.issues.slice(0, 12).map((issue, i) =>
+        React.createElement('li', { key: i, style: { marginBottom: 3 } },
+          React.createElement('span', {
+            style: { fontWeight: 700, color: issue.severity === 'error' ? '#dc2626' : '#d97706', marginRight: 4 },
+          }, issue.severity === 'error' ? '[error]' : '[warn]'),
+          issue.node_id ? `${issue.node_id}: ` : '',
+          issue.message,
+        )
+      ),
+      compileResult.issues.length > 12 && React.createElement('li', {
+        style: { color: '#6b7280', fontStyle: 'italic', listStyle: 'none' },
+      }, `…and ${compileResult.issues.length - 12} more`),
+    ),
+    compileResult.valid && compileResult.execution_order.length > 0 && React.createElement('div', {
+      style: { marginTop: 10, padding: '8px 12px', background: '#fff', border: '1px solid #d1fae5', borderRadius: 6, fontSize: 11, fontFamily: 'monospace', color: '#374151', overflowX: 'auto', whiteSpace: 'nowrap' },
+    }, compileResult.execution_order.join(' → ')),
+  ),
+
+  /* ── Phase 4: Log panel ─────────────────────────────────────── */
+  (logEntries.length > 0 || (jobStatus && ['queued','in_progress','running','pending'].includes(jobStatus.status))) &&
+  React.createElement('div', {
+    style: { marginTop: 10, border: '1px solid #334155', borderRadius: 8, overflow: 'hidden', background: '#0f172a' },
+  },
+    React.createElement('div', {
+      style: { padding: '6px 12px', background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+    },
+      React.createElement('span', {
+        style: { fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.04em', display: 'flex', alignItems: 'center', gap: 6 },
+      },
+        '📋 Pipeline Logs',
+        jobStatus && ['queued','in_progress','running','pending'].includes(jobStatus.status) &&
+          React.createElement('span', {
+            style: { width: 6, height: 6, borderRadius: '50%', background: '#3b82f6', display: 'inline-block', animation: 'pulse 1.5s ease-in-out infinite' },
+          }),
+      ),
+      React.createElement('button', {
+        onClick: () => { setLogEntries([]); logSincTsRef.current = null; },
+        style: { background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 11, padding: '2px 6px' },
+      }, '✕ clear'),
+    ),
+    React.createElement('div', {
+      ref: logScrollRef,
+      style: { padding: '8px 12px', overflowY: 'auto', maxHeight: 180, fontFamily: 'monospace', fontSize: 10.5 },
+    },
+      logEntries.length === 0
+        ? React.createElement('span', { style: { color: '#475569' } }, 'Waiting for log output…')
+        : logEntries.map((e, i) =>
+            React.createElement('div', {
+              key: i,
+              style: { color: e.level === 'error' ? '#f87171' : e.level === 'warning' ? '#fbbf24' : '#94a3b8', lineHeight: 1.7 },
+            },
+              React.createElement('span', { style: { color: '#334155', marginRight: 6 } }, e.ts ? e.ts.slice(11, 19) : ''),
+              e.step && React.createElement('span', { style: { color: '#60a5fa', marginRight: 6 } }, `[${e.step}]`),
+              e.message,
+            )
+          ),
+    ),
+  ),
+
+  /* ── Phase 4: Run Pipeline confirmation dialog ──────────────── */
+  runDialogOpen && React.createElement('div', {
+    onClick: () => setRunDialogOpen(false),
+    style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 },
+  },
+    React.createElement('div', {
+      onClick: e => e.stopPropagation(),
+      style: { background: '#fff', borderRadius: 12, padding: '28px 32px', maxWidth: 480, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,.3)' },
+    },
+      React.createElement('h3', { style: { margin: '0 0 10px', fontSize: 17, fontWeight: 700, color: '#0f172a' } }, 'Run Pipeline?'),
+      React.createElement('p', { style: { margin: '0 0 16px', fontSize: 13, color: '#475569', lineHeight: 1.5 } },
+        `This will re-run all ${compileResult?.execution_order?.length || ''} pipeline steps for this job. Any existing extraction results will be overwritten.`
+      ),
+      compileResult?.execution_order?.length > 0 && React.createElement('div', {
+        style: { margin: '0 0 20px', padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 11, fontFamily: 'monospace', color: '#374151', overflowX: 'auto', whiteSpace: 'nowrap' },
+      }, compileResult.execution_order.join(' → ')),
+      React.createElement('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
+        React.createElement('button', {
+          onClick: () => setRunDialogOpen(false),
+          style: { padding: '8px 18px', background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13, cursor: 'pointer' },
+        }, 'Cancel'),
+        React.createElement('button', {
+          onClick: handleRunPipeline,
+          style: { padding: '8px 18px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' },
+        }, '▶ Run now'),
+      ),
+    ),
+  ), // end run dialog
+  ); // end React.Fragment
+}
+
+/* Wrap in ReactFlowProvider (required by useReactFlow hook) */
+function PipelineBuilder() {
+  return React.createElement(ReactFlowProvider, null,
+    React.createElement(PipelineBuilderInner, null)
+  );
+}
+
+/* ── Mount ──────────────────────────────────────────────────── */
+const root = document.getElementById('pipeline-builder-root');
+if (root) {
+  root.innerHTML = '';
+  createRoot(root).render(React.createElement(PipelineBuilder));
+}
+</script>
+
+{# ══════════════════════════════════════════════════════════════
+   Phase 2 — Autosave client (datasets, step editing, pipeline config)
+   Shared PATCH helper + 800 ms debounce per-editor.
+══════════════════════════════════════════════════════════════ #}
+<script>
+(function () {
+  'use strict';
+
+  const JOB_ID = '{{ job_id }}';
+
+  /* ── Shared PATCH helper ──────────────────────────────────── */
+  async function patchComponent(step, path, value) {
+    const res = await fetch(`/api/v1/jobs/${JOB_ID}/components/${step}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ path, value }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return res.json(); // ComponentSaveResponse
+  }
+
+  /* ── Phase 3: richer confidence refresh after any successful PATCH ──── */
+  function refreshConfidenceHint(saveResponse) {
+    const overall = saveResponse?.confidence?.overall;
+    if (overall == null) return;
+
+    // 1. Update ring percentage labels and colours
+    const ringPct = Math.round(overall);
+    const ringColor = ringPct >= 80 ? '#16a34a' : ringPct >= 50 ? '#d97706' : '#dc2626';
+    document.querySelectorAll('.conf-ring-pct').forEach(el => {
+      el.textContent = ringPct + '%';
+      el.style.color = ringColor;
+    });
+    // Legacy fallback: elements with just conf-ring-label (no nested span)
+    document.querySelectorAll('.conf-ring-label').forEach(el => {
+      if (!el.querySelector('.conf-ring-pct')) {
+        el.textContent = ringPct + '%';
+        el.style.color = ringColor;
+      }
+    });
+
+    // 2. Update JSON data blocks for Command Center re-reads
+    const ccData = document.getElementById('_cc-confidence');
+    if (ccData) ccData.textContent = JSON.stringify(saveResponse.confidence);
+    const ccActions = document.getElementById('_cc-actionable-items');
+    if (ccActions) ccActions.textContent = JSON.stringify(saveResponse.actionable_items);
+
+    // 3. Refresh the Command Center HTML elements live
+    _refreshCommandCenterDOM(saveResponse.actionable_items || [], overall);
+  }
+
+  /* ── Phase 3: re-render Command Center HTML from fresh actionable items ── */
+  function _refreshCommandCenterDOM(items, overall) {
+    // Update issues count badge in tab button
+    const ccTabBadge = document.querySelector('[onclick*="command-center"] .tab-badge');
+    if (ccTabBadge && items.length > 0) {
+      ccTabBadge.textContent = items.length;
+      ccTabBadge.style.background = 'var(--danger-soft)';
+      ccTabBadge.style.color = 'var(--danger)';
+    } else if (ccTabBadge) {
+      ccTabBadge.textContent = '✓';
+      ccTabBadge.style.background = 'var(--success-soft)';
+      ccTabBadge.style.color = 'var(--success)';
+    }
+
+    // Update "Next recommended action" banner
+    const bannerEl = document.getElementById('cc-top-action-banner');
+    if (bannerEl) {
+      if (items.length === 0) {
+        bannerEl.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;padding:16px 20px;
+                      border:1.5px solid var(--success-mid);background:var(--success-soft);
+                      border-radius:var(--radius);margin-bottom:20px;">
+            <span style="font-size:1.4rem;">🎉</span>
+            <div>
+              <p class="font-600" style="color:var(--success);">Pipeline ready</p>
+              <p class="text-sm text-muted">All tracked factors are resolved.</p>
+            </div>
+          </div>`;
+      } else {
+        const top = items[0];
+        const borderColor = top.severity === 'high' ? 'var(--danger-mid)' : top.severity === 'medium' ? 'var(--warning-mid)' : 'var(--border-2)';
+        const bgColor = top.severity === 'high' ? 'var(--danger-soft)' : top.severity === 'medium' ? 'var(--warning-soft)' : 'var(--surface-2)';
+        const impactColor = top.severity === 'high' ? 'var(--danger)' : top.severity === 'medium' ? 'var(--warning)' : 'var(--text-3)';
+        bannerEl.innerHTML = `
+          <div style="margin-bottom:20px;padding:16px 20px;border:1.5px solid ${borderColor};
+                      background:${bgColor};border-radius:var(--radius);
+                      display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <p class="text-xs font-600 text-muted mb-1" style="text-transform:uppercase;letter-spacing:.04em;">Next recommended action</p>
+              <p class="font-600" style="color:var(--text);margin-bottom:2px;">${_esc(top.reason)}</p>
+              <p class="text-xs" style="color:${impactColor};">+${(top.confidence_impact||0).toFixed(1)}% confidence if resolved</p>
+            </div>
+            <button class="btn btn-primary btn-sm"
+                    onclick="window.activateAction && window.activateAction(JSON.parse(document.getElementById('_cc-actionable-items').textContent)[0])">
+              ${_esc(top.fix_label)} →
+            </button>
+          </div>`;
+      }
+    }
+
+    // Show/hide issues header + update actionable items list
+    const issuesHeader = document.getElementById('cc-issues-header');
+    const listEl = document.getElementById('cc-actionable-items-list');
+    if (listEl) {
+      if (items.length === 0) {
+        listEl.innerHTML = '';
+        if (issuesHeader) issuesHeader.style.display = 'none';
+      } else {
+        if (issuesHeader) issuesHeader.style.display = '';
+        const countBadge = document.getElementById('cc-issues-count-badge');
+        if (countBadge) {
+          countBadge.textContent = items.length;
+          countBadge.style.background = 'var(--danger-soft)';
+          countBadge.style.color = 'var(--danger)';
+        }
+        listEl.innerHTML = items.map(item => {
+          const sevBg = item.severity === 'high' ? 'var(--danger-soft)' : item.severity === 'medium' ? 'var(--warning-soft)' : 'var(--surface-2)';
+          const sevBorder = item.severity === 'high' ? 'var(--danger-mid)' : item.severity === 'medium' ? 'var(--warning-mid)' : 'var(--border-2)';
+          const sevColor = item.severity === 'high' ? 'var(--danger)' : item.severity === 'medium' ? 'var(--warning)' : 'var(--text-3)';
+          return `<div class="action-item-card sev-${_esc(item.severity)}"
+                       style="background:${sevBg};border-color:${sevBorder};">
+            <div style="flex:1;">
+              <p class="text-sm font-600" style="color:var(--text);margin-bottom:2px;">${_esc(item.reason)}</p>
+              <p class="text-xs" style="color:${sevColor};">${_esc(item.severity||'').charAt(0).toUpperCase()+_esc(item.severity||'').slice(1)} · +${(item.confidence_impact||0).toFixed(1)}% if resolved</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" style="flex-shrink:0;white-space:nowrap;"
+                    onclick="window.activateAction && window.activateAction(${JSON.stringify(item).replace(/</g,'\\u003c')})">
+              ${_esc(item.fix_label)} →
+            </button>
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+
+  /* ── HTML-escape helper ──────────────────────────────────────── */
+  function _esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Export for cross-script access (hash deep-link poll handler)
+  window._refreshConfidenceHint = refreshConfidenceHint;
+
+  /* ── Status indicator helpers ─────────────────────────────── */
+  function setStatus(el, state) {
+    if (!el) return;
+    const icons = { saving: '⏳ saving…', saved: '✓ saved', error: '⚠ error' };
+    const colors = { saving: 'var(--text-2)', saved: '#16a34a', error: '#dc2626' };
+    el.textContent = icons[state] || '';
+    el.style.color = colors[state] || '';
+  }
+
+  /* ── Accession format validator ───────────────────────────── */
+  const ACC_RE = /^(GSE|GSM|SRR|SRX|SRP|ENCSR|ENCFF|PRJNA|E-\w+)\d*/i;
+  function validateAccession(val) {
+    if (!val) return true;           // empty is OK — not required
+    return ACC_RE.test(val.trim());
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     Phase 2b — Dataset editor
+  ══════════════════════════════════════════════════════════ */
+  const dsTimers = {};
+
+  document.querySelectorAll('.ds-field').forEach(input => {
+    input.addEventListener('input', handleDsChange);
+    input.addEventListener('change', handleDsChange);
+  });
+
+  function handleDsChange(e) {
+    const el    = e.target;
+    const field = el.dataset.field;
+    const idx   = el.dataset.idx;
+    const value = el.value;
+
+    // Client-side accession validation
+    if (field === 'accession' && !validateAccession(value)) {
+      el.style.borderColor = '#f87171';
+      setStatus(document.querySelector(`.ds-field-status[data-field="accession"][data-idx="${idx}"]`), 'error');
+      return;
+    }
+    el.style.borderColor = '';
+
+    const key = `${idx}:${field}`;
+    clearTimeout(dsTimers[key]);
+    dsTimers[key] = setTimeout(async () => {
+      const statusEl = document.querySelector(`.ds-field-status[data-field="${field}"][data-idx="${idx}"]`);
+      const globalEl = document.getElementById('ds-save-status');
+      setStatus(statusEl, 'saving');
+      setStatus(globalEl, 'saving');
+      try {
+        const resp = await patchComponent('datasets', `[${idx}].${field}`, value);
+        setStatus(statusEl, 'saved');
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        // Update resolution badge in the same row
+        const row = document.querySelector(`tr[data-ds-idx="${idx}"]`);
+        if (row && field === 'accession') {
+          const badge = row.querySelector('.pill');
+          if (badge) {
+            badge.textContent = value ? 'Resolved' : 'Unresolved';
+            badge.className = 'pill ' + (value ? 'pill-found' : 'pill-missing');
+            badge.style.cssText = 'font-size:0.68rem;padding:2px 7px;';
+          }
+        }
+        setTimeout(() => { setStatus(statusEl, ''); setStatus(globalEl, ''); }, 2500);
+      } catch (err) {
+        setStatus(statusEl, 'error');
+        setStatus(globalEl, 'error');
+        el.title = err.message;
+      }
+    }, 800);
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     Phase 2c — Step editor
+  ══════════════════════════════════════════════════════════ */
+  const seTimers = {};
+
+  document.querySelectorAll('.se-field').forEach(input => {
+    input.addEventListener('input', handleSeChange);
+    input.addEventListener('change', handleSeChange);
+    if (input.classList.contains('se-command-field')) {
+      input.dataset.manual = 'true';
+    }
+  });
+  document.querySelectorAll('.se-add-step-btn').forEach(btn => {
+    btn.addEventListener('click', handleSeAddStep);
+  });
+  document.querySelectorAll('.se-remove-step-btn').forEach(btn => {
+    btn.addEventListener('click', handleSeRemoveStep);
+  });
+
+  function stringifyParamToken(v) {
+    const s = String(v ?? '').trim();
+    if (!s) return '';
+    return /\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+  }
+
+  function renderParamArgs(params) {
+    if (!params || typeof params !== 'object') return '';
+    return Object.entries(params).map(([k, v]) => {
+      const key = String(k || '').trim();
+      if (!key) return '';
+      const val = stringifyParamToken(v);
+      return val ? `${key} ${val}` : key;
+    }).filter(Boolean).join(' ');
+  }
+
+  function parseStepParameters(block) {
+    const paramsField = block.querySelector('.se-field[data-json="true"]');
+    if (!paramsField) return {};
+    const raw = String(paramsField.value || '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Parameters must be a JSON object');
+    }
+    return parsed;
+  }
+
+  function generateStepCommand(block) {
+    const software = String(block.querySelector('.se-field[data-patch-path$=".software"]')?.value || '').trim();
+    const inputData = String(block.querySelector('.se-field[data-patch-path$=".input_data"]')?.value || '').trim();
+    const outputData = String(block.querySelector('.se-field[data-patch-path$=".output_data"]')?.value || '').trim();
+    let parameters = {};
+    try {
+      parameters = parseStepParameters(block);
+    } catch {
+      return '';
+    }
+
+    if (!software) return '';
+    const parts = [software];
+    const paramArgs = renderParamArgs(parameters);
+    if (paramArgs) parts.push(paramArgs);
+    if (inputData) parts.push(stringifyParamToken(inputData));
+    let cmd = parts.join(' ');
+    if (outputData) cmd += ` > ${stringifyParamToken(outputData)}`;
+    return cmd.trim();
+  }
+
+  function stepStateFromBlock(block) {
+    const software = String(block.querySelector('.se-field[data-patch-path$=".software"]')?.value || '').trim();
+    const software_version = String(block.querySelector('.se-field[data-patch-path$=".software_version"]')?.value || '').trim();
+    const input_data = String(block.querySelector('.se-field[data-patch-path$=".input_data"]')?.value || '').trim();
+    const output_data = String(block.querySelector('.se-field[data-patch-path$=".output_data"]')?.value || '').trim();
+    const command = String(block.querySelector('.se-command-field')?.value || '').trim();
+    let parameters = {};
+    try { parameters = parseStepParameters(block); } catch { parameters = {}; }
+    return {
+      software,
+      software_version,
+      input_data,
+      output_data,
+      parameters,
+      code_reference: command || null,
+      description: `Step using ${software || 'tool'}`,
+      step_number: Number(block.dataset.stepIdx) + 1,
+    };
+  }
+
+  function patchStepArray(assayIdx, steps, statusEl) {
+    return patchComponent('method', `assay_graph.assays[${assayIdx}].steps`, steps)
+      .then(resp => {
+        setStatus(statusEl, 'saved');
+        refreshConfidenceHint(resp);
+        setTimeout(() => {
+          const tabBtn = Array.from(document.querySelectorAll('.dash-tab'))
+            .find(b => (b.getAttribute('onclick') || '').includes("'editing'"));
+          if (tabBtn) showTab('editing', tabBtn);
+          window.location.reload();
+        }, 120);
+      })
+      .catch(err => {
+        setStatus(statusEl, 'error');
+        if (statusEl) statusEl.title = err.message;
+      });
+  }
+
+  function handleSeAddStep(e) {
+    const btn = e.currentTarget;
+    const assayIdx = Number(btn.dataset.assayIdx);
+    const blocks = Array.from(document.querySelectorAll(`.se-step-block[data-assay-idx="${assayIdx}"]`));
+    const globalEl = document.getElementById('se-save-status');
+    const lastStatus = blocks[blocks.length - 1]?.querySelector('.se-step-status') || globalEl;
+    setStatus(lastStatus, 'saving');
+    setStatus(globalEl, 'saving');
+    try {
+      const steps = blocks.map(stepStateFromBlock);
+      const next = {
+        step_number: steps.length + 1,
+        description: `Step ${steps.length + 1}`,
+        input_data: '',
+        output_data: '',
+        software: '',
+        software_version: '',
+        parameters: {},
+        code_reference: null,
+      };
+      steps.push(next);
+      patchStepArray(assayIdx, steps, globalEl);
+    } catch (err) {
+      setStatus(globalEl, 'error');
+      globalEl.title = err.message;
+    }
+  }
+
+  function handleSeRemoveStep(e) {
+    const btn = e.currentTarget;
+    const assayIdx = Number(btn.dataset.assayIdx);
+    const stepIdx = Number(btn.dataset.stepIdx);
+    const blocks = Array.from(document.querySelectorAll(`.se-step-block[data-assay-idx="${assayIdx}"]`));
+    const globalEl = document.getElementById('se-save-status');
+    setStatus(globalEl, 'saving');
+    try {
+      const steps = blocks.map(stepStateFromBlock).filter((_, idx) => idx !== stepIdx);
+      steps.forEach((step, idx) => { step.step_number = idx + 1; });
+      patchStepArray(assayIdx, steps, globalEl);
+    } catch (err) {
+      setStatus(globalEl, 'error');
+      globalEl.title = err.message;
+    }
+  }
+
+  async function maybeAutoSaveGeneratedCommand(block, changedPath) {
+    if (!block) return;
+    if (!changedPath || !/\.(software|input_data|output_data|parameters)$/.test(changedPath)) return;
+    const cmdField = block.querySelector('.se-command-field');
+    if (!cmdField) return;
+    const hasManualCommand = cmdField.dataset.manual === 'true' && String(cmdField.value || '').trim();
+    if (hasManualCommand) return;
+
+    const generated = generateStepCommand(block);
+    if (!generated) return;
+    if (String(cmdField.value || '').trim() === generated) return;
+
+    cmdField.value = generated;
+    cmdField.dataset.manual = 'false';
+    const cmdPath = cmdField.dataset.patchPath;
+    const stepSt = block.querySelector('.se-step-status');
+    const globalEl = document.getElementById('se-save-status');
+    setStatus(stepSt, 'saving');
+    setStatus(globalEl, 'saving');
+    try {
+      const resp = await patchComponent('method', cmdPath, generated);
+      setStatus(stepSt, 'saved');
+      setStatus(globalEl, 'saved');
+      refreshConfidenceHint(resp);
+      setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
+    } catch (err) {
+      setStatus(stepSt, 'error');
+      setStatus(globalEl, 'error');
+      cmdField.title = err.message;
+    }
+  }
+
+  function handleSeChange(e) {
+    const el    = e.target;
+    const path  = el.dataset.patchPath;
+    const isJson = el.dataset.json === 'true';
+    const key   = path;
+
+    clearTimeout(seTimers[key]);
+    seTimers[key] = setTimeout(async () => {
+      let value = el.value;
+      if (isJson) {
+        try { value = JSON.parse(value); }
+        catch (parseErr) {
+          el.style.borderColor = '#f87171';
+          el.title = 'Invalid JSON: ' + parseErr.message;
+          return;
+        }
+      }
+      if (el.classList.contains('se-command-field')) {
+        el.dataset.manual = 'true';
+      }
+      el.style.borderColor = '';
+
+      // Find the status spans for this step
+      const block    = el.closest('.se-step-block');
+      const aIdx     = block ? block.dataset.assayIdx : null;
+      const sIdx     = block ? block.dataset.stepIdx  : null;
+      const stepSt   = document.querySelector(`.se-step-status[data-assay-idx="${aIdx}"][data-step-idx="${sIdx}"]`);
+      const globalEl = document.getElementById('se-save-status');
+
+      setStatus(stepSt, 'saving');
+      setStatus(globalEl, 'saving');
+      try {
+        const resp = await patchComponent('method', path, value);
+        setStatus(stepSt, 'saved');
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        await maybeAutoSaveGeneratedCommand(block, path);
+        setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
+      } catch (err) {
+        setStatus(stepSt, 'error');
+        setStatus(globalEl, 'error');
+        el.title = err.message;
+      }
+    }, 800);
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     Phase 2d — Pipeline config editor
+  ══════════════════════════════════════════════════════════ */
+  const pcTimers = {};
+
+  document.querySelectorAll('.pc-field').forEach(input => {
+    input.addEventListener('input', handlePcChange);
+  });
+
+  function handlePcChange(e) {
+    const el        = e.target;
+    const path      = el.dataset.patchPath;
+    const isJsonArr = el.dataset.jsonArray === 'true';
+    const key       = path;
+
+    clearTimeout(pcTimers[key]);
+    pcTimers[key] = setTimeout(async () => {
+      let value = el.value;
+      if (isJsonArr) {
+        // Comma-separated → array of trimmed strings, filter empties
+        value = value.split(',').map(s => s.trim()).filter(Boolean);
+      }
+
+      const block    = el.closest('.pc-step-block');
+      const sIdx     = block ? block.dataset.stepIdx : null;
+      const stepSt   = document.querySelector(`.pc-step-status[data-step-idx="${sIdx}"]`);
+      const globalEl = document.getElementById('pc-save-status');
+
+      setStatus(stepSt, 'saving');
+      setStatus(globalEl, 'saving');
+      try {
+        const resp = await patchComponent('pipeline', path, value);
+        setStatus(stepSt, 'saved');
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        setTimeout(() => { setStatus(stepSt, ''); setStatus(globalEl, ''); }, 2500);
+      } catch (err) {
+        setStatus(stepSt, 'error');
+        setStatus(globalEl, 'error');
+        el.title = err.message;
+      }
+    }, 800);
+  }
+
+})();
 </script>
 {% endblock %}

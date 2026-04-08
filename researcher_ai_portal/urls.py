@@ -9,6 +9,7 @@ from researcher_ai_portal_app.views import (
     home,
     job_progress,
     job_status,
+    parse_progress,
     start_parse,
     workflow_step,
 )
@@ -24,6 +25,7 @@ urlpatterns = [
     path('', home, name='home'),
     path('parse/start/', start_parse, name='start_parse'),
     path('jobs/<str:job_id>/', job_progress, name='job_progress'),
+    path('jobs/<str:job_id>/progress/', parse_progress, name='parse_progress'),
     path('jobs/<str:job_id>/workflow/<str:step>/', workflow_step, name='workflow_step'),
     path('jobs/<str:job_id>/status/', job_status, name='job_status'),
     path('jobs/<str:job_id>/figure-image/', figure_image_proxy, name='figure_image_proxy'),

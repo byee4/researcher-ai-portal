@@ -371,11 +371,28 @@
     details.accordion[open] > summary::after { transform: rotate(-180deg); }
     details.accordion > .accordion-body { padding: 0 16px 16px; }
 
+    /* ── Job status dot pulse (pipeline builder) ── */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: .35; }
+    }
+
+    /* ── Phase 0: field-highlight (global — dashboard + workflow_step) ── */
+    @keyframes field-flash {
+      0%   { box-shadow: 0 0 0 0 rgba(217,119,6,.7); border-color: var(--warning) !important; }
+      50%  { box-shadow: 0 0 0 6px rgba(217,119,6,.2); border-color: var(--warning) !important; }
+      100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); border-color: var(--border-2) !important; }
+    }
+    .field-highlight { animation: field-flash 1.4s ease-out !important; }
+
     /* ── Responsive ─────────────────────────────────────────────── */
     @media (max-width: 700px) {
       .page { padding: 16px; }
       .nav { padding: 0 16px; }
       h1 { font-size: 1.25rem; }
+    }
+    @media (max-width: 768px) {
+      .stat-grid-5 { grid-template-columns: repeat(3, 1fr) !important; }
     }
   </style>
 </head>
