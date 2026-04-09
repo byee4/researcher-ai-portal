@@ -16,6 +16,16 @@ Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API 
 
 ## Release notes
 
+### v2.2.2 (April 9, 2026)
+
+- Updated default package pin to `researcher-ai==2.2.2`.
+- Verified portal compatibility with `researcher-ai` v2.2.2 parser/orchestrator behavior.
+- Documented optional new figure tuning env vars:
+  - `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS`
+  - `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS`
+  - `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS`
+  - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS`
+
 ### v2.1.1 (April 8, 2026)
 
 - Integrated compatibility updates for `researcher-ai==2.1.1`.
