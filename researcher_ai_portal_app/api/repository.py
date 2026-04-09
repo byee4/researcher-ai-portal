@@ -400,6 +400,39 @@ async def get_job_status(
     return await _from_db()
 
 
+async def get_rag_workflow_for_user(
+    job_id: str | UUID,
+    user_id: int,
+) -> dict[str, Any] | None:
+    """Return normalized RAG workflow telemetry payload for a job.
+
+    Returns None if the job doesn't exist or doesn't belong to the user.
+    """
+    from researcher_ai_portal_app.models import WorkflowJob
+    from researcher_ai_portal_app.views import build_rag_workflow_payload
+
+    @sync_to_async
+    def _fetch() -> dict[str, Any] | None:
+        try:
+            job = WorkflowJob.objects.get(id=job_id, user_id=user_id)
+        except WorkflowJob.DoesNotExist:
+            return None
+
+        components = {snap.step: snap.payload for snap in job.components.all()}
+        job_dict = {
+            "job_id": str(job.id),
+            "llm_model": job.llm_model,
+            "components": components,
+            "parse_logs": job.parse_logs or [],
+            "job_metadata": job.job_metadata or {},
+        }
+        payload = build_rag_workflow_payload(job_dict)
+        payload["job_id"] = str(job.id)
+        return payload
+
+    return await _fetch()
+
+
 # ---------------------------------------------------------------------------
 # Phase 2a — Component PATCH
 # ---------------------------------------------------------------------------

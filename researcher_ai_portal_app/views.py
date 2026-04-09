@@ -8,6 +8,7 @@ import threading
 import time
 import base64
 import hashlib
+from datetime import datetime, timezone
 from html import unescape
 from contextlib import contextmanager
 from pathlib import Path
@@ -89,6 +90,15 @@ _VISION_FALLBACK_WARN_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _BIOWORKFLOW_BLOCKED_RE = re.compile(r"bioworkflow_blocked:.*?ungrounded_fields\s*=\s*(\d+)", re.IGNORECASE)
+_RAG_RETRIEVAL_ROUNDS_RE = re.compile(r"retrieval(?:_refinement)?[_\s-]*rounds?\s*[:=]\s*(\d+)", re.IGNORECASE)
+_RAG_RETRIEVED_CHUNKS_RE = re.compile(
+    r"(?:retrieved|retrieval)[_\s-]*(?:chunks?|docs?|documents?)\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
+_RAG_CONTEXT_TOKENS_RE = re.compile(
+    r"(?:total[_\s-]*)?context[_\s-]*tokens?(?:_est)?\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
 _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
 _FIGURE_PROXY_CACHE_DIR = Path(settings.MEDIA_ROOT) / "figure_proxy_cache"
@@ -381,6 +391,160 @@ def _extract_method_diagnostics(payload: Any) -> dict[str, Any]:
     elif isinstance(derived_review_summary, dict):
         out["human_review_summary"] = derived_review_summary
 
+    return out
+
+
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rag_phase_for_message(message: str) -> str:
+    text = str(message or "").strip().lower()
+    if not text:
+        return "post_parse_validation"
+    if "indexing" in text or "rag index" in text:
+        return "indexing"
+    if "retriev" in text or "context" in text:
+        return "retrieval"
+    if "prompt" in text:
+        return "prompt_assembly"
+    if "llm" in text or "sending methods extraction request" in text or "response received" in text:
+        return "generation"
+    return "post_parse_validation"
+
+
+def _extract_retrieval_metrics(parse_warnings: list[Any], parse_logs: list[dict[str, Any]]) -> dict[str, Any]:
+    retrieval_rounds: int | None = None
+    retrieved_chunk_count: int | None = None
+    total_context_tokens_est: int | None = None
+
+    texts: list[str] = [str(w or "") for w in parse_warnings]
+    for entry in parse_logs:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("step") or "") != "method":
+            continue
+        texts.append(str(entry.get("message") or ""))
+
+    for text in texts:
+        for rx, key in (
+            (_RAG_RETRIEVAL_ROUNDS_RE, "retrieval_rounds"),
+            (_RAG_RETRIEVED_CHUNKS_RE, "retrieved_chunk_count"),
+            (_RAG_CONTEXT_TOKENS_RE, "total_context_tokens_est"),
+        ):
+            match = rx.search(text)
+            if not match:
+                continue
+            val = _safe_int(match.group(1), 0)
+            if key == "retrieval_rounds":
+                retrieval_rounds = val
+            elif key == "retrieved_chunk_count":
+                retrieved_chunk_count = val
+            elif key == "total_context_tokens_est":
+                total_context_tokens_est = val
+
+    return {
+        "rounds": retrieval_rounds,
+        "retrieved_chunk_count": retrieved_chunk_count,
+        "total_context_tokens_est": total_context_tokens_est,
+    }
+
+
+def _timeline_event_from_log(entry: dict[str, Any]) -> dict[str, Any]:
+    message = str(entry.get("message") or "")
+    return {
+        "ts": str(entry.get("ts") or _iso_utc_now()),
+        "phase": _rag_phase_for_message(message),
+        "level": str(entry.get("level") or "info"),
+        "message": message,
+        "source": "parse_log",
+    }
+
+
+def build_rag_workflow_payload(job: dict[str, Any]) -> dict[str, Any]:
+    """Normalize RAG workflow metadata + method logs into a stable payload."""
+    metadata = dict(job.get("job_metadata") or {})
+    rag = metadata.get("rag_workflow") if isinstance(metadata.get("rag_workflow"), dict) else {}
+    components = job.get("components") or {}
+    method_payload = components.get("method") if isinstance(components.get("method"), dict) else {}
+    parse_warnings = list((method_payload or {}).get("parse_warnings") or [])
+    method_logs = [
+        x for x in (job.get("parse_logs") or [])
+        if isinstance(x, dict) and str(x.get("step") or "") == "method"
+    ]
+
+    events = [
+        {
+            "ts": str(ev.get("ts") or _iso_utc_now()),
+            "phase": str(ev.get("phase") or "post_parse_validation"),
+            "level": str(ev.get("level") or "info"),
+            "message": str(ev.get("message") or ""),
+            "source": "telemetry",
+        }
+        for ev in (rag.get("events") or [])
+        if isinstance(ev, dict)
+    ]
+    timeline = [*events, *[_timeline_event_from_log(e) for e in method_logs]]
+    timeline.sort(key=lambda row: str(row.get("ts") or ""))
+
+    assays = ((method_payload or {}).get("assay_graph") or {}).get("assays") or []
+    diagnostics = _extract_method_diagnostics(method_payload)
+    retrieval = dict(rag.get("retrieval") or {})
+    inferred_retrieval = _extract_retrieval_metrics(parse_warnings, method_logs)
+    retrieval.setdefault("rounds", inferred_retrieval.get("rounds"))
+    retrieval.setdefault("retrieved_chunk_count", inferred_retrieval.get("retrieved_chunk_count"))
+    retrieval.setdefault("total_context_tokens_est", inferred_retrieval.get("total_context_tokens_est"))
+
+    result = dict(rag.get("result") or {})
+    result.setdefault("assay_count", len(assays))
+    result.setdefault("parse_warning_count", len(parse_warnings))
+    result.setdefault(
+        "review_required",
+        bool(result.get("review_required"))
+        or bool(diagnostics.get("human_review_required"))
+        or bool(metadata.get("human_review_required")),
+    )
+
+    out = {
+        "mode": str(rag.get("mode") or "per_job"),
+        "indexing": {
+            "section_count": _safe_int((rag.get("indexing") or {}).get("section_count"), 0),
+            "figure_caption_count": _safe_int((rag.get("indexing") or {}).get("figure_caption_count"), 0),
+            "started_at": (rag.get("indexing") or {}).get("started_at"),
+            "finished_at": (rag.get("indexing") or {}).get("finished_at"),
+            "duration_s": _safe_float((rag.get("indexing") or {}).get("duration_s"), None),
+        },
+        "retrieval": {
+            "rounds": retrieval.get("rounds"),
+            "retrieved_chunk_count": retrieval.get("retrieved_chunk_count"),
+            "total_context_tokens_est": retrieval.get("total_context_tokens_est"),
+        },
+        "generation": {
+            "model": str((rag.get("generation") or {}).get("model") or (job.get("llm_model") or "")),
+            "started_at": (rag.get("generation") or {}).get("started_at"),
+            "finished_at": (rag.get("generation") or {}).get("finished_at"),
+            "duration_s": _safe_float((rag.get("generation") or {}).get("duration_s"), None),
+        },
+        "result": result,
+        "events": events,
+        "timeline": timeline,
+        "diagnostics": diagnostics,
+        "has_telemetry": bool(rag),
+    }
     return out
 
 
@@ -1687,12 +1851,35 @@ def _run_step(
             rag_base = str(os.environ.get("RESEARCHER_AI_RAG_BASE_DIR", "") or "").strip()
             n_sections = len(paper.sections or [])
             n_figs = len(figures or [])
+            indexing_started_at = _iso_utc_now()
+            indexing_started_monotonic = time.monotonic()
+            rag_events: list[dict[str, Any]] = []
+            rag_events.append(
+                {
+                    "ts": indexing_started_at,
+                    "phase": "indexing",
+                    "level": "info",
+                    "message": f"Indexing {n_sections} paper sections + {n_figs} figure captions into RAG store",
+                }
+            )
             _log_job_event(
                 job_id,
                 f"Indexing {n_sections} paper sections + {n_figs} figure captions into RAG store",
                 step=step,
             )
             update_job(job_id, stage="Methods: Building RAG index")
+            indexing_finished_at = _iso_utc_now()
+            indexing_duration_s = round(max(0.0, time.monotonic() - indexing_started_monotonic), 3)
+            generation_started_at = _iso_utc_now()
+            generation_started_monotonic = time.monotonic()
+            rag_events.append(
+                {
+                    "ts": generation_started_at,
+                    "phase": "generation",
+                    "level": "info",
+                    "message": f"Sending methods extraction request to {model}",
+                }
+            )
             if rag_mode == "shared":
                 if rag_base:
                     shared_dir = Path(rag_base).expanduser().resolve()
@@ -1715,10 +1902,62 @@ def _run_step(
                     update_job(job_id, stage="Methods: Sending LLM request (may take 3–10 min)")
                     _log_job_event(job_id, f"Sending methods extraction request to {model}…", step=step)
                     method = parser.parse(paper, figures=figures, computational_only=True)
+            generation_finished_at = _iso_utc_now()
+            generation_duration_s = round(max(0.0, time.monotonic() - generation_started_monotonic), 3)
             n_assays = len((method.assay_graph.assays if hasattr(method, "assay_graph") and method.assay_graph else []) or [])
             _log_job_event(job_id, f"LLM response received — {n_assays} assay(s) extracted", step=step)
             update_job(job_id, stage="Methods: Persisting results")
-            _persist_component(job_id, "method", method.model_dump(mode="json"), "parsed")
+            method_payload = method.model_dump(mode="json")
+            _persist_component(job_id, "method", method_payload, "parsed")
+            parse_warnings = list(method_payload.get("parse_warnings") or [])
+            retrieval = _extract_retrieval_metrics(parse_warnings, (get_job(job_id) or {}).get("parse_logs") or [])
+            diagnostics = _extract_method_diagnostics(method_payload)
+            rag_events.append(
+                {
+                    "ts": generation_finished_at,
+                    "phase": "post_parse_validation",
+                    "level": "info",
+                    "message": f"LLM response received — {n_assays} assay(s) extracted",
+                }
+            )
+            for warning in parse_warnings:
+                rag_events.append(
+                    {
+                        "ts": _iso_utc_now(),
+                        "phase": "post_parse_validation",
+                        "level": "warning",
+                        "message": str(warning),
+                    }
+                )
+            rag_events.sort(key=lambda row: str(row.get("ts") or ""))
+            update_job(
+                job_id,
+                job_metadata={
+                    "rag_workflow": {
+                        "mode": rag_mode,
+                        "indexing": {
+                            "section_count": n_sections,
+                            "figure_caption_count": n_figs,
+                            "started_at": indexing_started_at,
+                            "finished_at": indexing_finished_at,
+                            "duration_s": indexing_duration_s,
+                        },
+                        "retrieval": retrieval,
+                        "generation": {
+                            "model": str(model or ""),
+                            "started_at": generation_started_at,
+                            "finished_at": generation_finished_at,
+                            "duration_s": generation_duration_s,
+                        },
+                        "result": {
+                            "assay_count": n_assays,
+                            "parse_warning_count": len(parse_warnings),
+                            "review_required": bool(diagnostics.get("human_review_required", False)),
+                        },
+                        "events": rag_events,
+                    }
+                },
+            )
             _log_job_event(job_id, "Methods parsing complete", step=step)
             return
 
@@ -2339,6 +2578,24 @@ def parse_progress(request, job_id: str):
             "step_labels_json": json.dumps(STEP_LABELS),
         },
     )
+
+
+@login_required
+@require_GET
+def rag_workflow(request, job_id: str):
+    job = get_job(job_id, user=request.user)
+    if job is None:
+        raise Http404("Unknown job id")
+    context = _dashboard_context(job)
+    rag_payload = build_rag_workflow_payload(job)
+    context.update(
+        {
+            "job_id": job_id,
+            "rag_workflow": rag_payload,
+            "rag_workflow_json": rag_payload,
+        }
+    )
+    return render(request, "researcher_ai_portal/rag_workflow.html", context)
 
 
 @login_required

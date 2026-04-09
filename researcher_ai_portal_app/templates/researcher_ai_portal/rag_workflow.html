@@ -1,0 +1,240 @@
+{% extends "researcher_ai_portal/base.html" %}
+{% block title %}RAG Workflow — {{ summary.title|default:job_id }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="{% url 'home' %}">Home</a>
+  <span class="crumb-sep">›</span>
+  <a href="{% url 'workflow_step' job_id=job_id step='paper' %}">{{ summary.title|default:job_id|truncatechars:36 }}</a>
+  <span class="crumb-sep">›</span>
+  <span class="crumb-current">RAG Workflow</span>
+{% endblock %}
+
+{% block extra_head %}
+{{ rag_workflow_json|json_script:"_rag-workflow-json" }}
+{% endblock %}
+
+{% block content %}
+<div class="page">
+  <div class="card" style="padding: 18px 22px; margin-bottom: 14px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div>
+        <h1 style="margin-bottom:4px;">Methods RAG Workflow</h1>
+        <p class="text-sm text-muted">Read-only internals for retrieval/indexing/generation diagnostics.</p>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <a href="{% url 'dashboard' job_id=job_id %}" class="btn btn-ghost btn-sm">← Dashboard</a>
+        <a href="{% url 'workflow_step' job_id=job_id step='method' %}" class="btn btn-teal btn-sm">Methods Step</a>
+      </div>
+    </div>
+  </div>
+
+  {% if not rag_workflow.has_telemetry %}
+    <div class="card" style="padding: 18px 22px; margin-bottom: 14px; background: var(--surface-2);">
+      <p class="font-600" style="color:var(--text); margin-bottom:4px;">No structured RAG telemetry yet</p>
+      <p class="text-sm text-muted">Run the Methods step to populate RAG internals. Parse logs may still provide partial timeline details below.</p>
+    </div>
+  {% endif %}
+
+  <div style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; margin-bottom:14px;">
+    <div class="card card-sm" style="text-align:center;">
+      <div class="text-xs text-muted">Mode</div>
+      <div class="font-700" style="color:var(--text);">{{ rag_workflow.mode|default:"per_job" }}</div>
+    </div>
+    <div class="card card-sm" style="text-align:center;">
+      <div class="text-xs text-muted">Sections Indexed</div>
+      <div class="font-700" style="color:var(--text);">{{ rag_workflow.indexing.section_count|default:0 }}</div>
+    </div>
+    <div class="card card-sm" style="text-align:center;">
+      <div class="text-xs text-muted">Figure Captions</div>
+      <div class="font-700" style="color:var(--text);">{{ rag_workflow.indexing.figure_caption_count|default:0 }}</div>
+    </div>
+    <div class="card card-sm" style="text-align:center;">
+      <div class="text-xs text-muted">Retrieval Rounds</div>
+      <div class="font-700" style="color:var(--text);">{{ rag_workflow.retrieval.rounds|default:"—" }}</div>
+    </div>
+    <div class="card card-sm" style="text-align:center;">
+      <div class="text-xs text-muted">Assays Parsed</div>
+      <div class="font-700" style="color:var(--text);">{{ rag_workflow.result.assay_count|default:0 }}</div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); gap:14px; margin-bottom:14px;">
+    <div class="card" style="padding: 16px 18px;">
+      <h2 style="margin-bottom:8px;">RAG Phase Graph</h2>
+      <p class="text-sm text-muted" style="margin-bottom:10px;">Indexing → Retrieval → Prompt Assembly → Generation → Post-parse validation</p>
+      <div id="rag-graph" style="overflow:auto;"></div>
+    </div>
+
+    <div class="card" style="padding: 16px 18px;">
+      <h2 style="margin-bottom:8px;">Diagnostics</h2>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div class="card card-sm" style="background:var(--surface-2);">
+          <div class="text-xs text-muted">Warnings</div>
+          <div class="font-600" style="color:var(--text);">{{ rag_workflow.result.parse_warning_count|default:0 }}</div>
+        </div>
+        <div class="card card-sm" style="background:{% if rag_workflow.result.review_required %}var(--warning-soft){% else %}var(--surface-2){% endif %};">
+          <div class="text-xs text-muted">Human Review</div>
+          <div class="font-600" style="color:{% if rag_workflow.result.review_required %}var(--warning){% else %}var(--text){% endif %};">
+            {% if rag_workflow.result.review_required %}Required{% else %}Not required{% endif %}
+          </div>
+        </div>
+        <div class="card card-sm" style="background:var(--surface-2);">
+          <div class="text-xs text-muted">Retrieved Chunks</div>
+          <div class="font-600" style="color:var(--text);">{{ rag_workflow.retrieval.retrieved_chunk_count|default:"—" }}</div>
+        </div>
+        <div class="card card-sm" style="background:var(--surface-2);">
+          <div class="text-xs text-muted">Context Tokens (est.)</div>
+          <div class="font-600" style="color:var(--text);">{{ rag_workflow.retrieval.total_context_tokens_est|default:"—" }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="padding: 16px 18px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+      <h2>RAG Timeline</h2>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <select id="timeline-level" class="form-control" style="width:auto; min-width:120px;">
+          <option value="all">All Levels</option>
+          <option value="info">Info</option>
+          <option value="warning">Warning</option>
+          <option value="error">Error</option>
+        </select>
+        <select id="timeline-phase" class="form-control" style="width:auto; min-width:170px;">
+          <option value="all">All Phases</option>
+          <option value="indexing">Indexing</option>
+          <option value="retrieval">Retrieval</option>
+          <option value="prompt_assembly">Prompt Assembly</option>
+          <option value="generation">Generation</option>
+          <option value="post_parse_validation">Post-parse validation</option>
+        </select>
+        <input id="timeline-search" class="form-control" style="width:240px;" placeholder="Search timeline" />
+      </div>
+    </div>
+    <div id="timeline-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const payload = JSON.parse(document.getElementById('_rag-workflow-json').textContent || '{}');
+  const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
+
+  const PHASE_LABELS = {
+    indexing: 'Indexing',
+    retrieval: 'Retrieval',
+    prompt_assembly: 'Prompt Assembly',
+    generation: 'Generation',
+    post_parse_validation: 'Post-parse Validation',
+  };
+
+  const PHASES = ['indexing', 'retrieval', 'prompt_assembly', 'generation', 'post_parse_validation'];
+  const graph = document.getElementById('rag-graph');
+  const levelSel = document.getElementById('timeline-level');
+  const phaseSel = document.getElementById('timeline-phase');
+  const searchInput = document.getElementById('timeline-search');
+  const timelineList = document.getElementById('timeline-list');
+
+  function countsByPhase() {
+    const out = {};
+    for (const p of PHASES) out[p] = 0;
+    for (const row of timeline) {
+      const key = row && row.phase;
+      if (Object.prototype.hasOwnProperty.call(out, key)) out[key] += 1;
+    }
+    return out;
+  }
+
+  function renderGraph() {
+    const counts = countsByPhase();
+    const nodes = PHASES.map((phase, idx) => {
+      const x = 30 + idx * 170;
+      const y = 50;
+      const count = counts[phase] || 0;
+      const fill = count > 0 ? '#eff6ff' : '#f8fafc';
+      const stroke = count > 0 ? '#1d4ed8' : '#cbd5e1';
+      return `
+        <g>
+          <rect x="${x}" y="${y}" rx="10" ry="10" width="150" height="64" fill="${fill}" stroke="${stroke}" stroke-width="1.5"></rect>
+          <text x="${x + 75}" y="${y + 24}" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="600">${PHASE_LABELS[phase]}</text>
+          <text x="${x + 75}" y="${y + 44}" text-anchor="middle" fill="#475569" font-size="11">${count} events</text>
+        </g>
+      `;
+    }).join('');
+
+    const edges = PHASES.slice(0, -1).map((_, idx) => {
+      const x1 = 30 + idx * 170 + 150;
+      const x2 = 30 + (idx + 1) * 170;
+      const y = 82;
+      return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)" />`;
+    }).join('');
+
+    graph.innerHTML = `
+      <svg width="900" height="160" viewBox="0 0 900 160" role="img" aria-label="RAG workflow phase graph">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" fill="#94a3b8" />
+          </marker>
+        </defs>
+        ${edges}
+        ${nodes}
+      </svg>
+    `;
+  }
+
+  function renderTimeline() {
+    const level = levelSel.value;
+    const phase = phaseSel.value;
+    const needle = (searchInput.value || '').trim().toLowerCase();
+    const rows = timeline.filter(row => {
+      const rowLevel = String(row.level || 'info').toLowerCase();
+      const rowPhase = String(row.phase || 'post_parse_validation');
+      const msg = String(row.message || '');
+      if (level !== 'all' && rowLevel !== level) return false;
+      if (phase !== 'all' && rowPhase !== phase) return false;
+      if (needle && !msg.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+
+    if (rows.length === 0) {
+      timelineList.innerHTML = '<p class="text-sm text-muted">No timeline entries for this filter.</p>';
+      return;
+    }
+
+    timelineList.innerHTML = rows.map(row => {
+      const level = String(row.level || 'info').toLowerCase();
+      const color = level === 'error' ? 'var(--danger)' : level === 'warning' ? 'var(--warning)' : 'var(--text)';
+      const ts = String(row.ts || '');
+      const phaseLabel = PHASE_LABELS[String(row.phase || '')] || String(row.phase || 'Unknown');
+      const source = row.source ? ` · ${row.source}` : '';
+      return `
+        <div class="card card-sm" style="padding:10px 12px; background:var(--surface-2);">
+          <div style="display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <span class="tag" style="border-color:var(--border-2); background:var(--surface); color:var(--text-2);">${phaseLabel}</span>
+              <span class="text-xs" style="color:${color}; font-weight:600; text-transform:uppercase;">${level}</span>
+              <span class="text-xs text-muted">${source}</span>
+            </div>
+            <span class="text-xs text-muted">${ts}</span>
+          </div>
+          <p class="text-sm" style="margin-top:4px; color:var(--text);">${String(row.message || '').replace(/</g, '&lt;')}</p>
+        </div>
+      `;
+    }).join('');
+  }
+
+  levelSel.addEventListener('change', renderTimeline);
+  phaseSel.addEventListener('change', renderTimeline);
+  searchInput.addEventListener('input', renderTimeline);
+  renderGraph();
+  renderTimeline();
+})();
+</script>
+
+<style>
+@media (max-width: 980px) {
+  .page > div[style*="grid-template-columns: minmax(0,1.1fr) minmax(0,1fr)"] { grid-template-columns: 1fr !important; }
+  .page > div[style*="grid-template-columns: repeat(5"] { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+}
+</style>
+{% endblock %}

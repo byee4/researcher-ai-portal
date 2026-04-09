@@ -311,3 +311,56 @@ class LogsResponse(BaseModel):
     entries: list[LogEntry]
     next_since_ts: str      # watermark to pass as since_ts on the next poll
     has_more: bool
+
+
+# ---------------------------------------------------------------------------
+# RAG Workflow telemetry
+# ---------------------------------------------------------------------------
+
+
+class RagWorkflowEvent(BaseModel):
+    ts: str
+    phase: str
+    level: str
+    message: str
+    source: str = "telemetry"
+
+
+class RagWorkflowIndexing(BaseModel):
+    section_count: int = 0
+    figure_caption_count: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_s: float | None = None
+
+
+class RagWorkflowRetrieval(BaseModel):
+    rounds: int | None = None
+    retrieved_chunk_count: int | None = None
+    total_context_tokens_est: int | None = None
+
+
+class RagWorkflowGeneration(BaseModel):
+    model: str = ""
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_s: float | None = None
+
+
+class RagWorkflowResult(BaseModel):
+    assay_count: int = 0
+    parse_warning_count: int = 0
+    review_required: bool = False
+
+
+class RagWorkflowResponse(BaseModel):
+    job_id: str
+    mode: str = "per_job"
+    indexing: RagWorkflowIndexing = Field(default_factory=RagWorkflowIndexing)
+    retrieval: RagWorkflowRetrieval = Field(default_factory=RagWorkflowRetrieval)
+    generation: RagWorkflowGeneration = Field(default_factory=RagWorkflowGeneration)
+    result: RagWorkflowResult = Field(default_factory=RagWorkflowResult)
+    events: list[RagWorkflowEvent] = Field(default_factory=list)
+    timeline: list[RagWorkflowEvent] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    has_telemetry: bool = False

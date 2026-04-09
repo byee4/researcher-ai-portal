@@ -7,8 +7,8 @@ A Django portal that wraps the [`researcher-ai`](https://github.com/byee4/resear
 1. Accept a PubMed ID, DOI, or uploaded PDF.
 2. Run a six-step LLM-powered parsing pipeline (Paper → Figures → Method → Datasets → Software → Pipeline).
 3. Let the user inspect, edit, and correct each parsed component through a web UI.
-4. Render an interactive assay DAG, figure gallery, and confidence dashboard.
-5. Expose a FastAPI layer under `/api/v1/` for the visual pipeline builder — submit publications, poll status, and read/write React Flow graph state via JSON API.
+4. Render an interactive assay DAG, figure gallery, confidence dashboard, and a dedicated Methods RAG workflow visualization page.
+5. Expose a FastAPI layer under `/api/v1/` for the visual pipeline builder and diagnostics APIs — submit publications, poll status, read/write React Flow graph state, and fetch normalized RAG telemetry.
 
 Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API keys are entered per-session and never stored in the database.
 
@@ -100,6 +100,7 @@ Interactive Swagger docs are available at **http://localhost:8000/api/v1/docs** 
 |--------|------|-------------|
 | `POST` | `/api/v1/parse-publication` | Submit a publication; returns `202` with a `job_id`. Runs all six pipeline steps in the background. |
 | `GET` | `/api/v1/jobs/{job_id}/status` | Poll parsing progress. Returns `status`, `progress` (0–100), `stage`, and `parse_logs`. |
+| `GET` | `/api/v1/jobs/{job_id}/rag-workflow` | Retrieve normalized Methods-step RAG telemetry and timeline data for diagnostics UI. |
 | `GET` | `/api/v1/graphs/{job_id}` | Retrieve the auto-generated React Flow graph once parsing completes. |
 | `PUT` | `/api/v1/graphs/{job_id}` | Persist the graph after the user rearranges nodes. |
 | `GET` | `/api/v1/graphs/{job_id}/nodes/{node_id}` | Full parsed payload for a single pipeline step. |

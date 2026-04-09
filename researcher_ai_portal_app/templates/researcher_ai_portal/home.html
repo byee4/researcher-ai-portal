@@ -210,6 +210,12 @@
                   View Dashboard
                 </a>
               {% endif %}
+              {% if job.job_metadata.rag_workflow %}
+                <a class="btn btn-ghost btn-sm"
+                   href="{% url 'rag_workflow' job_id=job.id %}">
+                  RAG View
+                </a>
+              {% endif %}
               <a class="btn btn-ghost btn-sm"
                  href="{% url 'workflow_step' job_id=job.id step=job.current_step|default:'paper' %}">
                 {% if job.status == "in_progress" %}Continue{% else %}View steps{% endif %}

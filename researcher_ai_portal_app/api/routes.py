@@ -51,6 +51,7 @@ from .schemas import (
     ParsePublicationRequest,
     ParsePublicationResponse,
     PingResponse,
+    RagWorkflowResponse,
     WorkflowGraph,
 )
 from . import repository
@@ -221,6 +222,32 @@ async def get_job_confidence(
             detail=f"Job '{job_id}' not found.",
         )
     return ConfidenceResponse(**data)
+
+
+@router.get(
+    "/jobs/{job_id}/rag-workflow",
+    response_model=RagWorkflowResponse,
+    summary="Get normalized Methods-step RAG workflow telemetry",
+    tags=["jobs"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+async def get_rag_workflow(
+    job_id: str,
+    user: Annotated[object, Depends(get_current_user)],
+) -> RagWorkflowResponse:
+    data = await repository.get_rag_workflow_for_user(
+        job_id=job_id,
+        user_id=user.pk,
+    )
+    if data is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+    return RagWorkflowResponse(**data)
 
 
 # ---------------------------------------------------------------------------
