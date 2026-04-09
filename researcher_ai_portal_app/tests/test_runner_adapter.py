@@ -5,14 +5,15 @@ import time
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory
+from pydantic import BaseModel
 
 from researcher_ai_portal_app import views
 from researcher_ai_portal_app.job_store import create_job, get_job
 
 
-def test_runner_mode_defaults_to_legacy(monkeypatch):
+def test_runner_mode_defaults_to_orchestrator(monkeypatch):
     monkeypatch.delenv("RESEARCHER_AI_PORTAL_RUNNER_MODE", raising=False)
-    assert views._runner_mode() == "legacy"
+    assert views._runner_mode() == "orchestrator"
 
 
 def test_runner_mode_invalid_falls_back_to_legacy(monkeypatch):
@@ -30,6 +31,55 @@ def test_version_drift_logs_warning(monkeypatch):
     monkeypatch.setattr(views, "_log_job_event", _capture)
     views._report_version_drift("job1", "3.0.0")
     assert any("version drift detected" in item for item in captured)
+
+
+def test_version_drift_logs_info_when_check_disabled(monkeypatch):
+    captured: list[str] = []
+
+    def _capture(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
+        captured.append(f"{level}:{message}")
+
+    monkeypatch.delenv("RESEARCHER_AI_EXPECTED_VERSION", raising=False)
+    monkeypatch.setattr(views, "_log_job_event", _capture)
+    views._report_version_drift("job1", "3.0.0")
+    assert any("drift check disabled" in item for item in captured)
+
+
+def test_validate_component_json_datasets_preserves_subtype_fields():
+    class _DatasetModel(BaseModel):
+        accession: str
+        source: str
+
+    payload = [
+        {
+            "accession": "GSE276986",
+            "source": "geo",
+            "pride_accession": "PXD055825",
+            "custom_dataset_note": "retained",
+        }
+    ]
+    result = views._validate_component_json("datasets", payload, mods={"Dataset": _DatasetModel})
+    assert result[0]["accession"] == "GSE276986"
+    assert result[0]["source"] == "geo"
+    assert result[0]["pride_accession"] == "PXD055825"
+    assert result[0]["custom_dataset_note"] == "retained"
+
+
+def test_orchestrator_metadata_compaction_limits_strings_lists_and_depth():
+    deep = {"a": {"b": {"c": {"d": {"e": {"f": {"g": "too deep"}}}}}}}
+    state = {
+        "dataset_parse_errors": ["x" * 5000] + [f"e{i}" for i in range(150)],
+        "workflow_graph_validation_issues": [deep],
+        "progress": 70,
+        "stage": "parsed_datasets",
+    }
+    compacted = views._extract_orchestrator_diagnostics(state)
+    errors = compacted["dataset_parse_errors"]
+    assert len(errors) == 101
+    assert errors[-1] == "...truncated"
+    assert str(errors[0]).endswith("...truncated")
+    nested = compacted["workflow_graph_validation_issues"][0]
+    assert nested["a"]["b"]["c"]["d"]["e"] == "...truncated"
 
 
 def test_normalize_orchestrator_components_rejects_bad_pipeline_shape(monkeypatch):

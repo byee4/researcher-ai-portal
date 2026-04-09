@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from django.contrib.auth import get_user_model
@@ -140,6 +141,34 @@ def test_job_status_schema_accepts_extended_review_fields():
     assert model.review_summary == {"ungrounded_count": 3}
     assert model.vision_fallback_count == 1
     assert model.vision_fallback_latency_seconds == 2.2
+
+
+def test_job_status_handles_large_diagnostics_payload_under_latency_budget(db):
+    user = get_user_model().objects.create_user("large_meta_user", password="pw")
+    large_errors = [f"error-{i}-" + ("x" * 400) for i in range(200)]
+    job_id = create_job(
+        input_type="pmid",
+        input_value="123",
+        source="123",
+        source_type="pmid",
+        llm_model="gpt-5.4",
+        user=user,
+        status="needs_human_review",
+        stage="needs_human_review",
+        job_metadata={
+            "human_review_required": True,
+            "human_review_summary": {"ungrounded_count": 2},
+            "dataset_parse_errors": large_errors,
+            "workflow_graph_validation_issues": [{"message": "m" * 2000}] * 200,
+        },
+    )
+    request = RequestFactory().get("/status")
+    request.user = user
+    started = time.perf_counter()
+    response = views.job_status(request, job_id)
+    elapsed = time.perf_counter() - started
+    assert response.status_code == 200
+    assert elapsed < 0.5
 
 
 def test_progress_template_handles_needs_human_review_terminal_state():

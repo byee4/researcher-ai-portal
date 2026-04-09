@@ -93,6 +93,9 @@ _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
 _FIGURE_PROXY_CACHE_DIR = Path(settings.MEDIA_ROOT) / "figure_proxy_cache"
 _FIGURE_PROXY_CACHE_TTL_SEC = max(60, int(os.environ.get("FIGURE_PROXY_CACHE_TTL_SEC", "604800") or "604800"))
+_ORCHESTRATOR_META_MAX_STRING_LEN = 2000
+_ORCHESTRATOR_META_MAX_LIST_LEN = 100
+_ORCHESTRATOR_META_MAX_DEPTH = 6
 
 
 def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
@@ -388,7 +391,17 @@ def _validate_component_json(step: str, payload: Any, mods: dict[str, Any]) -> A
     if step == "method":
         return mods["Method"].model_validate(payload).model_dump(mode="json")
     if step == "datasets":
-        return [mods["Dataset"].model_validate(x).model_dump(mode="json") for x in (payload or [])]
+        out: list[dict[str, Any]] = []
+        for item in (payload or []):
+            validated = mods["Dataset"].model_validate(item).model_dump(mode="json")
+            # Preserve subtype-specific dataset keys while enforcing base Dataset schema.
+            if isinstance(item, dict):
+                merged = dict(item)
+                merged.update(validated)
+                out.append(merged)
+            else:
+                out.append(validated)
+        return out
     if step == "software":
         return [mods["Software"].model_validate(x).model_dump(mode="json") for x in (payload or [])]
     if step == "pipeline":
@@ -1180,7 +1193,7 @@ class _RunnerContractError(ValueError):
 
 
 def _runner_mode() -> str:
-    mode = str(os.environ.get("RESEARCHER_AI_PORTAL_RUNNER_MODE", "legacy") or "legacy").strip().lower()
+    mode = str(os.environ.get("RESEARCHER_AI_PORTAL_RUNNER_MODE", "orchestrator") or "orchestrator").strip().lower()
     if mode not in {"legacy", "orchestrator"}:
         return "legacy"
     return mode
@@ -1222,6 +1235,12 @@ def _runtime_researcher_ai_version() -> str:
 def _report_version_drift(job_id: str, version: str) -> None:
     expected = str(os.environ.get("RESEARCHER_AI_EXPECTED_VERSION", "") or "").strip()
     if not expected:
+        _log_job_event(
+            job_id,
+            "researcher-ai version drift check disabled; set RESEARCHER_AI_EXPECTED_VERSION to enable.",
+            level="info",
+            step="paper",
+        )
         return
     if expected == version:
         return
@@ -1230,6 +1249,78 @@ def _report_version_drift(job_id: str, version: str) -> None:
         f"researcher-ai version drift detected: expected={expected}, runtime={version}",
         level="warning",
     )
+
+
+def _compact_orchestrator_metadata(
+    value: Any,
+    *,
+    max_string_len: int = _ORCHESTRATOR_META_MAX_STRING_LEN,
+    max_list_len: int = _ORCHESTRATOR_META_MAX_LIST_LEN,
+    max_depth: int = _ORCHESTRATOR_META_MAX_DEPTH,
+    _depth: int = 0,
+) -> Any:
+    if _depth >= max_depth:
+        return "...truncated"
+    if isinstance(value, str):
+        if len(value) <= max_string_len:
+            return value
+        return f"{value[:max_string_len]}...truncated"
+    if isinstance(value, list):
+        out = [
+            _compact_orchestrator_metadata(
+                item,
+                max_string_len=max_string_len,
+                max_list_len=max_list_len,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+            )
+            for item in value[:max_list_len]
+        ]
+        if len(value) > max_list_len:
+            out.append("...truncated")
+        return out
+    if isinstance(value, dict):
+        return {
+            str(k): _compact_orchestrator_metadata(
+                v,
+                max_string_len=max_string_len,
+                max_list_len=max_list_len,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+            )
+            for k, v in value.items()
+        }
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json")
+        except TypeError:
+            dumped = value.model_dump()
+        return _compact_orchestrator_metadata(
+            dumped,
+            max_string_len=max_string_len,
+            max_list_len=max_list_len,
+            max_depth=max_depth,
+            _depth=_depth + 1,
+        )
+    return value
+
+
+def _extract_orchestrator_diagnostics(state: dict[str, Any]) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    for key in (
+        "dataset_parse_errors",
+        "workflow_graph_validation_issues",
+        "method_validation_report",
+        "validation_blocked",
+        "build_attempts",
+        "max_build_attempts",
+        "stage",
+        "progress",
+    ):
+        value = state.get(key)
+        if value is not None:
+            diagnostics[key] = _compact_orchestrator_metadata(value)
+    return diagnostics
 
 
 def _normalize_orchestrator_components(
@@ -1294,7 +1385,7 @@ def _normalize_orchestrator_components(
 
 
 def _orchestrator_status_and_metadata(state: dict[str, Any], method_payload: Any) -> tuple[str, dict[str, Any]]:
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = _extract_orchestrator_diagnostics(state)
     if isinstance(method_payload, dict):
         metadata.update(_extract_method_diagnostics(method_payload))
 

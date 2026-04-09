@@ -85,8 +85,8 @@ The UI always accepts an API key per session. These env vars let the server supp
 | `RESEARCHER_AI_RAG_BASE_DIR` | Base directory for RAG persistence when using `per_job` mode | `/tmp` |
 | `RESEARCHER_AI_BIOWORKFLOW_MODE` | BioWorkflow rollout mode: `off`, `warn`, `on` | `warn` |
 | `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` | Hard cap for retrieval refinement rounds in method parsing | parser default |
-| `RESEARCHER_AI_PORTAL_RUNNER_MODE` | Portal full-run execution adapter mode: `legacy` or `orchestrator` | `legacy` |
-| `RESEARCHER_AI_EXPECTED_VERSION` | Optional expected `researcher-ai` version for startup drift warnings | unset |
+| `RESEARCHER_AI_PORTAL_RUNNER_MODE` | Portal full-run execution adapter mode: `orchestrator` or `legacy` | `orchestrator` |
+| `RESEARCHER_AI_EXPECTED_VERSION` | Optional expected `researcher-ai` version for runtime drift checks (recommended in shared/dev/prod envs) | unset |
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_SOFT_TIMEOUT_SECONDS` | Soft timeout warning threshold for orchestrator runner | `3600` |
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_HARD_TIMEOUT_SECONDS` | Hard timeout for orchestrator runner (fails job when exceeded) | `7200` |
 | `RESEARCHER_AI_PORTAL_LEGACY_SOFT_TIMEOUT_SECONDS` | Soft timeout warning threshold for legacy runner | `5400` |
