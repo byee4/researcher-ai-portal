@@ -8,6 +8,7 @@ import threading
 import time
 import base64
 import hashlib
+from datetime import datetime, timezone
 from html import unescape
 from contextlib import contextmanager
 from pathlib import Path
@@ -84,10 +85,28 @@ _PMC_FETCH_HEADERS = {
 _PRIMARY_FIG_ID_RE = re.compile(r"(?i)\b(?:figure|fig\.?)\s*(\d{1,3})\b")
 _SUPP_FIG_ID_RE = re.compile(r"(?i)\b(?:supplementary|supp\.?)\s*(?:figure|fig\.?)\s*(?:s)?(\d{1,3})\b")
 _EXT_DATA_FIG_ID_RE = re.compile(r"(?i)\bextended\s+data\s+(?:figure|fig\.?)\s*(\d{1,3})\b")
+_VISION_FALLBACK_WARN_RE = re.compile(
+    r"paper_rag_vision_fallback:\s*count\s*=\s*(\d+)\s+latency_seconds\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
+_BIOWORKFLOW_BLOCKED_RE = re.compile(r"bioworkflow_blocked:.*?ungrounded_fields\s*=\s*(\d+)", re.IGNORECASE)
+_RAG_RETRIEVAL_ROUNDS_RE = re.compile(r"retrieval(?:_refinement)?[_\s-]*rounds?\s*[:=]\s*(\d+)", re.IGNORECASE)
+_RAG_RETRIEVED_CHUNKS_RE = re.compile(
+    r"(?:retrieved|retrieval)[_\s-]*(?:chunks?|docs?|documents?)\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
+_RAG_CONTEXT_TOKENS_RE = re.compile(
+    r"(?:total[_\s-]*)?context[_\s-]*tokens?(?:_est)?\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
 _LLM_ENV_LOCK = threading.RLock()
 _SESSION_LLM_API_KEY_FIELD = "llm_api_key_enc"
 _FIGURE_PROXY_CACHE_DIR = Path(settings.MEDIA_ROOT) / "figure_proxy_cache"
 _FIGURE_PROXY_CACHE_TTL_SEC = max(60, int(os.environ.get("FIGURE_PROXY_CACHE_TTL_SEC", "604800") or "604800"))
+_ORCHESTRATOR_META_MAX_STRING_LEN = 2000
+_ORCHESTRATOR_META_MAX_LIST_LEN = 100
+_ORCHESTRATOR_META_MAX_DEPTH = 6
+_STUCK_JOB_TIMEOUT_SECONDS = 600
 
 
 def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
@@ -307,6 +326,228 @@ def _component_status(step: str, payload: Any) -> tuple[str, list[str]]:
     return "found", []
 
 
+def _parse_vision_fallback_warning(warning: Any) -> dict[str, Any] | None:
+    text = " ".join(str(warning or "").split())
+    if not text:
+        return None
+    match = _VISION_FALLBACK_WARN_RE.search(text)
+    if not match:
+        return None
+    try:
+        return {
+            "vision_fallback_count": int(match.group(1)),
+            "vision_fallback_latency_seconds": float(match.group(2)),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_human_review_summary_from_warnings(parse_warnings: list[Any]) -> dict[str, Any] | None:
+    for warning in parse_warnings:
+        text = " ".join(str(warning or "").split())
+        match = _BIOWORKFLOW_BLOCKED_RE.search(text)
+        if not match:
+            continue
+        ungrounded_count = int(match.group(1))
+        return {
+            "reason": "validation_blocked",
+            "ungrounded_count": ungrounded_count,
+            "ungrounded_fields": [],
+            "recommended_action": (
+                "Provide missing parameters manually or switch "
+                "RESEARCHER_AI_BIOWORKFLOW_MODE=warn to continue with flagged defaults."
+            ),
+        }
+    return None
+
+
+def _extract_method_diagnostics(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    out: dict[str, Any] = {}
+    parse_warnings = list(payload.get("parse_warnings") or [])
+
+    total_fallback_count = 0
+    total_fallback_latency = 0.0
+    for warning in parse_warnings:
+        parsed = _parse_vision_fallback_warning(warning)
+        if parsed is None:
+            continue
+        total_fallback_count += int(parsed["vision_fallback_count"])
+        total_fallback_latency += float(parsed["vision_fallback_latency_seconds"])
+    if total_fallback_count > 0:
+        out["vision_fallback_count"] = total_fallback_count
+        out["vision_fallback_latency_seconds"] = round(total_fallback_latency, 3)
+
+    explicit_review_required = bool(payload.get("human_review_required", False))
+    explicit_review_summary = payload.get("human_review_summary")
+    derived_review_summary = _derive_human_review_summary_from_warnings(parse_warnings)
+    review_required = explicit_review_required or derived_review_summary is not None
+    if review_required:
+        out["human_review_required"] = True
+    if isinstance(explicit_review_summary, dict):
+        out["human_review_summary"] = explicit_review_summary
+    elif isinstance(derived_review_summary, dict):
+        out["human_review_summary"] = derived_review_summary
+
+    return out
+
+
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rag_phase_for_message(message: str) -> str:
+    text = str(message or "").strip().lower()
+    if not text:
+        return "post_parse_validation"
+    if "indexing" in text or "rag index" in text:
+        return "indexing"
+    if "retriev" in text or "context" in text:
+        return "retrieval"
+    if "prompt" in text:
+        return "prompt_assembly"
+    if "llm" in text or "sending methods extraction request" in text or "response received" in text:
+        return "generation"
+    return "post_parse_validation"
+
+
+def _extract_retrieval_metrics(parse_warnings: list[Any], parse_logs: list[dict[str, Any]]) -> dict[str, Any]:
+    retrieval_rounds: int | None = None
+    retrieved_chunk_count: int | None = None
+    total_context_tokens_est: int | None = None
+
+    texts: list[str] = [str(w or "") for w in parse_warnings]
+    for entry in parse_logs:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("step") or "") != "method":
+            continue
+        texts.append(str(entry.get("message") or ""))
+
+    for text in texts:
+        for rx, key in (
+            (_RAG_RETRIEVAL_ROUNDS_RE, "retrieval_rounds"),
+            (_RAG_RETRIEVED_CHUNKS_RE, "retrieved_chunk_count"),
+            (_RAG_CONTEXT_TOKENS_RE, "total_context_tokens_est"),
+        ):
+            match = rx.search(text)
+            if not match:
+                continue
+            val = _safe_int(match.group(1), 0)
+            if key == "retrieval_rounds":
+                retrieval_rounds = val
+            elif key == "retrieved_chunk_count":
+                retrieved_chunk_count = val
+            elif key == "total_context_tokens_est":
+                total_context_tokens_est = val
+
+    return {
+        "rounds": retrieval_rounds,
+        "retrieved_chunk_count": retrieved_chunk_count,
+        "total_context_tokens_est": total_context_tokens_est,
+    }
+
+
+def _timeline_event_from_log(entry: dict[str, Any]) -> dict[str, Any]:
+    message = str(entry.get("message") or "")
+    return {
+        "ts": str(entry.get("ts") or _iso_utc_now()),
+        "phase": _rag_phase_for_message(message),
+        "level": str(entry.get("level") or "info"),
+        "message": message,
+        "source": "parse_log",
+    }
+
+
+def build_rag_workflow_payload(job: dict[str, Any]) -> dict[str, Any]:
+    """Normalize RAG workflow metadata + method logs into a stable payload."""
+    metadata = dict(job.get("job_metadata") or {})
+    rag = metadata.get("rag_workflow") if isinstance(metadata.get("rag_workflow"), dict) else {}
+    components = job.get("components") or {}
+    method_payload = components.get("method") if isinstance(components.get("method"), dict) else {}
+    parse_warnings = list((method_payload or {}).get("parse_warnings") or [])
+    method_logs = [
+        x for x in (job.get("parse_logs") or [])
+        if isinstance(x, dict) and str(x.get("step") or "") == "method"
+    ]
+
+    events = [
+        {
+            "ts": str(ev.get("ts") or _iso_utc_now()),
+            "phase": str(ev.get("phase") or "post_parse_validation"),
+            "level": str(ev.get("level") or "info"),
+            "message": str(ev.get("message") or ""),
+            "source": "telemetry",
+        }
+        for ev in (rag.get("events") or [])
+        if isinstance(ev, dict)
+    ]
+    timeline = [*events, *[_timeline_event_from_log(e) for e in method_logs]]
+    timeline.sort(key=lambda row: str(row.get("ts") or ""))
+
+    assays = ((method_payload or {}).get("assay_graph") or {}).get("assays") or []
+    diagnostics = _extract_method_diagnostics(method_payload)
+    retrieval = dict(rag.get("retrieval") or {})
+    inferred_retrieval = _extract_retrieval_metrics(parse_warnings, method_logs)
+    retrieval.setdefault("rounds", inferred_retrieval.get("rounds"))
+    retrieval.setdefault("retrieved_chunk_count", inferred_retrieval.get("retrieved_chunk_count"))
+    retrieval.setdefault("total_context_tokens_est", inferred_retrieval.get("total_context_tokens_est"))
+
+    result = dict(rag.get("result") or {})
+    result.setdefault("assay_count", len(assays))
+    result.setdefault("parse_warning_count", len(parse_warnings))
+    result.setdefault(
+        "review_required",
+        bool(result.get("review_required"))
+        or bool(diagnostics.get("human_review_required"))
+        or bool(metadata.get("human_review_required")),
+    )
+
+    out = {
+        "mode": str(rag.get("mode") or "per_job"),
+        "indexing": {
+            "section_count": _safe_int((rag.get("indexing") or {}).get("section_count"), 0),
+            "figure_caption_count": _safe_int((rag.get("indexing") or {}).get("figure_caption_count"), 0),
+            "started_at": (rag.get("indexing") or {}).get("started_at"),
+            "finished_at": (rag.get("indexing") or {}).get("finished_at"),
+            "duration_s": _safe_float((rag.get("indexing") or {}).get("duration_s"), None),
+        },
+        "retrieval": {
+            "rounds": retrieval.get("rounds"),
+            "retrieved_chunk_count": retrieval.get("retrieved_chunk_count"),
+            "total_context_tokens_est": retrieval.get("total_context_tokens_est"),
+        },
+        "generation": {
+            "model": str((rag.get("generation") or {}).get("model") or (job.get("llm_model") or "")),
+            "started_at": (rag.get("generation") or {}).get("started_at"),
+            "finished_at": (rag.get("generation") or {}).get("finished_at"),
+            "duration_s": _safe_float((rag.get("generation") or {}).get("duration_s"), None),
+        },
+        "result": result,
+        "events": events,
+        "timeline": timeline,
+        "diagnostics": diagnostics,
+        "has_telemetry": bool(rag),
+    }
+    return out
+
+
 def _validate_component_json(step: str, payload: Any, mods: dict[str, Any]) -> Any:
     if step == "paper":
         return mods["Paper"].model_validate(payload).model_dump(mode="json")
@@ -315,7 +556,17 @@ def _validate_component_json(step: str, payload: Any, mods: dict[str, Any]) -> A
     if step == "method":
         return mods["Method"].model_validate(payload).model_dump(mode="json")
     if step == "datasets":
-        return [mods["Dataset"].model_validate(x).model_dump(mode="json") for x in (payload or [])]
+        out: list[dict[str, Any]] = []
+        for item in (payload or []):
+            validated = mods["Dataset"].model_validate(item).model_dump(mode="json")
+            # Preserve subtype-specific dataset keys while enforcing base Dataset schema.
+            if isinstance(item, dict):
+                merged = dict(item)
+                merged.update(validated)
+                out.append(merged)
+            else:
+                out.append(validated)
+        return out
     if step == "software":
         return [mods["Software"].model_validate(x).model_dump(mode="json") for x in (payload or [])]
     if step == "pipeline":
@@ -1096,6 +1347,338 @@ def _persist_component(job_id: str, step: str, payload: Any, source: str) -> Non
         "source": source,
     }
     update_job(job_id, components=comps, component_meta=meta)
+    if step == "method":
+        diagnostics = _extract_method_diagnostics(payload)
+        if diagnostics:
+            update_job(job_id, job_metadata=diagnostics)
+
+
+class _RunnerContractError(ValueError):
+    """Raised when adapter output cannot satisfy the portal component contract."""
+
+
+def _runner_mode() -> str:
+    mode = str(os.environ.get("RESEARCHER_AI_PORTAL_RUNNER_MODE", "orchestrator") or "orchestrator").strip().lower()
+    if mode not in {"legacy", "orchestrator"}:
+        return "legacy"
+    return mode
+
+
+def _runner_timeout_seconds(mode: str) -> float:
+    if mode == "orchestrator":
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_ORCHESTRATOR_HARD_TIMEOUT_SECONDS", "7200")
+    else:
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_LEGACY_HARD_TIMEOUT_SECONDS", "10800")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 7200.0 if mode == "orchestrator" else 10800.0
+    return max(60.0, value)
+
+
+def _runner_soft_timeout_seconds(mode: str) -> float:
+    if mode == "orchestrator":
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_ORCHESTRATOR_SOFT_TIMEOUT_SECONDS", "3600")
+    else:
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_LEGACY_SOFT_TIMEOUT_SECONDS", "5400")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 3600.0 if mode == "orchestrator" else 5400.0
+    return max(30.0, value)
+
+
+def _runtime_researcher_ai_version() -> str:
+    try:
+        import researcher_ai  # type: ignore
+
+        return str(getattr(researcher_ai, "__version__", "unknown") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _report_version_drift(job_id: str, version: str) -> None:
+    expected = str(os.environ.get("RESEARCHER_AI_EXPECTED_VERSION", "") or "").strip()
+    if not expected:
+        _log_job_event(
+            job_id,
+            "researcher-ai version drift check disabled; set RESEARCHER_AI_EXPECTED_VERSION to enable.",
+            level="info",
+            step="paper",
+        )
+        return
+    if expected == version:
+        return
+    _log_job_event(
+        job_id,
+        f"researcher-ai version drift detected: expected={expected}, runtime={version}",
+        level="warning",
+    )
+
+
+def _compact_orchestrator_metadata(
+    value: Any,
+    *,
+    max_string_len: int = _ORCHESTRATOR_META_MAX_STRING_LEN,
+    max_list_len: int = _ORCHESTRATOR_META_MAX_LIST_LEN,
+    max_depth: int = _ORCHESTRATOR_META_MAX_DEPTH,
+    _depth: int = 0,
+) -> Any:
+    if _depth >= max_depth:
+        return "...truncated"
+    if isinstance(value, str):
+        if len(value) <= max_string_len:
+            return value
+        return f"{value[:max_string_len]}...truncated"
+    if isinstance(value, list):
+        out = [
+            _compact_orchestrator_metadata(
+                item,
+                max_string_len=max_string_len,
+                max_list_len=max_list_len,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+            )
+            for item in value[:max_list_len]
+        ]
+        if len(value) > max_list_len:
+            out.append("...truncated")
+        return out
+    if isinstance(value, dict):
+        return {
+            str(k): _compact_orchestrator_metadata(
+                v,
+                max_string_len=max_string_len,
+                max_list_len=max_list_len,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+            )
+            for k, v in value.items()
+        }
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json")
+        except TypeError:
+            dumped = value.model_dump()
+        return _compact_orchestrator_metadata(
+            dumped,
+            max_string_len=max_string_len,
+            max_list_len=max_list_len,
+            max_depth=max_depth,
+            _depth=_depth + 1,
+        )
+    return value
+
+
+def _extract_orchestrator_diagnostics(state: dict[str, Any]) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    for key in (
+        "dataset_parse_errors",
+        "workflow_graph_validation_issues",
+        "method_validation_report",
+        "validation_blocked",
+        "build_attempts",
+        "max_build_attempts",
+        "stage",
+        "progress",
+    ):
+        value = state.get(key)
+        if value is not None:
+            diagnostics[key] = _compact_orchestrator_metadata(value)
+    return diagnostics
+
+
+def _stuck_job_timeout_seconds() -> float:
+    raw = os.environ.get("RESEARCHER_AI_PORTAL_STUCK_JOB_TIMEOUT_SECONDS", str(_STUCK_JOB_TIMEOUT_SECONDS))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = float(_STUCK_JOB_TIMEOUT_SECONDS)
+    return max(60.0, value)
+
+
+def _maybe_fail_stuck_job(job_id: str, *, user: Any, job: dict[str, Any]) -> dict[str, Any]:
+    if str(job.get("status") or "") != "in_progress":
+        return job
+    row = WorkflowJob.objects.filter(id=job_id, user=user).first()
+    if row is None or row.updated_at is None:
+        return job
+    age_seconds = (time.time() - row.updated_at.timestamp())
+    threshold = _stuck_job_timeout_seconds()
+    if age_seconds <= threshold:
+        return job
+    reason = (
+        f"Run stalled with no job updates for {int(age_seconds)}s (> {int(threshold)}s). "
+        "This often happens when a background parser thread is interrupted (for example during server reload). "
+        "Please retry the parse."
+    )
+    update_job(
+        job_id,
+        user=user,
+        status="failed",
+        stage="Run stalled — retry required",
+        error=reason,
+        job_metadata={
+            "stalled_run_detected": True,
+            "stalled_seconds_without_update": int(age_seconds),
+            "stalled_timeout_seconds": int(threshold),
+        },
+    )
+    _log_job_event(job_id, reason, level="warning", step=str(job.get("current_step") or "paper"))
+    return get_job(job_id, user=user) or job
+
+
+def _normalize_orchestrator_components(
+    state: dict[str, Any],
+    mods: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize orchestrator state into portal component payloads.
+
+    Raises _RunnerContractError when a required shape cannot be validated.
+    """
+
+    def _dump(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            out: list[Any] = []
+            for item in value:
+                out.append(item.model_dump(mode="json") if hasattr(item, "model_dump") else item)
+            return out
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        return value
+
+    raw_components: dict[str, Any] = {
+        "paper": _dump(state.get("paper")),
+        "figures": _dump(state.get("figures")),
+        "method": _dump(state.get("method")),
+        "datasets": _dump(state.get("datasets")),
+        "software": _dump(state.get("software")),
+        "pipeline": _dump(state.get("pipeline")),
+    }
+    components: dict[str, Any] = {}
+    for step in STEP_ORDER:
+        payload = raw_components.get(step)
+        if payload is None:
+            continue
+        try:
+            validated = _validate_component_json(step, payload, mods)
+        except Exception as exc:
+            raise _RunnerContractError(
+                f"contract_validation_failed:{step}: {type(exc).__name__}: {exc}"
+            ) from exc
+        components[step] = validated
+
+    method_payload = components.get("method")
+    if method_payload is not None:
+        assay_graph = (method_payload or {}).get("assay_graph") or {}
+        if not isinstance(assay_graph.get("assays"), list):
+            raise _RunnerContractError("contract_validation_failed:method.assay_graph.assays must be a list")
+        if not isinstance(assay_graph.get("dependencies"), list):
+            raise _RunnerContractError("contract_validation_failed:method.assay_graph.dependencies must be a list")
+
+    pipeline_payload = components.get("pipeline")
+    if pipeline_payload is not None:
+        config = (pipeline_payload or {}).get("config") or {}
+        if not isinstance(config, dict):
+            raise _RunnerContractError("contract_validation_failed:pipeline.config must be an object")
+        if not isinstance(config.get("steps"), list):
+            raise _RunnerContractError("contract_validation_failed:pipeline.config.steps must be a list")
+
+    return components
+
+
+def _orchestrator_status_and_metadata(state: dict[str, Any], method_payload: Any) -> tuple[str, dict[str, Any]]:
+    metadata: dict[str, Any] = _extract_orchestrator_diagnostics(state)
+    if isinstance(method_payload, dict):
+        metadata.update(_extract_method_diagnostics(method_payload))
+
+    if bool(state.get("human_review_required", False)):
+        metadata["human_review_required"] = True
+        summary = state.get("human_review_summary")
+        if isinstance(summary, dict):
+            metadata["human_review_summary"] = summary
+        return "needs_human_review", metadata
+
+    stage = str(state.get("stage") or "").strip().lower()
+    if stage == "needs_human_review":
+        metadata["human_review_required"] = True
+        summary = state.get("human_review_summary")
+        if isinstance(summary, dict):
+            metadata["human_review_summary"] = summary
+        return "needs_human_review", metadata
+
+    if state.get("pipeline") is not None:
+        return "completed", metadata
+    return "failed", metadata
+
+
+def _run_orchestrator_job(
+    job_id: str,
+    *,
+    llm_api_key: str,
+    llm_model: str,
+) -> None:
+    job = get_job(job_id)
+    if job is None:
+        raise Http404("Unknown job id")
+    if llm_model:
+        job["llm_model"] = llm_model
+    if llm_api_key:
+        job["llm_api_key"] = llm_api_key
+
+    update_job(job_id, status="in_progress", current_step="paper", stage="Running WorkflowOrchestrator", progress=0)
+    _log_job_event(job_id, "WorkflowOrchestrator run started", step="paper")
+
+    mods = _import_runtime_modules()
+    with _llm_env(job):
+        from researcher_ai.models.paper import PaperSource
+        from researcher_ai.pipeline.orchestrator import WorkflowOrchestrator
+
+        source_type_key = str(job.get("source_type") or "pmid").strip().lower()
+        source_type = PaperSource.PMID
+        if source_type_key == "pdf":
+            source_type = PaperSource.PDF
+        elif source_type_key == "pmcid":
+            source_type = PaperSource.PMCID
+        elif source_type_key == "doi":
+            source_type = PaperSource.DOI
+        elif source_type_key == "url":
+            source_type = PaperSource.URL
+
+        orchestrator = WorkflowOrchestrator()
+        state = orchestrator.run(str(job.get("source") or ""), source_type=source_type)
+
+    components = _normalize_orchestrator_components(state, mods)
+    for step in STEP_ORDER:
+        if step in components:
+            _persist_component(job_id, step, components[step], "parsed_orchestrator")
+
+    status, metadata = _orchestrator_status_and_metadata(state, components.get("method"))
+    if status == "needs_human_review":
+        update_job(
+            job_id,
+            status="needs_human_review",
+            current_step="pipeline",
+            progress=100,
+            stage="needs_human_review",
+            job_metadata=metadata,
+        )
+        _log_job_event(job_id, "WorkflowOrchestrator requires human review", step="pipeline", level="warning")
+        return
+    if status == "completed":
+        update_job(
+            job_id,
+            status="completed",
+            current_step="pipeline",
+            progress=100,
+            stage="All steps complete — ready for review",
+            job_metadata=metadata,
+        )
+        _log_job_event(job_id, "WorkflowOrchestrator completed full parse", step="pipeline")
+        return
+    raise _RunnerContractError("orchestrator_result_missing_pipeline")
 
 
 def _run_step(
@@ -1268,12 +1851,35 @@ def _run_step(
             rag_base = str(os.environ.get("RESEARCHER_AI_RAG_BASE_DIR", "") or "").strip()
             n_sections = len(paper.sections or [])
             n_figs = len(figures or [])
+            indexing_started_at = _iso_utc_now()
+            indexing_started_monotonic = time.monotonic()
+            rag_events: list[dict[str, Any]] = []
+            rag_events.append(
+                {
+                    "ts": indexing_started_at,
+                    "phase": "indexing",
+                    "level": "info",
+                    "message": f"Indexing {n_sections} paper sections + {n_figs} figure captions into RAG store",
+                }
+            )
             _log_job_event(
                 job_id,
                 f"Indexing {n_sections} paper sections + {n_figs} figure captions into RAG store",
                 step=step,
             )
             update_job(job_id, stage="Methods: Building RAG index")
+            indexing_finished_at = _iso_utc_now()
+            indexing_duration_s = round(max(0.0, time.monotonic() - indexing_started_monotonic), 3)
+            generation_started_at = _iso_utc_now()
+            generation_started_monotonic = time.monotonic()
+            rag_events.append(
+                {
+                    "ts": generation_started_at,
+                    "phase": "generation",
+                    "level": "info",
+                    "message": f"Sending methods extraction request to {model}",
+                }
+            )
             if rag_mode == "shared":
                 if rag_base:
                     shared_dir = Path(rag_base).expanduser().resolve()
@@ -1296,10 +1902,62 @@ def _run_step(
                     update_job(job_id, stage="Methods: Sending LLM request (may take 3–10 min)")
                     _log_job_event(job_id, f"Sending methods extraction request to {model}…", step=step)
                     method = parser.parse(paper, figures=figures, computational_only=True)
+            generation_finished_at = _iso_utc_now()
+            generation_duration_s = round(max(0.0, time.monotonic() - generation_started_monotonic), 3)
             n_assays = len((method.assay_graph.assays if hasattr(method, "assay_graph") and method.assay_graph else []) or [])
             _log_job_event(job_id, f"LLM response received — {n_assays} assay(s) extracted", step=step)
             update_job(job_id, stage="Methods: Persisting results")
-            _persist_component(job_id, "method", method.model_dump(mode="json"), "parsed")
+            method_payload = method.model_dump(mode="json")
+            _persist_component(job_id, "method", method_payload, "parsed")
+            parse_warnings = list(method_payload.get("parse_warnings") or [])
+            retrieval = _extract_retrieval_metrics(parse_warnings, (get_job(job_id) or {}).get("parse_logs") or [])
+            diagnostics = _extract_method_diagnostics(method_payload)
+            rag_events.append(
+                {
+                    "ts": generation_finished_at,
+                    "phase": "post_parse_validation",
+                    "level": "info",
+                    "message": f"LLM response received — {n_assays} assay(s) extracted",
+                }
+            )
+            for warning in parse_warnings:
+                rag_events.append(
+                    {
+                        "ts": _iso_utc_now(),
+                        "phase": "post_parse_validation",
+                        "level": "warning",
+                        "message": str(warning),
+                    }
+                )
+            rag_events.sort(key=lambda row: str(row.get("ts") or ""))
+            update_job(
+                job_id,
+                job_metadata={
+                    "rag_workflow": {
+                        "mode": rag_mode,
+                        "indexing": {
+                            "section_count": n_sections,
+                            "figure_caption_count": n_figs,
+                            "started_at": indexing_started_at,
+                            "finished_at": indexing_finished_at,
+                            "duration_s": indexing_duration_s,
+                        },
+                        "retrieval": retrieval,
+                        "generation": {
+                            "model": str(model or ""),
+                            "started_at": generation_started_at,
+                            "finished_at": generation_finished_at,
+                            "duration_s": generation_duration_s,
+                        },
+                        "result": {
+                            "assay_count": n_assays,
+                            "parse_warning_count": len(parse_warnings),
+                            "review_required": bool(diagnostics.get("human_review_required", False)),
+                        },
+                        "events": rag_events,
+                    }
+                },
+            )
             _log_job_event(job_id, "Methods parsing complete", step=step)
             return
 
@@ -1371,6 +2029,19 @@ def _run_step(
 
         software = _typed_component(job, "software", mods) or []
         if step == "pipeline":
+            method_payload = method.model_dump(mode="json") if method is not None else {}
+            method_diagnostics = _extract_method_diagnostics(method_payload)
+            if method_diagnostics.get("human_review_required", False):
+                update_job(
+                    job_id,
+                    status="needs_human_review",
+                    current_step=step,
+                    progress=100,
+                    stage="needs_human_review",
+                    job_metadata=method_diagnostics,
+                )
+                _log_job_event(job_id, "Pipeline build blocked: human review required.", step=step, level="warning")
+                return
             _log_job_event(job_id, "Building pipeline from parsed components", step=step)
             update_job(job_id, stage=f"Pipeline: Sending LLM request to {model}…")
             _log_job_event(
@@ -1408,32 +2079,81 @@ def _run_all_steps_async(
     Progress, stage, and log events are written to the job store so the
     ``/jobs/<id>/status/`` endpoint can stream them to the progress page.
     """
+    mode = _runner_mode()
+    version = _runtime_researcher_ai_version()
+    _report_version_drift(job_id, version)
+    _log_job_event(job_id, f"Runner selected: {mode} (researcher-ai {version})", step="paper")
+
+    started_at = time.monotonic()
+    soft_timeout = _runner_soft_timeout_seconds(mode)
+    hard_timeout = _runner_timeout_seconds(mode)
+    _log_job_event(
+        job_id,
+        f"Runner limits: soft={int(soft_timeout)}s hard={int(hard_timeout)}s",
+        step="paper",
+    )
     try:
-        for step in STEP_ORDER:
-            # Bail out if the job was explicitly failed or deleted externally
-            job = get_job(job_id)
-            if job is None:
-                return
-            if str(job.get("status") or "") == "failed":
-                return
-            _dispatch_workflow_step(
+        if mode == "orchestrator" and force_reparse:
+            # Orchestrator is full-run authoritative and does not support cache bypass semantics.
+            _log_job_event(
                 job_id,
-                step,
+                "force_reparse requested; orchestrator mode currently ignores per-step cache bypass.",
+                level="warning",
+                step="paper",
+            )
+
+        if mode == "orchestrator":
+            _run_orchestrator_job(
+                job_id,
                 llm_api_key=llm_api_key,
                 llm_model=llm_model,
-                force_reparse=force_reparse,
             )
-        # All six steps finished successfully
-        update_job(
-            job_id,
-            status="completed",
-            progress=100,
-            stage="All steps complete — ready for review",
-        )
-        _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
+        else:
+            for step in STEP_ORDER:
+                # Bail out if the job was explicitly failed or deleted externally
+                job = get_job(job_id)
+                if job is None:
+                    return
+                if str(job.get("status") or "") in {"failed", "needs_human_review"}:
+                    return
+                _dispatch_workflow_step(
+                    job_id,
+                    step,
+                    llm_api_key=llm_api_key,
+                    llm_model=llm_model,
+                    force_reparse=force_reparse,
+                )
+            # All six steps finished successfully
+            final_job = get_job(job_id) or {}
+            if str(final_job.get("status") or "") != "needs_human_review":
+                update_job(
+                    job_id,
+                    status="completed",
+                    progress=100,
+                    stage="All steps complete — ready for review",
+                )
+        elapsed = time.monotonic() - started_at
+        if elapsed > soft_timeout:
+            _log_job_event(
+                job_id,
+                f"Runner exceeded soft timeout ({int(elapsed)}s > {int(soft_timeout)}s)",
+                level="warning",
+                step="pipeline",
+            )
+        if elapsed > hard_timeout:
+            raise TimeoutError(f"runner hard timeout exceeded ({int(elapsed)}s > {int(hard_timeout)}s)")
+        if str((get_job(job_id) or {}).get("status") or "") == "needs_human_review":
+            _log_job_event(job_id, "Pipeline paused for required human review.", step="pipeline", level="warning")
+        else:
+            _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
+    except TimeoutError as exc:
+        user_error = _humanize_step_error(exc)
+        update_job(job_id, status="failed", stage="Pipeline timed out", error=user_error)
+        _log_job_event(job_id, f"Pipeline run timed out: {user_error}", level="error", step="pipeline")
     except Exception as exc:
         # _dispatch_workflow_step already marks the job as failed and logs the
         # step-level error; log an extra top-level note for clarity.
+        update_job(job_id, status="failed", stage="Pipeline failed", error=_humanize_step_error(exc))
         _log_job_event(
             job_id,
             f"Pipeline run aborted: {exc}",
@@ -1577,6 +2297,7 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
     summary["overall_confidence"] = confidence.get("overall", 50.0)
 
     actionable_items = compute_actionable_items(result, confidence)
+    job_metadata = dict(job.get("job_metadata") or {})
 
     # Per-step confidence summary keyed by step name — used by the stepper
     # to colour-code circles on both workflow_step.html and dashboard.html.
@@ -1616,6 +2337,11 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
         "pipeline": pipeline,
         "confidence": confidence,
         "actionable_items": actionable_items,
+        "job_metadata": job_metadata,
+        "review_required": bool(job_metadata.get("human_review_required", False)),
+        "review_summary": job_metadata.get("human_review_summary"),
+        "vision_fallback_count": job_metadata.get("vision_fallback_count"),
+        "vision_fallback_latency_seconds": job_metadata.get("vision_fallback_latency_seconds"),
         "step_confidence_scores": step_confidence_scores,
         "step_action_counts": step_action_counts,
         "summary": summary,
@@ -1648,6 +2374,11 @@ def _dispatch_workflow_step(
             llm_model=llm_model,
             force_reparse=force_reparse,
         )
+        refreshed = get_job(job_id) or {}
+        if str(refreshed.get("status") or "") == "needs_human_review":
+            update_job(job_id, current_step=step, progress=100, stage="needs_human_review")
+            _log_job_event(job_id, "Step ended with human review required.", step=step, level="warning")
+            return
         progress = _progress_for_step(step)
         update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
         _log_job_event(job_id, f"Step completed: {label}", step=step)
@@ -1669,7 +2400,9 @@ def _dispatch_rebuild(job_id: str, edited_step: str, *, llm_api_key: str, llm_mo
             force_reparse=False,
         )
     if dirty_steps:
-        update_job(job_id, status="in_progress", current_step=dirty_steps[-1])
+        refreshed = get_job(job_id) or {}
+        if str(refreshed.get("status") or "") != "needs_human_review":
+            update_job(job_id, status="in_progress", current_step=dirty_steps[-1])
 
 
 def _infer_last_edited_step(job: dict[str, Any]) -> str:
@@ -1828,6 +2561,7 @@ def parse_progress(request, job_id: str):
     job = get_job(job_id, user=request.user)
     if job is None:
         raise Http404("Unknown job id")
+    job = _maybe_fail_stuck_job(job_id, user=request.user, job=job)
 
     # Build the stage list for the stepper indicators
     stages = [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER]
@@ -1848,10 +2582,30 @@ def parse_progress(request, job_id: str):
 
 @login_required
 @require_GET
+def rag_workflow(request, job_id: str):
+    job = get_job(job_id, user=request.user)
+    if job is None:
+        raise Http404("Unknown job id")
+    context = _dashboard_context(job)
+    rag_payload = build_rag_workflow_payload(job)
+    context.update(
+        {
+            "job_id": job_id,
+            "rag_workflow": rag_payload,
+            "rag_workflow_json": rag_payload,
+        }
+    )
+    return render(request, "researcher_ai_portal/rag_workflow.html", context)
+
+
+@login_required
+@require_GET
 def job_status(request, job_id: str):
     job = get_job(job_id, user=request.user)
     if job is None:
         return JsonResponse({"error": "unknown job"}, status=404)
+    job = _maybe_fail_stuck_job(job_id, user=request.user, job=job)
+    job_metadata = dict(job.get("job_metadata") or {})
     payload = {
         "job_id": job["job_id"],
         "status": job.get("status", "in_progress"),
@@ -1863,6 +2617,10 @@ def job_status(request, job_id: str):
         "figure_parse_total": job.get("figure_parse_total", 0),
         # Phase 5: include component_meta for the progress page completion stepper
         "component_meta": job.get("component_meta") or {},
+        "review_required": bool(job_metadata.get("human_review_required", False)) or None,
+        "review_summary": job_metadata.get("human_review_summary"),
+        "vision_fallback_count": job_metadata.get("vision_fallback_count"),
+        "vision_fallback_latency_seconds": job_metadata.get("vision_fallback_latency_seconds"),
     }
     payload = merge_logs(payload, job_id)
     return JsonResponse(payload)
@@ -2023,6 +2781,7 @@ def workflow_step(request, job_id: str, step: str):
             error = str(exc)
 
     job = get_job(job_id, user=request.user) or job
+    job_metadata = dict(job.get("job_metadata") or {})
     component = (job.get("components") or {}).get(step)
     component_meta = (job.get("component_meta") or {}).get(step, {"status": "missing", "missing": [], "source": "none"})
     figures_for_ui = _sort_figures_and_panels_alphanumerically((job.get("components") or {}).get("figures") or [])
@@ -2131,6 +2890,10 @@ def workflow_step(request, job_id: str, step: str):
             "error": error,
             "info": info,
             "status_url": reverse("job_status", kwargs={"job_id": job_id}),
+            "review_required": bool(job_metadata.get("human_review_required", False)),
+            "review_summary": job_metadata.get("human_review_summary"),
+            "vision_fallback_count": job_metadata.get("vision_fallback_count"),
+            "vision_fallback_latency_seconds": job_metadata.get("vision_fallback_latency_seconds"),
         },
     )
 

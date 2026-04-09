@@ -64,6 +64,20 @@ def run_workflow_step(
             llm_model=llm_model,
             force_reparse=force_reparse,
         )
+        refreshed_job = get_job(job_id) or {}
+        if str(refreshed_job.get("status") or "") == "needs_human_review":
+            review_payload = {
+                "status": "needs_human_review",
+                "progress": refreshed_job.get("progress", 100),
+                "stage": refreshed_job.get("stage", "needs_human_review"),
+                "current_step": step,
+                "user_id": user_id,
+                "review_required": True,
+                "review_summary": (refreshed_job.get("job_metadata") or {}).get("human_review_summary"),
+            }
+            cache.set(_cache_key(job_id), merge_logs(review_payload, job_id), timeout=3600)
+            append_job_log(job_id, f"Step requires human review: {label}", level="warning", step=step)
+            return {"ok": True, "job_id": job_id, "step": step, "review_required": True}
         progress = _progress_for_step(step)
         update_job(job_id, status="in_progress", current_step=step, progress=progress, stage=f"Completed {label}")
         append_job_log(job_id, f"Step completed: {label}", step=step)
@@ -106,5 +120,7 @@ def rebuild_from_step(
     for step in dirty:
         run_workflow_step(job_id, step, llm_api_key=llm_api_key, llm_model=llm_model)
     final_step = dirty[-1] if dirty else edited_step
-    update_job(job_id, status="in_progress", current_step=final_step)
+    refreshed_job = get_job(job_id) or {}
+    if str(refreshed_job.get("status") or "") != "needs_human_review":
+        update_job(job_id, status="in_progress", current_step=final_step)
     return {"ok": True, "job_id": job_id, "rebuild_steps": dirty}

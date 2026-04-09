@@ -42,6 +42,7 @@ def _job_to_dict(job: WorkflowJob) -> dict[str, Any]:
         "figure_parse_current": job.figure_parse_current,
         "supplementary_figure_ids": job.supplementary_figure_ids,
         "parse_logs": job.parse_logs,
+        "job_metadata": job.job_metadata or {},
         "user_id": job.user_id,
     }
 
@@ -96,6 +97,7 @@ def create_job(input_type: str, input_value: str, **extra_fields: Any) -> str:
     figure_parse_current = int(extra_fields.pop("figure_parse_current", 0) or 0)
     supplementary_figure_ids = extra_fields.pop("supplementary_figure_ids", []) or []
     parse_logs = extra_fields.pop("parse_logs", []) or []
+    job_metadata = extra_fields.pop("job_metadata", {}) or {}
 
     # Intentionally ignored (security): llm_api_key is session/task scoped only.
     extra_fields.pop("llm_api_key", None)
@@ -116,6 +118,7 @@ def create_job(input_type: str, input_value: str, **extra_fields: Any) -> str:
             figure_parse_current=figure_parse_current,
             supplementary_figure_ids=supplementary_figure_ids,
             parse_logs=parse_logs,
+            job_metadata=job_metadata,
         )
     except Exception:
         # Fallback in case migrations/db are not available in a lightweight context.
@@ -140,6 +143,7 @@ def create_job(input_type: str, input_value: str, **extra_fields: Any) -> str:
                 "figure_parse_current": figure_parse_current,
                 "supplementary_figure_ids": supplementary_figure_ids,
                 "parse_logs": parse_logs,
+                "job_metadata": job_metadata,
                 "user_id": getattr(user, "id", None),
             }
         return job_id
@@ -188,10 +192,15 @@ def update_job(job_id: str, user=None, **fields: Any) -> None:
         "figure_parse_current",
         "supplementary_figure_ids",
         "parse_logs",
+        "job_metadata",
         "llm_model",
         "source",
         "source_type",
     }
+    if isinstance(fields.get("job_metadata"), dict):
+        existing_meta = dict(getattr(job, "job_metadata", {}) or {})
+        existing_meta.update(fields["job_metadata"])
+        fields["job_metadata"] = existing_meta
     update_kwargs = {k: v for k, v in fields.items() if k in mutable_fields}
     if update_kwargs:
         for k, v in update_kwargs.items():

@@ -45,6 +45,7 @@ Three ORM models form the persistent state layer:
 - Progress metadata: 0–100%, current step, stage description.
 - LLM model name (not the key — keys are session-encrypted and never written to DB).
 - Append-only parse log array (`parse_logs` JSONField).
+- Structured diagnostics metadata (`job_metadata` JSONField), including Methods-step `rag_workflow` telemetry for indexing/retrieval/generation timelines.
 - Figure parse counters (`figure_parse_total`, `figure_parse_current`).
 - **`graph_data` JSONField** (added Phase 2) — stores the full React Flow graph state (nodes, edges, viewport) for the visual pipeline builder. Populated automatically after a full pipeline run via `POST /api/v1/parse-publication`; updated by `PUT /api/v1/graphs/{job_id}` when the user rearranges nodes.
 
@@ -69,6 +70,7 @@ Three ORM models form the persistent state layer:
 | `workflow_step` | `GET/POST /jobs/<id>/workflow/<step>/` | Per-step editor with JSON and ground truth forms |
 | `job_status` | `GET /jobs/<id>/status/` | JSON progress poll endpoint |
 | `dashboard` | `GET /jobs/<id>/dashboard/` | Dash-powered summary dashboard |
+| `rag_workflow` | `GET /jobs/<id>/rag-workflow/` | Dedicated read-only Methods RAG workflow diagnostics page |
 | `figure_image_proxy` | `GET /jobs/<id>/figure-image/` | Proxies figure images from remote URLs |
 | `_run_step` | internal | Core orchestrator; imports and runs `researcher-ai` parsers |
 | `_dispatch_workflow_step` | internal | Dispatches via Celery if available, otherwise runs synchronously |
@@ -127,6 +129,7 @@ The async repository layer centralises the sync/async boundary. Route handlers c
 | 1 | `GET` | `/api/v1/jobs/{job_id}` | session | Single job summary |
 | 2 | `POST` | `/api/v1/parse-publication` | session | Submit publication; returns 202, starts background pipeline |
 | 2 | `GET` | `/api/v1/jobs/{job_id}/status` | session | Lightweight poll (cache-first) |
+| 2 | `GET` | `/api/v1/jobs/{job_id}/rag-workflow` | session | Normalized Methods RAG telemetry + timeline |
 | 2 | `GET` | `/api/v1/graphs/{job_id}` | session | Retrieve React Flow graph state |
 | 2 | `PUT` | `/api/v1/graphs/{job_id}` | session | Save React Flow graph state |
 | 2 | `GET` | `/api/v1/graphs/{job_id}/nodes/{node_id}` | session | Full `ComponentSnapshot` payload for one step |
