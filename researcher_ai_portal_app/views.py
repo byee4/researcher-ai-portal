@@ -1175,6 +1175,216 @@ def _persist_component(job_id: str, step: str, payload: Any, source: str) -> Non
             update_job(job_id, job_metadata=diagnostics)
 
 
+class _RunnerContractError(ValueError):
+    """Raised when adapter output cannot satisfy the portal component contract."""
+
+
+def _runner_mode() -> str:
+    mode = str(os.environ.get("RESEARCHER_AI_PORTAL_RUNNER_MODE", "legacy") or "legacy").strip().lower()
+    if mode not in {"legacy", "orchestrator"}:
+        return "legacy"
+    return mode
+
+
+def _runner_timeout_seconds(mode: str) -> float:
+    if mode == "orchestrator":
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_ORCHESTRATOR_HARD_TIMEOUT_SECONDS", "7200")
+    else:
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_LEGACY_HARD_TIMEOUT_SECONDS", "10800")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 7200.0 if mode == "orchestrator" else 10800.0
+    return max(60.0, value)
+
+
+def _runner_soft_timeout_seconds(mode: str) -> float:
+    if mode == "orchestrator":
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_ORCHESTRATOR_SOFT_TIMEOUT_SECONDS", "3600")
+    else:
+        raw = os.environ.get("RESEARCHER_AI_PORTAL_LEGACY_SOFT_TIMEOUT_SECONDS", "5400")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 3600.0 if mode == "orchestrator" else 5400.0
+    return max(30.0, value)
+
+
+def _runtime_researcher_ai_version() -> str:
+    try:
+        import researcher_ai  # type: ignore
+
+        return str(getattr(researcher_ai, "__version__", "unknown") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _report_version_drift(job_id: str, version: str) -> None:
+    expected = str(os.environ.get("RESEARCHER_AI_EXPECTED_VERSION", "") or "").strip()
+    if not expected:
+        return
+    if expected == version:
+        return
+    _log_job_event(
+        job_id,
+        f"researcher-ai version drift detected: expected={expected}, runtime={version}",
+        level="warning",
+    )
+
+
+def _normalize_orchestrator_components(
+    state: dict[str, Any],
+    mods: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize orchestrator state into portal component payloads.
+
+    Raises _RunnerContractError when a required shape cannot be validated.
+    """
+
+    def _dump(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            out: list[Any] = []
+            for item in value:
+                out.append(item.model_dump(mode="json") if hasattr(item, "model_dump") else item)
+            return out
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        return value
+
+    raw_components: dict[str, Any] = {
+        "paper": _dump(state.get("paper")),
+        "figures": _dump(state.get("figures")),
+        "method": _dump(state.get("method")),
+        "datasets": _dump(state.get("datasets")),
+        "software": _dump(state.get("software")),
+        "pipeline": _dump(state.get("pipeline")),
+    }
+    components: dict[str, Any] = {}
+    for step in STEP_ORDER:
+        payload = raw_components.get(step)
+        if payload is None:
+            continue
+        try:
+            validated = _validate_component_json(step, payload, mods)
+        except Exception as exc:
+            raise _RunnerContractError(
+                f"contract_validation_failed:{step}: {type(exc).__name__}: {exc}"
+            ) from exc
+        components[step] = validated
+
+    method_payload = components.get("method")
+    if method_payload is not None:
+        assay_graph = (method_payload or {}).get("assay_graph") or {}
+        if not isinstance(assay_graph.get("assays"), list):
+            raise _RunnerContractError("contract_validation_failed:method.assay_graph.assays must be a list")
+        if not isinstance(assay_graph.get("dependencies"), list):
+            raise _RunnerContractError("contract_validation_failed:method.assay_graph.dependencies must be a list")
+
+    pipeline_payload = components.get("pipeline")
+    if pipeline_payload is not None:
+        config = (pipeline_payload or {}).get("config") or {}
+        if not isinstance(config, dict):
+            raise _RunnerContractError("contract_validation_failed:pipeline.config must be an object")
+        if not isinstance(config.get("steps"), list):
+            raise _RunnerContractError("contract_validation_failed:pipeline.config.steps must be a list")
+
+    return components
+
+
+def _orchestrator_status_and_metadata(state: dict[str, Any], method_payload: Any) -> tuple[str, dict[str, Any]]:
+    metadata: dict[str, Any] = {}
+    if isinstance(method_payload, dict):
+        metadata.update(_extract_method_diagnostics(method_payload))
+
+    if bool(state.get("human_review_required", False)):
+        metadata["human_review_required"] = True
+        summary = state.get("human_review_summary")
+        if isinstance(summary, dict):
+            metadata["human_review_summary"] = summary
+        return "needs_human_review", metadata
+
+    stage = str(state.get("stage") or "").strip().lower()
+    if stage == "needs_human_review":
+        metadata["human_review_required"] = True
+        summary = state.get("human_review_summary")
+        if isinstance(summary, dict):
+            metadata["human_review_summary"] = summary
+        return "needs_human_review", metadata
+
+    if state.get("pipeline") is not None:
+        return "completed", metadata
+    return "failed", metadata
+
+
+def _run_orchestrator_job(
+    job_id: str,
+    *,
+    llm_api_key: str,
+    llm_model: str,
+) -> None:
+    job = get_job(job_id)
+    if job is None:
+        raise Http404("Unknown job id")
+    if llm_model:
+        job["llm_model"] = llm_model
+    if llm_api_key:
+        job["llm_api_key"] = llm_api_key
+
+    update_job(job_id, status="in_progress", current_step="paper", stage="Running WorkflowOrchestrator", progress=0)
+    _log_job_event(job_id, "WorkflowOrchestrator run started", step="paper")
+
+    mods = _import_runtime_modules()
+    with _llm_env(job):
+        from researcher_ai.models.paper import PaperSource
+        from researcher_ai.pipeline.orchestrator import WorkflowOrchestrator
+
+        source_type_key = str(job.get("source_type") or "pmid").strip().lower()
+        source_type = PaperSource.PMID
+        if source_type_key == "pdf":
+            source_type = PaperSource.PDF
+        elif source_type_key == "pmcid":
+            source_type = PaperSource.PMCID
+        elif source_type_key == "doi":
+            source_type = PaperSource.DOI
+        elif source_type_key == "url":
+            source_type = PaperSource.URL
+
+        orchestrator = WorkflowOrchestrator()
+        state = orchestrator.run(str(job.get("source") or ""), source_type=source_type)
+
+    components = _normalize_orchestrator_components(state, mods)
+    for step in STEP_ORDER:
+        if step in components:
+            _persist_component(job_id, step, components[step], "parsed_orchestrator")
+
+    status, metadata = _orchestrator_status_and_metadata(state, components.get("method"))
+    if status == "needs_human_review":
+        update_job(
+            job_id,
+            status="needs_human_review",
+            current_step="pipeline",
+            progress=100,
+            stage="needs_human_review",
+            job_metadata=metadata,
+        )
+        _log_job_event(job_id, "WorkflowOrchestrator requires human review", step="pipeline", level="warning")
+        return
+    if status == "completed":
+        update_job(
+            job_id,
+            status="completed",
+            current_step="pipeline",
+            progress=100,
+            stage="All steps complete — ready for review",
+            job_metadata=metadata,
+        )
+        _log_job_event(job_id, "WorkflowOrchestrator completed full parse", step="pipeline")
+        return
+    raise _RunnerContractError("orchestrator_result_missing_pipeline")
+
+
 def _run_step(
     job_id: str,
     step: str,
@@ -1498,37 +1708,81 @@ def _run_all_steps_async(
     Progress, stage, and log events are written to the job store so the
     ``/jobs/<id>/status/`` endpoint can stream them to the progress page.
     """
+    mode = _runner_mode()
+    version = _runtime_researcher_ai_version()
+    _report_version_drift(job_id, version)
+    _log_job_event(job_id, f"Runner selected: {mode} (researcher-ai {version})", step="paper")
+
+    started_at = time.monotonic()
+    soft_timeout = _runner_soft_timeout_seconds(mode)
+    hard_timeout = _runner_timeout_seconds(mode)
+    _log_job_event(
+        job_id,
+        f"Runner limits: soft={int(soft_timeout)}s hard={int(hard_timeout)}s",
+        step="paper",
+    )
     try:
-        for step in STEP_ORDER:
-            # Bail out if the job was explicitly failed or deleted externally
-            job = get_job(job_id)
-            if job is None:
-                return
-            if str(job.get("status") or "") in {"failed", "needs_human_review"}:
-                return
-            _dispatch_workflow_step(
+        if mode == "orchestrator" and force_reparse:
+            # Orchestrator is full-run authoritative and does not support cache bypass semantics.
+            _log_job_event(
                 job_id,
-                step,
+                "force_reparse requested; orchestrator mode currently ignores per-step cache bypass.",
+                level="warning",
+                step="paper",
+            )
+
+        if mode == "orchestrator":
+            _run_orchestrator_job(
+                job_id,
                 llm_api_key=llm_api_key,
                 llm_model=llm_model,
-                force_reparse=force_reparse,
             )
-        # All six steps finished successfully
-        final_job = get_job(job_id) or {}
-        if str(final_job.get("status") or "") != "needs_human_review":
-            update_job(
+        else:
+            for step in STEP_ORDER:
+                # Bail out if the job was explicitly failed or deleted externally
+                job = get_job(job_id)
+                if job is None:
+                    return
+                if str(job.get("status") or "") in {"failed", "needs_human_review"}:
+                    return
+                _dispatch_workflow_step(
+                    job_id,
+                    step,
+                    llm_api_key=llm_api_key,
+                    llm_model=llm_model,
+                    force_reparse=force_reparse,
+                )
+            # All six steps finished successfully
+            final_job = get_job(job_id) or {}
+            if str(final_job.get("status") or "") != "needs_human_review":
+                update_job(
+                    job_id,
+                    status="completed",
+                    progress=100,
+                    stage="All steps complete — ready for review",
+                )
+        elapsed = time.monotonic() - started_at
+        if elapsed > soft_timeout:
+            _log_job_event(
                 job_id,
-                status="completed",
-                progress=100,
-                stage="All steps complete — ready for review",
+                f"Runner exceeded soft timeout ({int(elapsed)}s > {int(soft_timeout)}s)",
+                level="warning",
+                step="pipeline",
             )
+        if elapsed > hard_timeout:
+            raise TimeoutError(f"runner hard timeout exceeded ({int(elapsed)}s > {int(hard_timeout)}s)")
         if str((get_job(job_id) or {}).get("status") or "") == "needs_human_review":
             _log_job_event(job_id, "Pipeline paused for required human review.", step="pipeline", level="warning")
         else:
             _log_job_event(job_id, "Full pipeline parse complete. Redirecting to dashboard.", step="pipeline")
+    except TimeoutError as exc:
+        user_error = _humanize_step_error(exc)
+        update_job(job_id, status="failed", stage="Pipeline timed out", error=user_error)
+        _log_job_event(job_id, f"Pipeline run timed out: {user_error}", level="error", step="pipeline")
     except Exception as exc:
         # _dispatch_workflow_step already marks the job as failed and logs the
         # step-level error; log an extra top-level note for clarity.
+        update_job(job_id, status="failed", stage="Pipeline failed", error=_humanize_step_error(exc))
         _log_job_event(
             job_id,
             f"Pipeline run aborted: {exc}",
