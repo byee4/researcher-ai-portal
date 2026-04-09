@@ -126,7 +126,13 @@ def test_run_all_steps_async_routes_to_orchestrator_runner(monkeypatch, db):
     )
     called: dict[str, bool] = {"orchestrator": False}
 
-    def _fake_orchestrator_run(job_id: str, *, llm_api_key: str, llm_model: str) -> None:
+    def _fake_orchestrator_run(
+        job_id: str,
+        *,
+        llm_api_key: str,
+        llm_model: str,
+        hard_timeout_seconds: float | None = None,
+    ) -> None:
         called["orchestrator"] = True
         views.update_job(
             job_id,
@@ -163,7 +169,13 @@ def test_runner_timeout_marks_job_failed(monkeypatch, db):
         stage="Queued",
     )
 
-    def _slow_orchestrator_run(job_id: str, *, llm_api_key: str, llm_model: str) -> None:
+    def _slow_orchestrator_run(
+        job_id: str,
+        *,
+        llm_api_key: str,
+        llm_model: str,
+        hard_timeout_seconds: float | None = None,
+    ) -> None:
         time.sleep(0.02)
         views.update_job(job_id, status="completed", stage="Done", progress=100, current_step="pipeline")
 
@@ -179,6 +191,50 @@ def test_runner_timeout_marks_job_failed(monkeypatch, db):
     assert job is not None
     assert job.get("status") == "failed"
     assert "timed out" in str(job.get("stage") or "").lower()
+
+
+def test_run_with_timeout_raises_timeout_error():
+    def _slow() -> str:
+        time.sleep(1.2)
+        return "done"
+
+    with pytest.raises(TimeoutError):
+        views._run_with_timeout(_slow, timeout_seconds=0.01, label="unit-test")
+
+
+def test_run_all_steps_passes_hard_timeout_to_orchestrator(monkeypatch, db):
+    user = get_user_model().objects.create_user("runner_timeout_pass_user", password="pw")
+    job_id = create_job(
+        input_type="pmid",
+        input_value="123",
+        source="123",
+        source_type="pmid",
+        llm_model="gpt-5.4",
+        user=user,
+        status="in_progress",
+        stage="Queued",
+    )
+    captured: dict[str, float | None] = {"hard_timeout_seconds": None}
+
+    def _capture_timeout(
+        job_id: str,
+        *,
+        llm_api_key: str,
+        llm_model: str,
+        hard_timeout_seconds: float | None = None,
+    ) -> None:
+        captured["hard_timeout_seconds"] = hard_timeout_seconds
+        views.update_job(job_id, status="completed", stage="Done", progress=100, current_step="pipeline")
+
+    monkeypatch.setattr(views, "_runner_mode", lambda: "orchestrator")
+    monkeypatch.setattr(views, "_runtime_researcher_ai_version", lambda: "3.0.0")
+    monkeypatch.setattr(views, "_report_version_drift", lambda job_id, version: None)
+    monkeypatch.setattr(views, "_run_orchestrator_job", _capture_timeout)
+    monkeypatch.setattr(views, "_runner_soft_timeout_seconds", lambda mode: 9999.0)
+    monkeypatch.setattr(views, "_runner_timeout_seconds", lambda mode: 123.0)
+
+    views._run_all_steps_async(job_id, llm_api_key="sk-12345678901234567890", llm_model="gpt-5.4")
+    assert captured["hard_timeout_seconds"] == 123.0
 
 
 def test_job_status_and_dashboard_context_accept_orchestrator_compatible_payload(monkeypatch, db):

@@ -6,6 +6,7 @@ import re
 import tempfile
 import threading
 import time
+import concurrent.futures
 import base64
 import hashlib
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from html import unescape
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urljoin, urlparse
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
@@ -1388,6 +1389,22 @@ def _runner_soft_timeout_seconds(mode: str) -> float:
     return max(30.0, value)
 
 
+def _run_with_timeout(
+    fn: Callable[[], Any],
+    *,
+    timeout_seconds: float,
+    label: str,
+) -> Any:
+    """Run blocking work with a strict wall-clock timeout."""
+    timeout = max(1.0, float(timeout_seconds))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(f"{label} exceeded timeout ({int(timeout)}s)") from exc
+
+
 def _runtime_researcher_ai_version() -> str:
     try:
         import researcher_ai  # type: ignore
@@ -1619,6 +1636,7 @@ def _run_orchestrator_job(
     *,
     llm_api_key: str,
     llm_model: str,
+    hard_timeout_seconds: float | None = None,
 ) -> None:
     job = get_job(job_id)
     if job is None:
@@ -1630,6 +1648,19 @@ def _run_orchestrator_job(
 
     update_job(job_id, status="in_progress", current_step="paper", stage="Running WorkflowOrchestrator", progress=0)
     _log_job_event(job_id, "WorkflowOrchestrator run started", step="paper")
+
+    timeout_raw = str(os.environ.get("RESEARCHER_AI_PORTAL_ORCHESTRATOR_CALL_TIMEOUT_SECONDS", "") or "").strip()
+    timeout_value: float
+    if timeout_raw:
+        try:
+            timeout_value = float(timeout_raw)
+        except ValueError:
+            timeout_value = _runner_timeout_seconds("orchestrator")
+    elif hard_timeout_seconds is not None:
+        timeout_value = float(hard_timeout_seconds)
+    else:
+        timeout_value = _runner_timeout_seconds("orchestrator")
+    timeout_value = max(1.0, timeout_value)
 
     mods = _import_runtime_modules()
     with _llm_env(job):
@@ -1648,7 +1679,11 @@ def _run_orchestrator_job(
             source_type = PaperSource.URL
 
         orchestrator = WorkflowOrchestrator()
-        state = orchestrator.run(str(job.get("source") or ""), source_type=source_type)
+        state = _run_with_timeout(
+            lambda: orchestrator.run(str(job.get("source") or ""), source_type=source_type),
+            timeout_seconds=timeout_value,
+            label="WorkflowOrchestrator.run",
+        )
 
     components = _normalize_orchestrator_components(state, mods)
     for step in STEP_ORDER:
@@ -2107,6 +2142,7 @@ def _run_all_steps_async(
                 job_id,
                 llm_api_key=llm_api_key,
                 llm_model=llm_model,
+                hard_timeout_seconds=hard_timeout,
             )
         else:
             for step in STEP_ORDER:

@@ -6,13 +6,13 @@ This document covers everything needed to run `researcher-ai-portal` — from a 
 
 ## Release baseline
 
-`v2.2.2` is the current minor release baseline before major feature development.
+`v2.2.3` is the current minor release baseline before major feature development.
 
 If you need to reproduce the exact baseline state:
 
 ```bash
 git fetch --tags
-git checkout v2.2.2
+git checkout v2.2.3
 ```
 
 For new major feature branches, run a quick preflight first:
@@ -30,7 +30,7 @@ pytest -q
 |-------------|---------|-------|
 | Python | 3.11+ | 3.12 recommended |
 | Docker + Compose | v24+ | Docker Desktop on Mac/Windows |
-| `researcher-ai` package | 2.2.2+ | Local checkout or pip release |
+| `researcher-ai` package | 2.2.3+ | Local checkout or pip release |
 | PostgreSQL | 14+ | Docker image used in all compose setups; SQLite works for development |
 | An LLM API key | — | OpenAI, Anthropic, or Google — entered per-session in the UI |
 
@@ -85,14 +85,17 @@ The UI always accepts an API key per session. These env vars let the server supp
 | `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS` | Token budget for per-subfigure decomposition calls | `1200` |
 | `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` | Token budget for figure-purpose extraction calls | `600` |
 | `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` | Token budget for figure methods/datasets extraction calls | `350` |
+| `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS` | Disable model-fallback routing during investigation/debug runs | unset (`false`) |
 | `RESEARCHER_AI_RAG_MODE` | `per_job` (isolated vector store per parse job) or `shared` | `per_job` |
 | `RESEARCHER_AI_RAG_BASE_DIR` | Base directory for RAG persistence when using `per_job` mode | `/tmp` |
 | `RESEARCHER_AI_BIOWORKFLOW_MODE` | BioWorkflow rollout mode: `off`, `warn`, `on` | `warn` |
 | `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` | Hard cap for retrieval refinement rounds in method parsing | parser default |
 | `RESEARCHER_AI_PORTAL_RUNNER_MODE` | Portal full-run execution adapter mode: `orchestrator` or `legacy` | `orchestrator` |
 | `RESEARCHER_AI_EXPECTED_VERSION` | Optional expected `researcher-ai` version for runtime drift checks (recommended in shared/dev/prod envs) | unset |
+| `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` | Per-request LLM network timeout used by researcher-ai | `90` |
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_SOFT_TIMEOUT_SECONDS` | Soft timeout warning threshold for orchestrator runner | `3600` |
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_HARD_TIMEOUT_SECONDS` | Hard timeout for orchestrator runner (fails job when exceeded) | `7200` |
+| `RESEARCHER_AI_PORTAL_ORCHESTRATOR_CALL_TIMEOUT_SECONDS` | Optional wall-clock timeout around `WorkflowOrchestrator.run()` (fails fast even if downstream call blocks) | falls back to hard timeout |
 | `RESEARCHER_AI_PORTAL_LEGACY_SOFT_TIMEOUT_SECONDS` | Soft timeout warning threshold for legacy runner | `5400` |
 | `RESEARCHER_AI_PORTAL_LEGACY_HARD_TIMEOUT_SECONDS` | Hard timeout for legacy runner (fails job when exceeded) | `10800` |
 
@@ -203,7 +206,7 @@ pip install -e /path/to/researcher-ai
 For a pinned release:
 
 ```bash
-pip install researcher-ai==2.2.2
+pip install researcher-ai==2.2.3
 ```
 
 Optional — install the Cytoscape DAG canvas:
@@ -428,7 +431,7 @@ No existing Django URL patterns, views, or templates were modified. Rollback is 
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'researcher_ai'`**
-The `researcher-ai` package is not installed. Run `pip install -e /path/to/researcher-ai` or `pip install researcher-ai==2.2.2`.
+The `researcher-ai` package is not installed. Run `pip install -e /path/to/researcher-ai` or `pip install researcher-ai==2.2.3`.
 
 **`DisallowedHost` error**
 Add your hostname to `DJANGO_ALLOWED_HOSTS` in `.env`.
