@@ -96,6 +96,7 @@ _FIGURE_PROXY_CACHE_TTL_SEC = max(60, int(os.environ.get("FIGURE_PROXY_CACHE_TTL
 _ORCHESTRATOR_META_MAX_STRING_LEN = 2000
 _ORCHESTRATOR_META_MAX_LIST_LEN = 100
 _ORCHESTRATOR_META_MAX_DEPTH = 6
+_STUCK_JOB_TIMEOUT_SECONDS = 600
 
 
 def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:
@@ -1323,6 +1324,46 @@ def _extract_orchestrator_diagnostics(state: dict[str, Any]) -> dict[str, Any]:
     return diagnostics
 
 
+def _stuck_job_timeout_seconds() -> float:
+    raw = os.environ.get("RESEARCHER_AI_PORTAL_STUCK_JOB_TIMEOUT_SECONDS", str(_STUCK_JOB_TIMEOUT_SECONDS))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = float(_STUCK_JOB_TIMEOUT_SECONDS)
+    return max(60.0, value)
+
+
+def _maybe_fail_stuck_job(job_id: str, *, user: Any, job: dict[str, Any]) -> dict[str, Any]:
+    if str(job.get("status") or "") != "in_progress":
+        return job
+    row = WorkflowJob.objects.filter(id=job_id, user=user).first()
+    if row is None or row.updated_at is None:
+        return job
+    age_seconds = (time.time() - row.updated_at.timestamp())
+    threshold = _stuck_job_timeout_seconds()
+    if age_seconds <= threshold:
+        return job
+    reason = (
+        f"Run stalled with no job updates for {int(age_seconds)}s (> {int(threshold)}s). "
+        "This often happens when a background parser thread is interrupted (for example during server reload). "
+        "Please retry the parse."
+    )
+    update_job(
+        job_id,
+        user=user,
+        status="failed",
+        stage="Run stalled — retry required",
+        error=reason,
+        job_metadata={
+            "stalled_run_detected": True,
+            "stalled_seconds_without_update": int(age_seconds),
+            "stalled_timeout_seconds": int(threshold),
+        },
+    )
+    _log_job_event(job_id, reason, level="warning", step=str(job.get("current_step") or "paper"))
+    return get_job(job_id, user=user) or job
+
+
 def _normalize_orchestrator_components(
     state: dict[str, Any],
     mods: dict[str, Any],
@@ -2281,6 +2322,7 @@ def parse_progress(request, job_id: str):
     job = get_job(job_id, user=request.user)
     if job is None:
         raise Http404("Unknown job id")
+    job = _maybe_fail_stuck_job(job_id, user=request.user, job=job)
 
     # Build the stage list for the stepper indicators
     stages = [{"id": s, "label": STEP_LABELS[s]} for s in STEP_ORDER]
@@ -2305,6 +2347,7 @@ def job_status(request, job_id: str):
     job = get_job(job_id, user=request.user)
     if job is None:
         return JsonResponse({"error": "unknown job"}, status=404)
+    job = _maybe_fail_stuck_job(job_id, user=request.user, job=job)
     job_metadata = dict(job.get("job_metadata") or {})
     payload = {
         "job_id": job["job_id"],

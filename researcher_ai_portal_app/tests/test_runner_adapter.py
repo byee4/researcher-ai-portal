@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import time
+from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory
+from django.utils import timezone
 from pydantic import BaseModel
 
 from researcher_ai_portal_app import views
 from researcher_ai_portal_app.job_store import create_job, get_job
+from researcher_ai_portal_app.models import WorkflowJob
 
 
 def test_runner_mode_defaults_to_orchestrator(monkeypatch):
@@ -229,3 +232,33 @@ def test_job_status_and_dashboard_context_accept_orchestrator_compatible_payload
     ctx = views._dashboard_context(job)
     assert ctx["review_required"] is True
     assert ctx["review_summary"] == {"ungrounded_count": 1}
+
+
+def test_job_status_marks_stale_in_progress_job_as_failed(monkeypatch, db):
+    user = get_user_model().objects.create_user("runner_stale_user", password="pw")
+    job_id = create_job(
+        input_type="pmid",
+        input_value="123",
+        source="123",
+        source_type="pmid",
+        llm_model="gpt-5.4",
+        user=user,
+        status="in_progress",
+        stage="Running WorkflowOrchestrator",
+        current_step="paper",
+        progress=0,
+    )
+    stale_at = timezone.now() - timedelta(seconds=1200)
+    WorkflowJob.objects.filter(id=job_id).update(updated_at=stale_at)
+    monkeypatch.setenv("RESEARCHER_AI_PORTAL_STUCK_JOB_TIMEOUT_SECONDS", "60")
+
+    request = RequestFactory().get("/status")
+    request.user = user
+    response = views.job_status(request, job_id)
+    assert response.status_code == 200
+
+    job = get_job(job_id, user=user)
+    assert job is not None
+    assert job.get("status") == "failed"
+    assert "stalled" in str(job.get("stage") or "").lower()
+    assert "retry" in str(job.get("error") or "").lower()
