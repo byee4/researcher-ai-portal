@@ -107,7 +107,7 @@ _FIGURE_PROXY_CACHE_TTL_SEC = max(60, int(os.environ.get("FIGURE_PROXY_CACHE_TTL
 _ORCHESTRATOR_META_MAX_STRING_LEN = 2000
 _ORCHESTRATOR_META_MAX_LIST_LEN = 100
 _ORCHESTRATOR_META_MAX_DEPTH = 6
-_STUCK_JOB_TIMEOUT_SECONDS = 600
+_STUCK_JOB_TIMEOUT_SECONDS = 3600
 
 
 def _log_job_event(job_id: str, message: str, *, step: str = "", level: str = "info") -> None:

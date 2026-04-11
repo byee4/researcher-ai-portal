@@ -2,6 +2,8 @@
 
 This walkthrough takes you from submitting a paper to a complete parsed pipeline output. It assumes the portal is already running — see [`SETUP.md`](SETUP.md) if it isn't.
 
+Baseline compatibility for this tutorial is pinned to `researcher-ai` `v3.0.0`.
+
 ---
 
 ## Overview

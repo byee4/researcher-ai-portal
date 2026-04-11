@@ -20,7 +20,7 @@ services:
     build:
       context: .
       args:
-        RESEARCHER_AI_PIP_SPEC: ${RESEARCHER_AI_PIP_SPEC:-researcher-ai==2.3.0}
+        RESEARCHER_AI_PIP_SPEC: ${RESEARCHER_AI_PIP_SPEC:-git+https://github.com/byee4/researcher-ai.git@v3.0.0}
     restart: unless-stopped
     command: ["/app/scripts/start_web.sh"]
     ports:
