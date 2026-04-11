@@ -5,23 +5,23 @@
 {% block extra_head %}
 {{ dashboard_form_media }}
 
-{# ── Pipeline Builder: inject step metadata as JSON (XSS-safe via json_script) ── #}
+<!-- ── Pipeline Builder: inject step metadata as JSON (XSS-safe via json_script) ── -->
 {{ step_rows_json|json_script:"_pb-step-rows" }}
-{# ── Tool-based Pipeline Builder data ── #}
+<!-- ── Tool-based Pipeline Builder data ── -->
 {{ software_tools_json|json_script:"_pb-software-tools" }}
 {{ pipeline_steps_json|json_script:"_pb-pipeline-steps" }}
 {{ method_assays_json|json_script:"_pb-method-assays" }}
-{# ── Phase 0: Command Center data (App Island seed) ── #}
+<!-- ── Phase 0: Command Center data (App Island seed) ── -->
 {{ actionable_items|json_script:"_cc-actionable-items" }}
 {{ confidence_json|json_script:"_cc-confidence" }}
-{# ── Phase 2: Structured editor seed data (raw Python → XSS-safe JSON) ── #}
+<!-- ── Phase 2: Structured editor seed data (raw Python → XSS-safe JSON) ── -->
 {{ datasets|json_script:"_ed-datasets" }}
 {{ software|json_script:"_ed-software" }}
 
-{# ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── #}
+<!-- ── React Flow CSS (loaded only when the Pipeline Builder tab is active) ── -->
 <link rel="stylesheet" href="https://unpkg.com/@xyflow/react@12.3.6/dist/style.css" />
 
-{# ── ES module import map — must be in <head>, before any <script type="module"> ── #}
+<!-- ── ES module import map — must be in <head>, before any <script type="module"> ── -->
 <script type="importmap">
 {
   "imports": {
@@ -313,7 +313,7 @@
   <!-- ── Journey stepper (Phase 5) ────────────────────────── -->
   {% include "researcher_ai_portal/_stepper.html" %}
 
-  {# ── Completion banner: shown only when pipeline is fully ready ── #}
+  <!-- ── Completion banner: shown only when pipeline is fully ready ── -->
   {% if summary.overall_confidence >= 90 and not actionable_items and summary.status_counts.missing == 0 %}
   <div class="alert" style="background: var(--success-soft); border: 1.5px solid var(--success);
                              border-radius: var(--radius); padding: 14px 20px; margin-bottom: 18px;
@@ -356,10 +356,10 @@
   ═══════════════════════════════════════════════════════════ -->
   <div class="tab-panel active" id="tab-command-center">
 
-    {# ── Section 1: Score bar ─────────────────────────────── #}
+    <!-- ── Section 1: Score bar ─────────────────────────────── -->
     <div class="cc-grid" style="display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; margin-bottom: 24px;">
 
-      {# Confidence ring — server-rendered for instant first paint #}
+      <!-- Confidence ring — server-rendered for instant first paint -->
       <div class="card" style="padding: 24px; text-align: center; min-width: 172px;">
         {% with conf=confidence.overall|default:50 %}
           {% if conf >= 80 %}{% with ring_color="#16a34a" track_color="#bbf7d0" %}
@@ -404,14 +404,14 @@
           {% endif %}
         {% endwith %}
 
-        {# Validation badge #}
+        <!-- Validation badge -->
         {% if confidence.validation_passed %}
           <span class="pill pill-found" style="margin-bottom: 8px; display: inline-block;">✓ Validated</span>
         {% else %}
           <span class="pill pill-missing" style="margin-bottom: 8px; display: inline-block;">✗ Unvalidated</span>
         {% endif %}
 
-        {# Factors resolved summary #}
+        <!-- Factors resolved summary -->
         {% with total=actionable_items|length %}
           <p class="text-xs text-muted">
             {% if total == 0 %}
@@ -423,7 +423,7 @@
         {% endwith %}
       </div>
 
-      {# Per-assay confidence cards #}
+      <!-- Per-assay confidence cards -->
       <div>
         <h2 class="mb-3">Assay confidence breakdown</h2>
         {% if confidence.assay_confidences %}
@@ -438,31 +438,31 @@
                   </span>
                 </div>
 
-                {# Weighted factor bar: step 50% | figure 20% | dataset 15% | warnings 15% #}
+                <!-- Weighted factor bar: step 50% | figure 20% | dataset 15% | warnings 15% -->
                 {% with step_w=assay_conf.step_confidences|length %}
                   <div class="conf-factor-bar mb-2">
-                    {# Step completeness (50%) #}
+                    <!-- Step completeness (50%) -->
                     {% with sc_mean=assay_conf.step_confidences %}
                       <div class="conf-factor-bar-seg"
                            style="width: 50%; background: {% if assay_conf.overall >= 80 %}var(--success){% elif assay_conf.overall >= 50 %}var(--warning){% else %}var(--danger){% endif %}; opacity: .85;"
                            title="Step completeness (50% weight)"></div>
                     {% endwith %}
-                    {# Figure evidence (20%) #}
+                    <!-- Figure evidence (20%) -->
                     <div class="conf-factor-bar-seg"
                          style="width: 20%; background: {% if assay_conf.figure_confidence_mean >= 80 %}var(--success){% elif assay_conf.figure_confidence_mean >= 50 %}var(--warning){% else %}var(--danger){% endif %}; opacity: .7;"
                          title="Figure evidence (20% weight): {{ assay_conf.figure_confidence_mean|floatformat:0 }}%"></div>
-                    {# Dataset resolution (15%) #}
+                    <!-- Dataset resolution (15%) -->
                     <div class="conf-factor-bar-seg"
                          style="width: 15%; background: {% if assay_conf.dataset_resolved %}var(--success){% else %}var(--danger){% endif %}; opacity: .7;"
                          title="Dataset resolved (15% weight)"></div>
-                    {# Warnings (15%) #}
+                    <!-- Warnings (15%) -->
                     <div class="conf-factor-bar-seg"
                          style="width: 15%; background: {% if assay_conf.parse_warning_count == 0 %}var(--success){% else %}var(--warning){% endif %}; opacity: .7;"
                          title="Parse warnings (15% weight): {{ assay_conf.parse_warning_count }}"></div>
                   </div>
                 {% endwith %}
 
-                {# Factor pills row #}
+                <!-- Factor pills row -->
                 <div class="flex" style="flex-wrap: wrap; gap: 4px;">
                   <span class="pill" style="font-size: 0.68rem; padding: 2px 6px;
                     background: {% if assay_conf.dataset_resolved %}var(--success-soft){% else %}var(--danger-soft){% endif %};
@@ -494,7 +494,7 @@
       </div>
     </div>
 
-    {# ── Section 2: Next recommended action banner (id for JS live-update) ── #}
+    <!-- ── Section 2: Next recommended action banner (id for JS live-update) ── -->
     <div id="cc-top-action-banner">
     {% if actionable_items %}
       {% with top=actionable_items.0 %}
@@ -531,7 +531,7 @@
     {% endif %}
     </div>
 
-    {# ── Section 3: Actionable items list (id + inner id for live re-render) ── #}
+    <!-- ── Section 3: Actionable items list (id + inner id for live re-render) ── -->
     <h2 id="cc-issues-header" class="mb-3"
         {% if not actionable_items %}style="display:none;"{% endif %}>
       Issues to resolve
@@ -561,7 +561,7 @@
       {% endfor %}
     </div>
 
-    {# ── Section 4: Dataset readiness table ───────────────── #}
+    <!-- ── Section 4: Dataset readiness table ───────────────── -->
     {% if datasets %}
       <h2 class="mb-3">Dataset readiness</h2>
       <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 8px;">
@@ -778,7 +778,7 @@
 
     </div>
 
-    {# ── Phase 2d: Pipeline step configuration accordion ──────────── #}
+    <!-- ── Phase 2d: Pipeline step configuration accordion ──────────── -->
     <details id="pc-config-panel" style="margin-top:16px;">
       <summary style="cursor:pointer;font-weight:600;font-size:0.9375rem;padding:12px 16px;
                        background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);
@@ -926,7 +926,7 @@
       <p class="text-sm text-muted">Browse resolved figure previews and open source links.</p>
     </div>
     {% if figure_media_rows %}
-      {# Regression marker for preview URL rendering contract: {{ entry.proxy_url }} #}
+      <!-- Regression marker for preview URL rendering contract: {{ entry.proxy_url }} -->
     {% endif %}
     {% if figure_gt_form.errors %}
       <div class="alert alert-error mb-3">{{ figure_gt_form.errors }}</div>
@@ -987,8 +987,8 @@
                     Remove
                   </button>
                 </div>
-                {# IDs follow the pattern used by compute_actionable_items field selectors:
-                   #id-step-{assay-slug}-step-{idx}-{field} #}
+                <!-- IDs follow the pattern used by compute_actionable_items field selectors:
+                   #id-step-{assay-slug}-step-{idx}-{field} -->
                 {% with astep_id="id-step-"|add:assay.name|slugify|add:"-step-"|add:forloop.counter0|stringformat:"s" %}
                 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-bottom:10px;">
                   <div class="form-group">
@@ -1348,9 +1348,6 @@
   })();
 </script>
 
-{# ──────────────────────────────────────────────────────────────
-   Pipeline Builder — React Flow app (ESM module, no build step)
-────────────────────────────────────────────────────────────── #}
 <script type="module">
 import React, {
   useState, useCallback, useEffect, useMemo, useRef,
@@ -2777,10 +2774,6 @@ if (root) {
 }
 </script>
 
-{# ══════════════════════════════════════════════════════════════
-   Phase 2 — Autosave client (datasets, step editing, pipeline config)
-   Shared PATCH helper + 800 ms debounce per-editor.
-══════════════════════════════════════════════════════════════ #}
 <script>
 (function () {
   'use strict';

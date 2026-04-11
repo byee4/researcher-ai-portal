@@ -701,6 +701,7 @@ def _run_full_pipeline_sync(
     Imports from views.py happen inside this function so that Django's app
     registry is fully loaded before the imports resolve.
     """
+    from researcher_ai_portal_app.job_store import get_job as get_job_record
     from researcher_ai_portal_app.job_store import update_job
     from researcher_ai_portal_app.views import (
         STEP_LABELS,
@@ -710,7 +711,7 @@ def _run_full_pipeline_sync(
 
     try:
         for step in STEP_ORDER:
-            existing = get_job(job_id)
+            existing = get_job_record(job_id)
             if existing is not None and str(existing.get("status") or "") in {"failed", "needs_human_review"}:
                 return
             update_job(
@@ -733,7 +734,7 @@ def _run_full_pipeline_sync(
     # All steps succeeded — persist the auto-generated graph layout.
     _save_graph_after_completion(job_id)
 
-    final = get_job(job_id)
+    final = get_job_record(job_id)
     if final is None:
         return
     if str(final.get("status") or "") == "needs_human_review":

@@ -108,7 +108,9 @@ else:
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': os.environ.get(
                 'TEMPLATE_DB_PATH',
-                str((BASE_DIR.parent / 'template.db').resolve()),
+                # Keep local SQLite DB inside the project root so dev/test
+                # environments (including sandboxed runs) can write safely.
+                str((BASE_DIR / 'template.db').resolve()),
             ),
         }
     }
@@ -123,7 +125,7 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 STORAGES = {
     'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        'BACKEND': 'researcher_ai_portal.staticfiles.StableStaticFilesStorage',
     },
 }
 STATICFILES_FINDERS = [
@@ -205,6 +207,31 @@ USE_X_FORWARDED_PORT = True
 # ---------------------------------------------------------------------------
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# ---------------------------------------------------------------------------
+# researcher-ai runtime defaults for the portal baseline release.
+# These values are applied only when the variable is unset in the environment.
+# ---------------------------------------------------------------------------
+_RESEARCHER_AI_DEFAULTS = {
+    # Keep orchestrator generous, not infinite.
+    "RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS": "1800",
+    "RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS": "180",
+    # Bound per-call latency so runs finish.
+    "RESEARCHER_AI_LLM_TIMEOUT_SECONDS": "180",
+    "RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS": "180",
+    "RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS": "4",
+    "RESEARCHER_AI_PROVIDER_MAX_RETRIES": "2",
+    "RESEARCHER_AI_PORTAL_STUCK_JOB_TIMEOUT_SECONDS": "3600",
+    # Keep quality decent while controlling long-tail cost/latency.
+    "RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS": "1800",
+    "RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS": "900",
+    "RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS": "700",
+    "RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS": "3",
+    "RESEARCHER_AI_BIOWORKFLOW_MODE": "warn",
+}
+
+for _name, _value in _RESEARCHER_AI_DEFAULTS.items():
+    os.environ.setdefault(_name, _value)
 
 # ---------------------------------------------------------------------------
 # Logging
