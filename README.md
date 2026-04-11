@@ -122,6 +122,8 @@ Interactive Swagger docs are available at **http://localhost:8000/api/v1/docs** 
 | `PUT` | `/api/v1/graphs/{job_id}` | Persist the graph after the user rearranges nodes. |
 | `GET` | `/api/v1/graphs/{job_id}/nodes/{node_id}` | Full parsed payload for a single pipeline step. |
 
+For long orchestrator runs, the status payload now advances `current_step`/`stage` as each parser node starts (paper → figures → method → datasets → software → pipeline), so the progress view reflects the active stage instead of staying pinned on `paper`.
+
 All endpoints require the Django session cookie (`credentials: "include"` from the browser, or `--cookie sessionid=...` from curl).
 
 ---

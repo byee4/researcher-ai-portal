@@ -96,6 +96,8 @@ The UI always accepts an API key per session. These env vars let the server supp
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_SOFT_TIMEOUT_SECONDS` | Soft timeout warning threshold for orchestrator runner | `3600` |
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_HARD_TIMEOUT_SECONDS` | Hard timeout for orchestrator runner (fails job when exceeded) | `7200` |
 | `RESEARCHER_AI_PORTAL_ORCHESTRATOR_CALL_TIMEOUT_SECONDS` | Optional wall-clock timeout around `WorkflowOrchestrator.run()` (fails fast even if downstream call blocks) | falls back to hard timeout |
+| `RESEARCHER_AI_PORTAL_ORCHESTRATOR_HEARTBEAT_SECONDS` | Heartbeat interval while an orchestrator node is running; keeps `current_step`/`stage` fresh during long steps | `15` |
+| `RESEARCHER_AI_PORTAL_STUCK_JOB_TIMEOUT_SECONDS` | Marks a job as stalled when no updates arrive for this many seconds | `600` |
 | `RESEARCHER_AI_PORTAL_LEGACY_SOFT_TIMEOUT_SECONDS` | Soft timeout warning threshold for legacy runner | `5400` |
 | `RESEARCHER_AI_PORTAL_LEGACY_HARD_TIMEOUT_SECONDS` | Hard timeout for legacy runner (fails job when exceeded) | `10800` |
 

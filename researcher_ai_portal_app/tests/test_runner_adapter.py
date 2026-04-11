@@ -4,6 +4,7 @@ import importlib.metadata
 import sys
 import time
 import types
+from contextlib import nullcontext
 from datetime import timedelta
 
 import pytest
@@ -174,6 +175,121 @@ def test_run_all_steps_async_routes_to_orchestrator_runner(monkeypatch, db):
     job = get_job(job_id, user=user)
     assert job is not None
     assert job.get("status") == "completed"
+
+
+def test_run_orchestrator_job_updates_current_step_across_nodes(monkeypatch, db):
+    user = get_user_model().objects.create_user("runner_stage_updates_user", password="pw")
+    job_id = create_job(
+        input_type="pmid",
+        input_value="123",
+        source="123",
+        source_type="pmid",
+        llm_model="gpt-5.4",
+        user=user,
+        status="in_progress",
+        stage="Queued",
+        current_step="paper",
+        progress=0,
+    )
+
+    captured_steps: list[str] = []
+    original_update_job = views.update_job
+
+    def _spy_update_job(job_id: str, user=None, **fields):
+        step = fields.get("current_step")
+        if step is not None:
+            captured_steps.append(str(step))
+        return original_update_job(job_id, user=user, **fields)
+
+    monkeypatch.setattr(views, "update_job", _spy_update_job)
+    monkeypatch.setattr(views, "_llm_env", lambda job: nullcontext())
+    monkeypatch.setattr(views, "_orchestrator_heartbeat_seconds", lambda: 0.01)
+    monkeypatch.setattr(views, "_import_runtime_modules", lambda: {})
+    monkeypatch.setattr(
+        views,
+        "_normalize_orchestrator_components",
+        lambda state, mods: {
+            "paper": {"title": "t"},
+            "figures": [],
+            "method": {"assay_graph": {"assays": [], "dependencies": []}},
+            "datasets": [],
+            "software": [],
+            "pipeline": {"config": {"steps": []}, "validation_report": {"passed": True}},
+        },
+    )
+
+    fake_root = types.ModuleType("researcher_ai")
+    fake_models = types.ModuleType("researcher_ai.models")
+    fake_paper = types.ModuleType("researcher_ai.models.paper")
+    fake_pipeline = types.ModuleType("researcher_ai.pipeline")
+    fake_orch = types.ModuleType("researcher_ai.pipeline.orchestrator")
+
+    class _PaperSource:
+        PMID = "pmid"
+        PDF = "pdf"
+        PMCID = "pmcid"
+        DOI = "doi"
+        URL = "url"
+
+    class _FakeOrchestrator:
+        max_build_attempts = 2
+        bioworkflow_mode = "warn"
+
+        def _node_parse_paper(self, state):
+            return {"paper": {"title": "t"}, "progress": 15, "stage": "parsed_paper"}
+
+        def _node_parse_figures(self, state):
+            return {"figures": [], "progress": 35, "stage": "parsed_figures"}
+
+        def _node_parse_methods(self, state):
+            return {"method": {"assay_graph": {"assays": [], "dependencies": []}}, "progress": 55, "stage": "parsed_methods"}
+
+        def _node_parse_datasets(self, state):
+            return {"datasets": [], "progress": 70, "stage": "parsed_datasets"}
+
+        def _node_parse_software(self, state):
+            return {"software": [], "progress": 80, "stage": "parsed_software"}
+
+        def _node_build_workflow_graph(self, state):
+            return {"workflow_graph": {}, "progress": 86, "stage": "built_workflow_graph"}
+
+        def _node_validate_method(self, state):
+            return {"progress": 90, "stage": "validated_method"}
+
+        def _node_build_pipeline(self, state):
+            return {
+                "pipeline": {"config": {"steps": []}, "validation_report": {"passed": True}},
+                "build_attempts": 1,
+                "progress": 100,
+                "stage": "completed",
+            }
+
+        def _next_after_build_pipeline(self, state):
+            return "end"
+
+    fake_paper.PaperSource = _PaperSource
+    fake_orch.WorkflowOrchestrator = _FakeOrchestrator
+
+    monkeypatch.setitem(sys.modules, "researcher_ai", fake_root)
+    monkeypatch.setitem(sys.modules, "researcher_ai.models", fake_models)
+    monkeypatch.setitem(sys.modules, "researcher_ai.models.paper", fake_paper)
+    monkeypatch.setitem(sys.modules, "researcher_ai.pipeline", fake_pipeline)
+    monkeypatch.setitem(sys.modules, "researcher_ai.pipeline.orchestrator", fake_orch)
+
+    views._run_orchestrator_job(
+        job_id,
+        llm_api_key="sk-12345678901234567890",
+        llm_model="gpt-5.4",
+        hard_timeout_seconds=30.0,
+    )
+
+    assert "paper" in captured_steps
+    assert "figures" in captured_steps
+    assert captured_steps.index("figures") > captured_steps.index("paper")
+    job = get_job(job_id, user=user)
+    assert job is not None
+    assert job.get("status") == "completed"
+    assert job.get("current_step") == "pipeline"
 
 
 def test_api_run_full_pipeline_sync_completes_job(monkeypatch, db):

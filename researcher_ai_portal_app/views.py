@@ -1405,6 +1405,37 @@ def _run_with_timeout(
             raise TimeoutError(f"{label} exceeded timeout ({int(timeout)}s)") from exc
 
 
+def _run_with_timeout_and_heartbeat(
+    fn: Callable[[], Any],
+    *,
+    timeout_seconds: float,
+    label: str,
+    heartbeat_seconds: float = 15.0,
+    on_heartbeat: Callable[[], None] | None = None,
+) -> Any:
+    """Run blocking work with timeout while emitting periodic heartbeats."""
+    timeout = max(1.0, float(timeout_seconds))
+    heartbeat = max(1.0, float(heartbeat_seconds))
+    started_at = time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        while True:
+            elapsed = time.monotonic() - started_at
+            remaining = timeout - elapsed
+            if remaining <= 0:
+                future.cancel()
+                raise TimeoutError(f"{label} exceeded timeout ({int(timeout)}s)")
+            try:
+                return future.result(timeout=min(heartbeat, remaining))
+            except concurrent.futures.TimeoutError:
+                if on_heartbeat is not None:
+                    try:
+                        on_heartbeat()
+                    except Exception:
+                        # Heartbeats are best-effort and should not fail a running parse.
+                        pass
+
+
 def _runtime_researcher_ai_version() -> str:
     module_version = "unknown"
     try:
@@ -1441,6 +1472,35 @@ def _report_version_drift(job_id: str, version: str) -> None:
         f"researcher-ai version drift detected: expected={expected}, runtime={version}",
         level="warning",
     )
+
+
+def _orchestrator_heartbeat_seconds() -> float:
+    raw = str(os.environ.get("RESEARCHER_AI_PORTAL_ORCHESTRATOR_HEARTBEAT_SECONDS", "15") or "15").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 15.0
+    return max(1.0, value)
+
+
+def _orchestrator_step_from_stage(stage: str, *, default: str = "paper") -> str:
+    """Map orchestrator stage identifiers to portal step keys."""
+    s = (stage or "").strip().lower()
+    if not s:
+        return default
+    if "paper" in s:
+        return "paper"
+    if "figure" in s:
+        return "figures"
+    if "dataset" in s:
+        return "datasets"
+    if "software" in s:
+        return "software"
+    if "method" in s or "validation" in s:
+        return "method"
+    if "workflow_graph" in s or "pipeline" in s or "builder" in s or "review" in s or "completed" in s:
+        return "pipeline"
+    return default
 
 
 def _compact_orchestrator_metadata(
@@ -1689,11 +1749,94 @@ def _run_orchestrator_job(
             source_type = PaperSource.URL
 
         orchestrator = WorkflowOrchestrator()
-        state = _run_with_timeout(
-            lambda: orchestrator.run(str(job.get("source") or ""), source_type=source_type),
-            timeout_seconds=timeout_value,
-            label="WorkflowOrchestrator.run",
-        )
+
+        source_value = str(job.get("source") or "")
+        heartbeat_seconds = _orchestrator_heartbeat_seconds()
+        state: dict[str, Any] = {
+            "source": source_value,
+            "source_type": source_type,
+            "progress": 0,
+            "stage": "initialized",
+            "build_attempts": 0,
+            "max_build_attempts": int(getattr(orchestrator, "max_build_attempts", 2) or 2),
+        }
+
+        node_plan: list[tuple[str, str, str]] = [
+            ("_node_parse_paper", "paper", STEP_LABELS["paper"]),
+            ("_node_parse_figures", "figures", STEP_LABELS["figures"]),
+            ("_node_parse_methods", "method", STEP_LABELS["method"]),
+            ("_node_parse_datasets", "datasets", STEP_LABELS["datasets"]),
+            ("_node_parse_software", "software", STEP_LABELS["software"]),
+            ("_node_build_workflow_graph", "pipeline", "Workflow Graph"),
+        ]
+        if str(getattr(orchestrator, "bioworkflow_mode", "warn")) != "off":
+            node_plan.append(("_node_validate_method", "method", "Method Validation"))
+
+        def _run_node(node_name: str, step_key: str, label: str) -> None:
+            running_progress = int(state.get("progress") or _progress_for_step(step_key) or 0)
+            running_progress = max(0, min(99, running_progress))
+            running_stage = f"Running {label}"
+
+            update_job(
+                job_id,
+                status="in_progress",
+                current_step=step_key,
+                stage=running_stage,
+                progress=running_progress,
+            )
+            _log_job_event(job_id, running_stage, step=step_key)
+
+            node_fn = getattr(orchestrator, node_name, None)
+            if not callable(node_fn):
+                raise _RunnerContractError(f"orchestrator_node_missing:{node_name}")
+
+            def _invoke() -> dict[str, Any]:
+                result = node_fn(state)
+                if not isinstance(result, dict):
+                    raise _RunnerContractError(
+                        f"orchestrator_node_invalid_result:{node_name}:{type(result).__name__}"
+                    )
+                return result
+
+            result = _run_with_timeout_and_heartbeat(
+                _invoke,
+                timeout_seconds=timeout_value,
+                label=f"WorkflowOrchestrator.{node_name}",
+                heartbeat_seconds=heartbeat_seconds,
+                on_heartbeat=lambda: update_job(
+                    job_id,
+                    status="in_progress",
+                    current_step=step_key,
+                    stage=running_stage,
+                    progress=running_progress,
+                ),
+            )
+            state.update(result)
+
+            stage_raw = str(state.get("stage") or "").strip()
+            mapped_step = _orchestrator_step_from_stage(stage_raw, default=step_key)
+            progress_value = int(state.get("progress") or running_progress)
+            progress_value = max(0, min(99, progress_value))
+            stage_text = stage_raw or f"Completed {label}"
+            update_job(
+                job_id,
+                status="in_progress",
+                current_step=mapped_step,
+                stage=stage_text,
+                progress=progress_value,
+            )
+            _log_job_event(job_id, stage_text, step=mapped_step)
+
+        for node_name, step_key, label in node_plan:
+            _run_node(node_name, step_key, label)
+
+        while True:
+            _run_node("_node_build_pipeline", "pipeline", STEP_LABELS["pipeline"])
+            next_after = getattr(orchestrator, "_next_after_build_pipeline", None)
+            if not callable(next_after):
+                break
+            if str(next_after(state)) == "end":
+                break
 
     components = _normalize_orchestrator_components(state, mods)
     for step in STEP_ORDER:
