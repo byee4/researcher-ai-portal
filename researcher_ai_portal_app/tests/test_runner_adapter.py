@@ -13,6 +13,7 @@ from django.utils import timezone
 from pydantic import BaseModel
 
 from researcher_ai_portal_app import views
+from researcher_ai_portal_app.api import routes as api_routes
 from researcher_ai_portal_app.job_store import create_job, get_job
 from researcher_ai_portal_app.models import WorkflowJob
 
@@ -173,6 +174,40 @@ def test_run_all_steps_async_routes_to_orchestrator_runner(monkeypatch, db):
     job = get_job(job_id, user=user)
     assert job is not None
     assert job.get("status") == "completed"
+
+
+def test_api_run_full_pipeline_sync_completes_job(monkeypatch, db):
+    user = get_user_model().objects.create_user("api_runner_user", password="pw")
+    job_id = create_job(
+        input_type="pmid",
+        input_value="123",
+        source="123",
+        source_type="pmid",
+        llm_model="gpt-5.4",
+        user=user,
+        status="queued",
+        stage="Queued",
+        progress=0,
+        current_step="paper",
+    )
+    called_steps: list[str] = []
+
+    monkeypatch.setattr(views, "STEP_ORDER", ["paper"])
+    monkeypatch.setattr(views, "STEP_LABELS", {"paper": "Paper Parser"})
+    monkeypatch.setattr(
+        views,
+        "_dispatch_workflow_step",
+        lambda job_id, step, *, llm_api_key, llm_model, force_reparse: called_steps.append(step),
+    )
+    monkeypatch.setattr(api_routes, "_save_graph_after_completion", lambda job_id: None)
+
+    api_routes._run_full_pipeline_sync(job_id, "sk-test-1234567890", "gpt-5.4", False)
+
+    job = get_job(job_id, user=user)
+    assert called_steps == ["paper"]
+    assert job is not None
+    assert job.get("status") == "completed"
+    assert job.get("progress") == 100
 
 
 def test_runner_timeout_marks_job_failed(monkeypatch, db):

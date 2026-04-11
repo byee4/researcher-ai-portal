@@ -108,7 +108,9 @@ else:
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': os.environ.get(
                 'TEMPLATE_DB_PATH',
-                str((BASE_DIR.parent / 'template.db').resolve()),
+                # Keep local SQLite DB inside the project root so dev/test
+                # environments (including sandboxed runs) can write safely.
+                str((BASE_DIR / 'template.db').resolve()),
             ),
         }
     }
