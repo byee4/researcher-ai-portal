@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.metadata
+import sys
 import time
+import types
 from datetime import timedelta
 
 import pytest
@@ -46,6 +49,22 @@ def test_version_drift_logs_info_when_check_disabled(monkeypatch):
     monkeypatch.setattr(views, "_log_job_event", _capture)
     views._report_version_drift("job1", "3.0.0")
     assert any("drift check disabled" in item for item in captured)
+
+
+def test_runtime_researcher_ai_version_prefers_distribution_metadata(monkeypatch):
+    monkeypatch.setitem(sys.modules, "researcher_ai", types.SimpleNamespace(__version__="2.2.3"))
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "2.3.0")
+    assert views._runtime_researcher_ai_version() == "2.3.0"
+
+
+def test_runtime_researcher_ai_version_falls_back_to_module_version(monkeypatch):
+    monkeypatch.setitem(sys.modules, "researcher_ai", types.SimpleNamespace(__version__="2.2.3"))
+
+    def _raise_not_found(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise_not_found)
+    assert views._runtime_researcher_ai_version() == "2.2.3"
 
 
 def test_validate_component_json_datasets_preserves_subtype_fields():

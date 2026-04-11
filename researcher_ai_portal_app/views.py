@@ -1406,12 +1406,22 @@ def _run_with_timeout(
 
 
 def _runtime_researcher_ai_version() -> str:
+    module_version = "unknown"
     try:
         import researcher_ai  # type: ignore
 
-        return str(getattr(researcher_ai, "__version__", "unknown") or "unknown")
+        module_version = str(getattr(researcher_ai, "__version__", "unknown") or "unknown")
     except Exception:
-        return "unknown"
+        module_version = "unknown"
+    try:
+        from importlib import metadata as importlib_metadata
+
+        dist_version = str(importlib_metadata.version("researcher-ai") or "unknown")
+    except Exception:
+        dist_version = "unknown"
+    if dist_version != "unknown":
+        return dist_version
+    return module_version
 
 
 def _report_version_drift(job_id: str, version: str) -> None:

@@ -16,6 +16,12 @@ Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API 
 
 ## Release notes
 
+### v2.3.0 (April 10, 2026)
+
+- Updated default package pin to `researcher-ai==2.3.0`.
+- Verified portal compatibility by running the full test suite against `researcher-ai` 2.3.0.
+- Added a live PMID `39303722` validation report documenting observed failures and fallback behavior.
+
 ### v2.2.2 (April 9, 2026)
 
 - Updated default package pin to `researcher-ai==2.2.2`.
@@ -89,6 +95,7 @@ uvicorn researcher_ai_portal.asgi:application --reload --host 0.0.0.0 --port 800
 | [`docs/SETUP.md`](docs/SETUP.md) | Full setup guide: prerequisites, environment variables, local dev, Docker, and production deployment |
 | [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | End-to-end walkthrough: parsing a paper, editing components, reading the dashboard |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, component inventory, FastAPI integration design |
+| [`docs/PMID_39303722_portal_test_2026-04-10_v230.md`](docs/PMID_39303722_portal_test_2026-04-10_v230.md) | Live compatibility test report for `researcher-ai` v2.3.0 (PMID `39303722`) |
 
 ---
 

@@ -6,13 +6,13 @@ This document covers everything needed to run `researcher-ai-portal` — from a 
 
 ## Release baseline
 
-`v2.2.3` is the current minor release baseline before major feature development.
+`v2.3.0` is the current minor release baseline before major feature development.
 
 If you need to reproduce the exact baseline state:
 
 ```bash
 git fetch --tags
-git checkout v2.2.3
+git checkout v2.3.0
 ```
 
 For new major feature branches, run a quick preflight first:
@@ -30,7 +30,7 @@ pytest -q
 |-------------|---------|-------|
 | Python | 3.11+ | 3.12 recommended |
 | Docker + Compose | v24+ | Docker Desktop on Mac/Windows |
-| `researcher-ai` package | 2.2.3+ | Local checkout or pip release |
+| `researcher-ai` package | 2.3.0+ | Local checkout or pip release |
 | PostgreSQL | 14+ | Docker image used in all compose setups; SQLite works for development |
 | An LLM API key | — | OpenAI, Anthropic, or Google — entered per-session in the UI |
 
@@ -206,7 +206,7 @@ pip install -e /path/to/researcher-ai
 For a pinned release:
 
 ```bash
-pip install researcher-ai==2.2.3
+pip install researcher-ai==2.3.0
 ```
 
 Optional — install the Cytoscape DAG canvas:
@@ -431,7 +431,7 @@ No existing Django URL patterns, views, or templates were modified. Rollback is 
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'researcher_ai'`**
-The `researcher-ai` package is not installed. Run `pip install -e /path/to/researcher-ai` or `pip install researcher-ai==2.2.3`.
+The `researcher-ai` package is not installed. Run `pip install -e /path/to/researcher-ai` or `pip install researcher-ai==2.3.0`.
 
 **`DisallowedHost` error**
 Add your hostname to `DJANGO_ALLOWED_HOSTS` in `.env`.

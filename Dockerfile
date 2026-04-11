@@ -15,7 +15,7 @@ COPY .vendor/researcher-ai /app/.vendor/researcher-ai
 COPY .vendor/wheels /app/.vendor/wheels
 RUN pip install -r requirements.txt
 
-ARG RESEARCHER_AI_PIP_SPEC=researcher-ai==2.2.2
+ARG RESEARCHER_AI_PIP_SPEC=researcher-ai==2.3.0
 RUN pip install "${RESEARCHER_AI_PIP_SPEC}"
 COPY . .
 RUN chmod +x /app/scripts/start_web.sh /app/scripts/start_worker.sh /app/scripts/run_local_docker.sh
