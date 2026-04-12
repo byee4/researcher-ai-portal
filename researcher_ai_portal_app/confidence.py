@@ -37,6 +37,39 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def _normalize_text(value: Any) -> str:
+    """Return lowercase text with punctuation collapsed to spaces.
+
+    Plain-English behavior:
+    - Treat values like ``RNA-seq`` and ``RNA seq`` as equivalent.
+    - Make matching resilient to punctuation and accidental casing changes.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _dataset_links_to_assay(
+    *,
+    assay_name: str,
+    assay_raw_source_upper: str,
+    dataset: dict[str, Any],
+) -> bool:
+    """Return True when a dataset row clearly links to a given assay.
+
+    We accept two plain-English linkage patterns:
+    1. The dataset accession appears in the assay's ``raw_data_source`` text.
+    2. The dataset ``experiment_type`` text names the assay (or vice versa).
+    """
+    accession = str(dataset.get("accession") or "").strip().upper()
+    if accession and accession in assay_raw_source_upper:
+        return True
+
+    assay_norm = _normalize_text(assay_name)
+    exp_norm = _normalize_text(dataset.get("experiment_type"))
+    if not assay_norm or not exp_norm:
+        return False
+    return assay_norm in exp_norm or exp_norm in assay_norm
+
+
 def compute_actionable_items(
     components: dict[str, Any],
     confidence_result: dict[str, Any],
@@ -218,11 +251,7 @@ def compute_confidence(components: dict[str, Any]) -> dict[str, Any]:
     assay_graph = (method.get("assay_graph") or {})
     assays = assay_graph.get("assays") or []
     parse_warnings = method.get("parse_warnings") or []
-    dataset_accessions = {
-        str(d.get("accession") or "").upper()
-        for d in datasets
-        if isinstance(d, dict) and str(d.get("accession") or "").strip()
-    }
+    dataset_rows = [d for d in datasets if isinstance(d, dict)]
     fig_conf_by_assay = _figure_confidence_by_assay(figures, assays)
 
     assay_confidences: dict[str, dict[str, Any]] = {}
@@ -250,8 +279,15 @@ def compute_confidence(components: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
-        raw_source = str(assay.get("raw_data_source") or "").upper()
-        dataset_resolved = any(acc and acc in raw_source for acc in dataset_accessions) if dataset_accessions else False
+        raw_source_upper = str(assay.get("raw_data_source") or "").upper()
+        dataset_resolved = any(
+            _dataset_links_to_assay(
+                assay_name=name,
+                assay_raw_source_upper=raw_source_upper,
+                dataset=row,
+            )
+            for row in dataset_rows
+        )
         warning_count = sum(1 for w in parse_warnings if name.lower() in str(w).lower())
         step_mean = mean([c["overall"] for c in step_confidences]) if step_confidences else 50.0
         figure_mean = fig_conf_by_assay.get(name, 50.0)

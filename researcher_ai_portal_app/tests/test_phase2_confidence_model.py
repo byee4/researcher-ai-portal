@@ -61,3 +61,53 @@ def test_phase2_dashboard_context_exposes_confidence_summary():
     ctx = _dashboard_context(job)
     assert "confidence" in ctx
     assert "overall_confidence" in ctx["summary"]
+
+
+def test_phase2_dataset_resolved_when_experiment_type_matches_assay_name():
+    components = {
+        "paper": {"title": "Test Paper"},
+        "figures": [],
+        "method": {
+            "assay_graph": {
+                "assays": [
+                    {
+                        "name": "RNA-seq",
+                        "raw_data_source": "",
+                        "steps": [],
+                    }
+                ]
+            },
+            "parse_warnings": [],
+        },
+        "datasets": [{"accession": "NO_DATASET_REPORTED", "experiment_type": "RNA seq profiling"}],
+        "software": [],
+        "pipeline": {"validation_report": {"passed": True}},
+    }
+
+    conf = compute_confidence(components)
+    assert conf["assay_confidences"]["RNA-seq"]["dataset_resolved"] is True
+
+
+def test_phase2_dataset_unresolved_when_experiment_type_is_unrelated():
+    components = {
+        "paper": {"title": "Test Paper"},
+        "figures": [],
+        "method": {
+            "assay_graph": {
+                "assays": [
+                    {
+                        "name": "RNA-seq",
+                        "raw_data_source": "",
+                        "steps": [],
+                    }
+                ]
+            },
+            "parse_warnings": [],
+        },
+        "datasets": [{"accession": "NO_DATASET_REPORTED", "experiment_type": "proteomics"}],
+        "software": [],
+        "pipeline": {"validation_report": {"passed": True}},
+    }
+
+    conf = compute_confidence(components)
+    assert conf["assay_confidences"]["RNA-seq"]["dataset_resolved"] is False

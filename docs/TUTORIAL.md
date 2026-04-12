@@ -105,6 +105,7 @@ The Datasets step now includes a **Dataset outline** card above the JSON editor.
 
 - Use **Correct dataset** on any dataset row to open a side drawer with editable fields.
 - Update accession, source, title, organism, experiment type, summary, and primary URL without touching raw JSON.
+- To associate a dataset with a specific assay, set **Experiment type** to the assay name (or include it, for example `RNA-seq profiling` for an `RNA-seq` assay). The confidence model now uses this as an explicit assay-link hint.
 - If the parser cannot resolve any real dataset accession, the portal now creates a placeholder row (`NO_DATASET_REPORTED`) automatically so you still have a dataset record to correct immediately.
 - Save the drawer form to write changes directly into `datasets[*]`.
 - The **Dataset Parsers data** JSON card remains available for full manual edits when needed.
@@ -134,7 +135,7 @@ A 0–100 confidence score summarises extraction quality:
 
 - **50%** — average step completeness (software found, version identified, I/O typed).
 - **20%** — figure-to-assay matching confidence.
-- **15%** — dataset accession resolution rate.
+- **15%** — dataset-to-assay linkage quality (matched by accession in `raw_data_source` or by experiment-type text matching the assay name).
 - **15%** — parse warning count (fewer warnings = higher score).
 
 Use this score to triage where manual review is most needed.
