@@ -1388,6 +1388,7 @@ def _inject_figure_ground_truth(figures_payload: Any, cleaned: dict[str, Any]) -
 
 def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
     """Build plain-English assay/step rows for the methods workflow correction card."""
+    warning_rows = _method_warning_rows(method_payload)
     method = method_payload if isinstance(method_payload, dict) else {}
     assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
     raw_assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
@@ -1397,6 +1398,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
             continue
         assay_name = str(assay.get("name") or f"Assay {assay_idx + 1}").strip() or f"Assay {assay_idx + 1}"
         assay_steps = assay.get("steps") if isinstance(assay.get("steps"), list) else []
+        assay_warning_rows = [w for w in warning_rows if w.get("assay_index") == assay_idx and w.get("step_index") is None]
         step_rows: list[dict[str, Any]] = []
         for step_idx, step in enumerate(assay_steps):
             if not isinstance(step, dict):
@@ -1404,6 +1406,11 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
             step_number = step.get("step_number")
             if not isinstance(step_number, int):
                 step_number = step_idx + 1
+            step_warning_rows = [
+                w
+                for w in warning_rows
+                if w.get("assay_index") == assay_idx and w.get("step_index") == step_idx
+            ]
             step_rows.append(
                 {
                     "assay_index": assay_idx,
@@ -1416,16 +1423,233 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "output_data": str(step.get("output_data") or "").strip(),
                     "parameters": str(step.get("parameters") or "").strip(),
                     "code_reference": str(step.get("code_reference") or "").strip(),
+                    "warnings": step_warning_rows,
+                    "missing_field_hints": _method_missing_field_hints(step),
+                    "is_inferred_stage": False,
+                    "inferred_stage_name": "",
+                }
+            )
+        # For template warnings, infer empty stage skeletons users can fill or remove.
+        missing_stages = _inferred_missing_stage_names_for_assay(
+            warning_rows,
+            assay_index=assay_idx,
+            assay_name=assay_name,
+        )
+        for offset, stage_name in enumerate(missing_stages):
+            step_rows.append(
+                {
+                    "assay_index": assay_idx,
+                    "step_index": len(assay_steps) + offset,
+                    "step_number": len(assay_steps) + offset + 1,
+                    "description": "",
+                    "software": "",
+                    "software_version": "",
+                    "input_data": "",
+                    "output_data": "",
+                    "parameters": "",
+                    "code_reference": "",
+                    "warnings": [
+                        {
+                            "severity": "warning",
+                            "summary": f'Missing template stage "{stage_name}"',
+                            "raw": f"template_missing_stages:{stage_name}",
+                            "category": "template_missing_stages",
+                        }
+                    ],
+                    "missing_field_hints": [
+                        "Fill the stage details manually, or remove this suggestion if not needed."
+                    ],
+                    "is_inferred_stage": True,
+                    "inferred_stage_name": stage_name,
                 }
             )
         rows.append(
             {
                 "assay_index": assay_idx,
                 "assay_name": assay_name,
+                "assay_warnings": assay_warning_rows,
                 "steps": step_rows,
             }
         )
     return rows
+
+
+def _method_warning_rows(method_payload: Any) -> list[dict[str, Any]]:
+    """Classify method parse warnings and infer assay/step applicability."""
+    method = method_payload if isinstance(method_payload, dict) else {}
+    assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
+    raw_assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
+    parse_warnings = method.get("parse_warnings") if isinstance(method.get("parse_warnings"), list) else []
+    rows: list[dict[str, Any]] = []
+    for idx, warning in enumerate(parse_warnings):
+        raw = str(warning or "").strip()
+        if not raw:
+            continue
+        assay_idx = _infer_warning_assay_index(raw, raw_assays)
+        if assay_idx is None:
+            inferred_assay_idx, inferred_step_idx = _infer_warning_target_by_software(raw, raw_assays)
+            assay_idx = inferred_assay_idx
+            step_idx = inferred_step_idx
+        else:
+            step_idx = _infer_warning_step_index(raw, raw_assays, assay_idx)
+        rows.append(
+            {
+                "warning_index": idx,
+                "raw": raw,
+                "category": _warning_category(raw),
+                "severity": _warning_severity(raw),
+                "summary": _warning_summary(raw),
+                "assay_index": assay_idx,
+                "step_index": step_idx,
+            }
+        )
+    return rows
+
+
+def _warning_category(raw: str) -> str:
+    lower = raw.lower()
+    if lower.startswith("assay_stub:"):
+        return "assay_stub"
+    if lower.startswith("dependency_dropped:"):
+        return "dependency_dropped"
+    if lower.startswith("inferred_parameters_fallback_mode:"):
+        return "inferred_parameters_fallback_mode"
+    if lower.startswith("inferred_parameters:"):
+        return "inferred_parameters"
+    if lower.startswith("template_missing_stages:"):
+        return "template_missing_stages"
+    if lower.startswith("paper_rag_vision_fallback:"):
+        return "paper_rag_vision_fallback"
+    if lower.startswith("assay_filtered_non_computational:"):
+        return "assay_filtered_non_computational"
+    return "unknown"
+
+
+def _warning_severity(raw: str) -> str:
+    category = _warning_category(raw)
+    if category in {"assay_stub", "dependency_dropped"}:
+        return "error"
+    if category in {"inferred_parameters", "inferred_parameters_fallback_mode", "template_missing_stages"}:
+        return "warning"
+    return "info"
+
+
+def _warning_summary(raw: str) -> str:
+    category = _warning_category(raw)
+    suffix = raw.split(":", 1)[1].strip() if ":" in raw else raw
+    if category == "assay_stub":
+        return f"Assay parse failed and a fallback stub was created: {suffix}"
+    if category == "dependency_dropped":
+        return f"Dependency edge dropped: {suffix}"
+    if category == "inferred_parameters":
+        return f"Parameters inferred rather than extracted: {suffix}"
+    if category == "inferred_parameters_fallback_mode":
+        return f"Parameter inference used fallback mode: {suffix}"
+    if category == "template_missing_stages":
+        return f"Expected template stages are missing: {suffix}"
+    if category == "assay_filtered_non_computational":
+        return f"Assay filtered as non-computational: {suffix}"
+    if category == "paper_rag_vision_fallback":
+        return "RAG retrieval fell back to vision extraction."
+    return raw
+
+
+def _parse_template_missing_stages(raw: str) -> list[str]:
+    if _warning_category(raw) != "template_missing_stages":
+        return []
+    suffix = raw.split(":", 1)[1] if ":" in raw else ""
+    tokens = [t.strip() for t in re.split(r"[;,]", suffix) if t.strip()]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        key = token.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(token)
+    return normalized
+
+
+def _infer_warning_assay_index(raw: str, raw_assays: list[Any]) -> int | None:
+    lower = raw.lower()
+    for idx, assay in enumerate(raw_assays):
+        if not isinstance(assay, dict):
+            continue
+        name = str(assay.get("name") or "").strip()
+        if name and name.lower() in lower:
+            return idx
+    return None
+
+
+def _infer_warning_step_index(raw: str, raw_assays: list[Any], assay_idx: int | None) -> int | None:
+    if assay_idx is None or assay_idx < 0 or assay_idx >= len(raw_assays):
+        return None
+    assay = raw_assays[assay_idx] if isinstance(raw_assays[assay_idx], dict) else {}
+    steps = assay.get("steps") if isinstance(assay.get("steps"), list) else []
+    match = re.search(r"\bstep\s*(\d+)\b", raw, flags=re.IGNORECASE)
+    if match:
+        parsed = int(match.group(1))
+        if 1 <= parsed <= len(steps):
+            return parsed - 1
+    lower = raw.lower()
+    for idx, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        software = str(step.get("software") or "").strip()
+        if software and software.lower() in lower:
+            return idx
+    return None
+
+
+def _infer_warning_target_by_software(raw: str, raw_assays: list[Any]) -> tuple[int | None, int | None]:
+    lower = raw.lower()
+    for assay_idx, assay in enumerate(raw_assays):
+        if not isinstance(assay, dict):
+            continue
+        steps = assay.get("steps") if isinstance(assay.get("steps"), list) else []
+        for step_idx, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            software = str(step.get("software") or "").strip()
+            if software and software.lower() in lower:
+                return assay_idx, step_idx
+    return None, None
+
+
+def _inferred_missing_stage_names_for_assay(
+    warning_rows: list[dict[str, Any]],
+    *,
+    assay_index: int,
+    assay_name: str,
+) -> list[str]:
+    stage_names: list[str] = []
+    seen: set[str] = set()
+    for row in warning_rows:
+        if row.get("category") != "template_missing_stages":
+            continue
+        target_assay = row.get("assay_index")
+        if target_assay is not None and target_assay != assay_index:
+            continue
+        for stage in _parse_template_missing_stages(str(row.get("raw") or "")):
+            key = stage.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            stage_names.append(stage)
+    return stage_names
+
+
+def _method_missing_field_hints(step: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    if not str(step.get("software_version") or "").strip():
+        hints.append("Version format example: 2.7.11b")
+    if not str(step.get("input_data") or "").strip():
+        hints.append("Input format example: FASTQ.gz, BAM, matrix TSV")
+    if not str(step.get("output_data") or "").strip():
+        hints.append("Output format example: sorted BAM, quant.sf, DE table CSV")
+    if not str(step.get("code_reference") or "").strip():
+        hints.append("Code reference example: nf-core/rnaseq@3.14.0")
+    return hints
 
 
 def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any]) -> dict[str, Any]:
@@ -1448,7 +1672,22 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     steps = assay.get("steps")
     if not isinstance(steps, list):
         raise ValueError("Selected assay has no editable steps.")
-    if step_idx < 0 or step_idx >= len(steps):
+    inferred_stage_name = str(cleaned.get("inferred_stage_name") or "").strip()
+    if step_idx == len(steps) and inferred_stage_name:
+        steps.append(
+            {
+                "step_number": len(steps) + 1,
+                "description": inferred_stage_name.replace("_", " ").strip().title(),
+                "software": "",
+                "software_version": "",
+                "input_data": "",
+                "output_data": "",
+                "parameters": "",
+                "code_reference": "",
+                "inferred_from_warning": "template_missing_stages",
+            }
+        )
+    elif step_idx < 0 or step_idx >= len(steps):
         raise ValueError("Selected step was not found in the current assay.")
     step = steps[step_idx]
     if not isinstance(step, dict):
@@ -1461,6 +1700,34 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     step["output_data"] = str(cleaned.get("output_data") or "").strip()
     step["parameters"] = str(cleaned.get("parameters") or "").strip()
     step["code_reference"] = str(cleaned.get("code_reference") or "").strip()
+    if inferred_stage_name:
+        step["template_stage"] = inferred_stage_name
+    return payload
+
+
+def _remove_method_step(method_payload: Any, *, assay_index: int, step_index: int) -> dict[str, Any]:
+    """Remove one method assay step and renumber remaining steps."""
+    payload = json.loads(json.dumps(method_payload if isinstance(method_payload, dict) else {}))
+    assay_graph = payload.get("assay_graph")
+    if not isinstance(assay_graph, dict):
+        raise ValueError("Method payload is missing assay graph data.")
+    assays = assay_graph.get("assays")
+    if not isinstance(assays, list):
+        raise ValueError("Method payload is missing assay list data.")
+    if assay_index < 0 or assay_index >= len(assays):
+        raise ValueError("Selected assay was not found in the current method payload.")
+    assay = assays[assay_index]
+    if not isinstance(assay, dict):
+        raise ValueError("Selected assay is malformed.")
+    steps = assay.get("steps")
+    if not isinstance(steps, list):
+        raise ValueError("Selected assay has no editable steps.")
+    if step_index < 0 or step_index >= len(steps):
+        raise ValueError("Selected step was not found in the current assay.")
+    steps.pop(step_index)
+    for idx, step in enumerate(steps):
+        if isinstance(step, dict):
+            step["step_number"] = idx + 1
     return payload
 
 
@@ -3106,6 +3373,14 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("method", payload, mods)
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Saved method step correction."
+            elif action == "remove_method_step" and step == "method":
+                assay_idx = int(request.POST.get("assay_index", "-1"))
+                step_idx = int(request.POST.get("step_index", "-1"))
+                payload = _remove_method_step(method_now, assay_index=assay_idx, step_index=step_idx)
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("method", payload, mods)
+                _persist_component(job_id, "method", validated, "corrected_by_user")
+                info = "Removed method step."
             elif action == "next":
                 i = STEP_ORDER.index(step)
                 target = STEP_ORDER[min(i + 1, len(STEP_ORDER) - 1)]
@@ -3183,7 +3458,7 @@ def workflow_step(request, job_id: str, step: str):
     if step == "method" and method_step_correction_form is None:
         method_step_correction_form = MethodStepCorrectionForm(
             prefix=method_step_form_prefix,
-            initial={"assay_index": 0, "step_index": 0},
+            initial={"assay_index": 0, "step_index": 0, "inferred_stage_name": ""},
         )
 
     # Phase 5: compute confidence to colour-code stepper circles.

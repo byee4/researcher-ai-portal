@@ -101,3 +101,39 @@ class MethodStepCorrectionForm(forms.Form):
     output_data = forms.CharField(required=False, max_length=500)
     parameters = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 3}))
     code_reference = forms.CharField(required=False, max_length=500)
+    inferred_stage_name = forms.CharField(required=False, max_length=240)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["description"].widget.attrs.update(
+            {"placeholder": "e.g., Align FASTQ reads to hg38 and sort BAM output"}
+        )
+        self.fields["software"].widget.attrs.update(
+            {"placeholder": "e.g., STAR, salmon, featureCounts"}
+        )
+        self.fields["software_version"].widget.attrs.update(
+            {
+                "placeholder": "e.g., 2.7.11b",
+                "list": "method-version-format-options",
+            }
+        )
+        self.fields["input_data"].widget.attrs.update(
+            {
+                "placeholder": "e.g., FASTQ.gz, BAM, count matrix TSV",
+                "list": "method-input-format-options",
+            }
+        )
+        self.fields["output_data"].widget.attrs.update(
+            {
+                "placeholder": "e.g., sorted BAM, quant.sf, DE table CSV",
+                "list": "method-output-format-options",
+            }
+        )
+        self.fields["parameters"].widget.attrs.update(
+            {
+                "placeholder": "e.g., --twopassMode Basic --outFilterMultimapNmax 20",
+            }
+        )
+        self.fields["code_reference"].widget.attrs.update(
+            {"placeholder": "e.g., nf-core/rnaseq@3.14.0 or https://github.com/org/repo"}
+        )

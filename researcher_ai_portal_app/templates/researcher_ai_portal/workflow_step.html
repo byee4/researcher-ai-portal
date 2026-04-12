@@ -207,22 +207,56 @@
                     <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
                     <span class="pill pill-neutral">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
                   </div>
+                  {% if assay.assay_warnings %}
+                    <div class="method-assay-warning-stack">
+                      {% for warn in assay.assay_warnings %}
+                        <div class="method-warning-chip method-warning-chip-{{ warn.severity }}">
+                          {{ warn.summary }}
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
                   {% if assay.steps %}
                     <div class="method-step-list">
                       {% for assay_step in assay.steps %}
-                        <div class="method-step-row">
+                        <div id="inferred-row-{{ assay_step.assay_index }}-{{ assay_step.step_index }}"
+                             class="method-step-row {% if assay_step.is_inferred_stage %}method-step-row-inferred{% endif %}">
                           <div class="method-step-top">
-                            <span class="method-step-chip">Step {{ assay_step.step_number }}</span>
+                            <span class="method-step-chip">{% if assay_step.is_inferred_stage %}Suggested stage{% else %}Step {{ assay_step.step_number }}{% endif %}</span>
                             <span class="text-xs text-muted">
-                              {{ assay_step.software|default:"Unknown tool" }}{% if assay_step.software_version %} {{ assay_step.software_version }}{% endif %}
+                              {% if assay_step.is_inferred_stage %}
+                                {{ assay_step.inferred_stage_name }}
+                              {% else %}
+                                {{ assay_step.software|default:"Unknown tool" }}{% if assay_step.software_version %} {{ assay_step.software_version }}{% endif %}
+                              {% endif %}
                             </span>
                           </div>
+                          {% if assay_step.warnings %}
+                            <div class="method-assay-warning-stack">
+                              {% for warn in assay_step.warnings %}
+                                <div class="method-warning-chip method-warning-chip-{{ warn.severity }}">
+                                  {{ warn.summary }}
+                                </div>
+                              {% endfor %}
+                            </div>
+                          {% endif %}
                           <p class="text-xs" style="color: var(--text); margin-top: 6px; margin-bottom: 4px;">
-                            {{ assay_step.description|default:"No description provided yet." }}
+                            {% if assay_step.is_inferred_stage %}
+                              Inferred from <code>template_missing_stages</code>. Fill this stage if applicable, or remove the suggestion.
+                            {% else %}
+                              {{ assay_step.description|default:"No description provided yet." }}
+                            {% endif %}
                           </p>
                           <p class="text-xs text-muted" style="margin: 0;">
                             Input: {{ assay_step.input_data|default:"Unknown" }} · Output: {{ assay_step.output_data|default:"Unknown" }}
                           </p>
+                          {% if assay_step.missing_field_hints %}
+                            <div class="method-hint-stack">
+                              {% for hint in assay_step.missing_field_hints %}
+                                <div class="method-format-hint">{{ hint }}</div>
+                              {% endfor %}
+                            </div>
+                          {% endif %}
                           <div style="margin-top: 8px;">
                             <button type="button"
                                     class="btn btn-ghost btn-sm correct-method-step-btn"
@@ -236,9 +270,25 @@
                                     data-input-data="{{ assay_step.input_data }}"
                                     data-output-data="{{ assay_step.output_data }}"
                                     data-parameters="{{ assay_step.parameters }}"
-                                    data-code-reference="{{ assay_step.code_reference }}">
-                              ✏ Correct this step
+                                    data-code-reference="{{ assay_step.code_reference }}"
+                                    data-inferred-stage-name="{{ assay_step.inferred_stage_name }}">
+                              {% if assay_step.is_inferred_stage %}✏ Fill this stage{% else %}✏ Correct this step{% endif %}
                             </button>
+                            {% if assay_step.is_inferred_stage %}
+                              <button type="button"
+                                      class="btn btn-ghost btn-sm remove-inferred-stage-btn"
+                                      data-remove-target="inferred-row-{{ assay_step.assay_index }}-{{ assay_step.step_index }}">
+                                Remove suggestion
+                              </button>
+                            {% else %}
+                              <form method="post" action="{{ request.path }}" class="inline-remove-step-form" style="display: inline-flex; margin-left: 6px;">
+                                {% csrf_token %}
+                                <input type="hidden" name="step_action" value="remove_method_step">
+                                <input type="hidden" name="assay_index" value="{{ assay_step.assay_index }}">
+                                <input type="hidden" name="step_index" value="{{ assay_step.step_index }}">
+                                <button type="submit" class="btn btn-ghost btn-sm remove-method-step-btn">Remove step</button>
+                              </form>
+                            {% endif %}
                           </div>
                         </div>
                       {% endfor %}
@@ -269,6 +319,15 @@
               <input type="hidden" name="step_action" value="inject_method_step_correction">
               {{ method_step_correction_form.assay_index }}
               {{ method_step_correction_form.step_index }}
+              {{ method_step_correction_form.inferred_stage_name }}
+              <div class="card card-sm" style="background: var(--surface-2);">
+                <p class="text-xs text-muted" style="margin: 0;">
+                  Format guidance:
+                  use tool versions like <code>2.7.11b</code>,
+                  input/output types like <code>FASTQ.gz</code>, <code>BAM</code>, <code>TSV</code>,
+                  and code references like <code>nf-core/rnaseq@3.14.0</code> or a GitHub URL.
+                </p>
+              </div>
               <div class="form-group">
                 <label class="text-xs text-muted">Description</label>
                 {{ method_step_correction_form.description }}
@@ -299,6 +358,23 @@
               </div>
               <button type="submit" class="btn btn-primary" style="justify-content: center;">Save step correction</button>
             </form>
+            <datalist id="method-version-format-options">
+              <option value="2.7.11b"></option>
+              <option value="1.18.0"></option>
+              <option value="3.14.0"></option>
+            </datalist>
+            <datalist id="method-input-format-options">
+              <option value="FASTQ.gz"></option>
+              <option value="BAM"></option>
+              <option value="counts.tsv"></option>
+              <option value="metadata.csv"></option>
+            </datalist>
+            <datalist id="method-output-format-options">
+              <option value="sorted BAM"></option>
+              <option value="quant.sf"></option>
+              <option value="DE_results.csv"></option>
+              <option value="peaks.narrowPeak"></option>
+            </datalist>
           </div>
         </div>
       {% endif %}
@@ -373,11 +449,55 @@
     background: var(--surface-2);
     padding: 10px;
   }
+  .method-step-row-inferred {
+    border-style: dashed;
+    border-color: var(--warning-mid);
+    background: var(--warning-soft);
+  }
   .method-step-top {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 8px;
+  }
+  .method-assay-warning-stack,
+  .method-hint-stack {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .method-warning-chip,
+  .method-format-hint {
+    display: inline-flex;
+    width: fit-content;
+    max-width: 100%;
+    font-size: .72rem;
+    border-radius: 999px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-2);
+    white-space: normal;
+  }
+  .method-warning-chip-error {
+    border-color: var(--danger-mid);
+    color: var(--danger);
+    background: var(--danger-soft);
+  }
+  .method-warning-chip-warning {
+    border-color: var(--warning-mid);
+    color: var(--warning);
+    background: var(--warning-soft);
+  }
+  .method-warning-chip-info {
+    border-color: var(--border-2);
+    color: var(--text-3);
+    background: var(--surface-2);
+  }
+  .remove-method-step-btn,
+  .remove-inferred-stage-btn {
+    color: var(--text-3);
   }
   .method-step-chip {
     display: inline-flex;
@@ -423,7 +543,8 @@
     margin-bottom: 12px;
   }
   #method-correction-drawer [id$="-assay_index"],
-  #method-correction-drawer [id$="-step_index"] {
+  #method-correction-drawer [id$="-step_index"],
+  #method-correction-drawer [id$="-inferred_stage_name"] {
     display: none;
   }
   @media (max-width: 900px) {
@@ -702,8 +823,10 @@
           const stepIdx = btn.dataset.stepIndex || "0";
           const stepNum = btn.dataset.stepNumber || "1";
           const assayName = btn.dataset.assayName || "Assay";
+          const inferredStageName = btn.dataset.inferredStageName || "";
           const aiEl = methodField("assay_index");
           const siEl = methodField("step_index");
+          const stageEl = methodField("inferred_stage_name");
           const descEl = methodField("description");
           const swEl = methodField("software");
           const svEl = methodField("software_version");
@@ -713,6 +836,7 @@
           const codeEl = methodField("code_reference");
           if (aiEl) aiEl.value = assayIdx;
           if (siEl) siEl.value = stepIdx;
+          if (stageEl) stageEl.value = inferredStageName;
           if (descEl) descEl.value = btn.dataset.description || "";
           if (swEl) swEl.value = btn.dataset.software || "";
           if (svEl) svEl.value = btn.dataset.softwareVersion || "";
@@ -723,6 +847,19 @@
           if (titleEl) titleEl.textContent = `Correct ${assayName} — Step ${stepNum}`;
           if (subtitleEl) subtitleEl.textContent = "These edits update the structured methods payload and can be re-saved in JSON below.";
           openMethodDrawer();
+        });
+      });
+      document.querySelectorAll(".remove-inferred-stage-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const targetId = btn.dataset.removeTarget || "";
+          const row = targetId ? document.getElementById(targetId) : null;
+          if (row) row.remove();
+        });
+      });
+      document.querySelectorAll(".inline-remove-step-form").forEach((formEl) => {
+        formEl.addEventListener("submit", (event) => {
+          const ok = window.confirm("Remove this step from the assay?");
+          if (!ok) event.preventDefault();
         });
       });
       document.addEventListener("keydown", (event) => {
