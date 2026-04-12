@@ -102,6 +102,8 @@ class MethodStepCorrectionForm(forms.Form):
     parameters = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 3}))
     code_reference = forms.CharField(required=False, max_length=500)
     inferred_stage_name = forms.CharField(required=False, max_length=240)
+    resolved_warning_indices = forms.CharField(required=False, max_length=500)
+    inferred_stage_warning_index = forms.IntegerField(required=False, min_value=0)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
