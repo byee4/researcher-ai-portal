@@ -208,8 +208,22 @@
               {% for assay in method_assay_rows %}
                 <div class="method-assay-card">
                   <div class="method-assay-head">
-                    <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
-                    <span class="pill pill-neutral">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
+                      <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
+                      <span class="pill pill-neutral">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
+                    </div>
+                    {% if assay.has_inferred_stage_suggestions %}
+                      <form method="post" action="{{ request.path }}" class="batch-remove-inferred-form" style="display: inline-flex; gap: 6px;">
+                        {% csrf_token %}
+                        <input type="hidden" name="step_action" value="remove_inferred_stage_suggestions_batch">
+                        {% for pair in assay.inferred_stage_pairs %}
+                          <input type="hidden" name="inferred_stage_pairs" value="{{ pair.warning_index }}::{{ pair.stage_name }}">
+                        {% endfor %}
+                        <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">
+                          Remove all suggestions
+                        </button>
+                      </form>
+                    {% endif %}
                   </div>
                   {% if assay.assay_warnings %}
                     <div class="method-assay-warning-stack">
@@ -883,6 +897,12 @@
       document.querySelectorAll(".inline-remove-step-form").forEach((formEl) => {
         formEl.addEventListener("submit", (event) => {
           const ok = window.confirm("Remove this step from the assay?");
+          if (!ok) event.preventDefault();
+        });
+      });
+      document.querySelectorAll(".batch-remove-inferred-form").forEach((formEl) => {
+        formEl.addEventListener("submit", (event) => {
+          const ok = window.confirm("Remove all inferred stage suggestions for this assay?");
           if (!ok) event.preventDefault();
         });
       });

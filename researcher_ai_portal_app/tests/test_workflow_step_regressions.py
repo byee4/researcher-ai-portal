@@ -152,6 +152,8 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "method-input-format-options" in text
     assert "remove-inferred-stage-btn" in text
     assert "remove_inferred_stage_suggestion" in text
+    assert "remove_inferred_stage_suggestions_batch" in text
+    assert "Remove all suggestions" in text
     assert "Remove step" in text
     assert "parameters as a JSON dictionary" in text
     assert "Expected methods payload shape per step" in text

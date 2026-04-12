@@ -1443,8 +1443,15 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
             assay_index=assay_idx,
             assay_name=assay_name,
         )
+        inferred_stage_pairs: list[dict[str, Any]] = []
         for offset, stage_item in enumerate(missing_stages):
             stage_name = stage_item["stage_name"]
+            inferred_stage_pairs.append(
+                {
+                    "stage_name": stage_name,
+                    "warning_index": stage_item.get("warning_index"),
+                }
+            )
             step_rows.append(
                 {
                     "assay_index": assay_idx,
@@ -1484,6 +1491,8 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                 "assay_name": assay_name,
                 "assay_warnings": assay_warning_rows,
                 "steps": step_rows,
+                "inferred_stage_pairs": inferred_stage_pairs,
+                "has_inferred_stage_suggestions": bool(inferred_stage_pairs),
             }
         )
     return rows
@@ -1912,6 +1921,31 @@ def _clear_template_missing_stage_warning(
             continue
         updated.append(rewritten)
     payload["parse_warnings"] = updated
+    return payload
+
+
+def _parse_inferred_stage_pair(token: str) -> tuple[int | None, str]:
+    text = str(token or "")
+    if "::" not in text:
+        return None, ""
+    left, right = text.split("::", 1)
+    left = left.strip()
+    right = right.strip()
+    warning_index = int(left) if left.isdigit() else None
+    return warning_index, right
+
+
+def _clear_template_missing_stages_by_pairs(method_payload: Any, pair_tokens: list[str]) -> dict[str, Any]:
+    payload = method_payload if isinstance(method_payload, dict) else {}
+    for token in pair_tokens:
+        warning_index, stage_name = _parse_inferred_stage_pair(token)
+        if not stage_name:
+            continue
+        payload = _clear_template_missing_stage_warning(
+            payload,
+            stage_name=stage_name,
+            warning_index=warning_index,
+        )
     return payload
 
 
@@ -3580,6 +3614,13 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("method", payload, mods)
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Removed inferred stage suggestion."
+            elif action == "remove_inferred_stage_suggestions_batch" and step == "method":
+                pair_tokens = request.POST.getlist("inferred_stage_pairs")
+                payload = _clear_template_missing_stages_by_pairs(method_now, pair_tokens)
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("method", payload, mods)
+                _persist_component(job_id, "method", validated, "corrected_by_user")
+                info = "Removed inferred stage suggestions for this assay."
             elif action == "next":
                 i = STEP_ORDER.index(step)
                 target = STEP_ORDER[min(i + 1, len(STEP_ORDER) - 1)]

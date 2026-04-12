@@ -295,6 +295,21 @@ def test_clear_template_missing_stage_warning_removes_only_selected_stage():
     assert len(updated["parse_warnings"]) == 2
 
 
+def test_clear_template_missing_stages_by_pairs_supports_batch_remove():
+    payload = {
+        "assay_graph": {"assays": []},
+        "parse_warnings": [
+            "template_missing_stages: align, quantify",
+            "template_missing_stages: normalize",
+        ],
+    }
+    updated = views._clear_template_missing_stages_by_pairs(
+        payload,
+        ["0::align", "1::normalize"],
+    )
+    assert updated["parse_warnings"] == ["template_missing_stages: quantify"]
+
+
 def test_method_assay_rows_normalizes_non_dict_parameters_to_empty_dict():
     rows = views._method_assay_rows(
         {
