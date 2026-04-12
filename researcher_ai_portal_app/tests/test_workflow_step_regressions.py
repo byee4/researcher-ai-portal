@@ -137,6 +137,20 @@ def test_workflow_step_template_includes_worker_log_sidebar():
     assert "renderLogs(data.logs);" in text
 
 
+def test_workflow_step_template_includes_method_step_correction_card():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "workflow_step.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert "Assay step outline" in text
+    assert "correct-method-step-btn" in text
+    assert "inject_method_step_correction" in text
+    assert "method-correction-drawer" in text
+
+
 def test_job_status_merges_cached_logs():
     views_path = Path(__file__).resolve().parents[1] / "views.py"
     text = views_path.read_text(encoding="utf-8")

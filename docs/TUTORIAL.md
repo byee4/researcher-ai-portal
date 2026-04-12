@@ -84,7 +84,12 @@ Ground truth corrections are injected into the figure payload and propagate to t
 
 ### The Method step
 
-The Method step displays the extracted assay graph. Each assay appears as a card showing its name, detected software tools, and input/output file types. Use the **Structured Editing** mode (toggle above the JSON editor) if you prefer form-based editing over raw JSON.
+The Method step now includes an **Assay step outline** card above the JSON editor. It gives a plain-English view of each assay and every extracted step.
+
+- Use **Correct this step** on any step to open a side drawer with editable fields.
+- Update description, software, version, input/output data, parameters, and code reference without touching raw JSON.
+- Save the correction to write changes directly into the structured `method.assay_graph.assays[*].steps[*]` payload.
+- The **Methods Parser data** JSON card is still available for full manual edits when needed.
 
 ---
 
@@ -182,6 +187,6 @@ curl -s http://localhost:8000/api/v1/jobs \
 
 **Try a simpler model first.** For initial exploration, `gemini-2.5-pro` or `gpt-5.4-mini` is faster and cheaper. Switch to `claude-opus-4-1` or `gpt-5.4` if the method step produces low-quality or incomplete assay graphs.
 
-**Use structured editing for the Method step.** The raw JSON editor is powerful but error-prone. The Structured Editing toggle renders the assay list as forms, which prevents JSON syntax errors and validates field values before saving.
+**Use step correction first for Method edits.** The Assay step outline card is the safest place for common fixes. It keeps edits focused on one assay step and avoids JSON syntax mistakes. Use the raw JSON editor only when you need broader structural changes.
 
 **Check the figure ground truth before rebuilding.** If a figure is misclassified (e.g. marked as a bar chart when it's a scatter plot), correcting it in the Figure Ground Truth panel and then triggering a rebuild will improve method-to-figure matching in downstream steps.

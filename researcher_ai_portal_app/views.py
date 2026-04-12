@@ -27,7 +27,7 @@ from django.views.decorators.http import require_GET, require_POST
 from .confidence import compute_actionable_items, compute_confidence
 from .dag_app import build_dag_app
 from .dashboards import build_dashboard_app
-from .forms import ComponentJSONForm, FigureGroundTruthForm
+from .forms import ComponentJSONForm, FigureGroundTruthForm, MethodStepCorrectionForm
 from .job_events import append_job_log, merge_logs
 from .models import PaperCache, WorkflowJob
 from .job_store import create_job, get_job, update_job
@@ -1383,6 +1383,84 @@ def _inject_figure_ground_truth(figures_payload: Any, cleaned: dict[str, Any]) -
             y_axis["scale"] = "linear"
         sub["y_axis"] = y_axis
 
+    return payload
+
+
+def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
+    """Build plain-English assay/step rows for the methods workflow correction card."""
+    method = method_payload if isinstance(method_payload, dict) else {}
+    assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
+    raw_assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
+    rows: list[dict[str, Any]] = []
+    for assay_idx, assay in enumerate(raw_assays):
+        if not isinstance(assay, dict):
+            continue
+        assay_name = str(assay.get("name") or f"Assay {assay_idx + 1}").strip() or f"Assay {assay_idx + 1}"
+        assay_steps = assay.get("steps") if isinstance(assay.get("steps"), list) else []
+        step_rows: list[dict[str, Any]] = []
+        for step_idx, step in enumerate(assay_steps):
+            if not isinstance(step, dict):
+                continue
+            step_number = step.get("step_number")
+            if not isinstance(step_number, int):
+                step_number = step_idx + 1
+            step_rows.append(
+                {
+                    "assay_index": assay_idx,
+                    "step_index": step_idx,
+                    "step_number": step_number,
+                    "description": str(step.get("description") or "").strip(),
+                    "software": str(step.get("software") or "").strip(),
+                    "software_version": str(step.get("software_version") or "").strip(),
+                    "input_data": str(step.get("input_data") or "").strip(),
+                    "output_data": str(step.get("output_data") or "").strip(),
+                    "parameters": str(step.get("parameters") or "").strip(),
+                    "code_reference": str(step.get("code_reference") or "").strip(),
+                }
+            )
+        rows.append(
+            {
+                "assay_index": assay_idx,
+                "assay_name": assay_name,
+                "steps": step_rows,
+            }
+        )
+    return rows
+
+
+def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any]) -> dict[str, Any]:
+    """Apply a user correction to one methods assay step and return updated payload."""
+    payload = json.loads(json.dumps(method_payload if isinstance(method_payload, dict) else {}))
+    assay_graph = payload.get("assay_graph")
+    if not isinstance(assay_graph, dict):
+        raise ValueError("Method payload is missing assay graph data.")
+    assays = assay_graph.get("assays")
+    if not isinstance(assays, list):
+        raise ValueError("Method payload is missing assay list data.")
+
+    assay_idx = int(cleaned.get("assay_index", -1))
+    step_idx = int(cleaned.get("step_index", -1))
+    if assay_idx < 0 or assay_idx >= len(assays):
+        raise ValueError("Selected assay was not found in the current method payload.")
+    assay = assays[assay_idx]
+    if not isinstance(assay, dict):
+        raise ValueError("Selected assay is malformed.")
+    steps = assay.get("steps")
+    if not isinstance(steps, list):
+        raise ValueError("Selected assay has no editable steps.")
+    if step_idx < 0 or step_idx >= len(steps):
+        raise ValueError("Selected step was not found in the current assay.")
+    step = steps[step_idx]
+    if not isinstance(step, dict):
+        raise ValueError("Selected step is malformed.")
+
+    step["description"] = str(cleaned.get("description") or "").strip()
+    step["software"] = str(cleaned.get("software") or "").strip()
+    step["software_version"] = str(cleaned.get("software_version") or "").strip()
+    step["input_data"] = str(cleaned.get("input_data") or "").strip()
+    step["output_data"] = str(cleaned.get("output_data") or "").strip()
+    step["parameters"] = str(cleaned.get("parameters") or "").strip()
+    step["code_reference"] = str(cleaned.get("code_reference") or "").strip()
     return payload
 
 
@@ -2967,7 +3045,9 @@ def workflow_step(request, job_id: str, step: str):
 
     form_prefix = f"step_{step}"
     gt_form_prefix = f"gt_{step}"
+    method_step_form_prefix = f"method_step_{step}"
     components_now = job.get("components") or {}
+    method_now = components_now.get("method") if isinstance(components_now.get("method"), dict) else {}
     figures_now = _sort_figures_and_panels_alphanumerically(components_now.get("figures") or [])
     figure_ids_for_gt = [
         str(f.get("figure_id"))
@@ -2979,6 +3059,7 @@ def workflow_step(request, job_id: str, step: str):
         figure_ids_for_gt = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
     figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
     figure_gt_form: FigureGroundTruthForm | None = None
+    method_step_correction_form: MethodStepCorrectionForm | None = None
 
     if request.method == "POST":
         action = request.POST.get("action", "") or request.POST.get("step_action", "")
@@ -3016,6 +3097,15 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("figures", payload, mods)
                 _persist_component(job_id, "figures", validated, "ground_truth_injected")
                 info = "Injected figure ground-truth values."
+            elif action == "inject_method_step_correction" and step == "method":
+                method_step_correction_form = MethodStepCorrectionForm(request.POST, prefix=method_step_form_prefix)
+                if not method_step_correction_form.is_valid():
+                    raise ValueError("Method step correction form is invalid. Please check the step fields.")
+                payload = _inject_method_step_correction(method_now, method_step_correction_form.cleaned_data)
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("method", payload, mods)
+                _persist_component(job_id, "method", validated, "corrected_by_user")
+                info = "Saved method step correction."
             elif action == "next":
                 i = STEP_ORDER.index(step)
                 target = STEP_ORDER[min(i + 1, len(STEP_ORDER) - 1)]
@@ -3070,6 +3160,7 @@ def workflow_step(request, job_id: str, step: str):
             figure_ids_for_ui = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
         figure_ids_for_ui = _sort_figure_ids_alphanumerically(figure_ids_for_ui)
     supplementary_figure_ids = _sort_figure_ids_alphanumerically(list(job.get("supplementary_figure_ids") or []))
+    method_assay_rows: list[dict[str, Any]] = _method_assay_rows((job.get("components") or {}).get("method") or {})
     i = STEP_ORDER.index(step)
     prev_step = STEP_ORDER[i - 1] if i > 0 else None
     next_step = STEP_ORDER[i + 1] if i < len(STEP_ORDER) - 1 else None
@@ -3088,6 +3179,11 @@ def workflow_step(request, job_id: str, step: str):
             prefix=gt_form_prefix,
             figure_ids=figure_ids_for_ui,
             initial={"figure_id": figure_ids_for_ui[0] if figure_ids_for_ui else "Figure 1"},
+        )
+    if step == "method" and method_step_correction_form is None:
+        method_step_correction_form = MethodStepCorrectionForm(
+            prefix=method_step_form_prefix,
+            initial={"assay_index": 0, "step_index": 0},
         )
 
     # Phase 5: compute confidence to colour-code stepper circles.
@@ -3143,6 +3239,8 @@ def workflow_step(request, job_id: str, step: str):
             "figure_parse_total": figure_parse_total,
             "figure_parse_percent": figure_parse_percent,
             "supplementary_figure_ids": supplementary_figure_ids,
+            "method_assay_rows": method_assay_rows,
+            "method_step_correction_form": method_step_correction_form,
             "prev_step": prev_step,
             "next_step": next_step,
             "progress": progress,
