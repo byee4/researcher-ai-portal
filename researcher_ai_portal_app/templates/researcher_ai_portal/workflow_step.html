@@ -269,7 +269,7 @@
                                     data-software-version="{{ assay_step.software_version }}"
                                     data-input-data="{{ assay_step.input_data }}"
                                     data-output-data="{{ assay_step.output_data }}"
-                                    data-parameters="{{ assay_step.parameters }}"
+                                    data-parameters-json="{{ assay_step.parameters_json|escapejs }}"
                                     data-code-reference="{{ assay_step.code_reference }}"
                                     data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
                                     data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
@@ -332,7 +332,8 @@
                   Format guidance:
                   use tool versions like <code>2.7.11b</code>,
                   input/output types like <code>FASTQ.gz</code>, <code>BAM</code>, <code>TSV</code>,
-                  and code references like <code>nf-core/rnaseq@3.14.0</code> or a GitHub URL.
+                  code references like <code>nf-core/rnaseq@3.14.0</code> or a GitHub URL,
+                  and parameters as a JSON dictionary such as <code>{"threads":"16","min_mapq":"30"}</code>.
                 </p>
               </div>
               <div class="form-group">
@@ -857,7 +858,7 @@
           if (svEl) svEl.value = btn.dataset.softwareVersion || "";
           if (inEl) inEl.value = btn.dataset.inputData || "";
           if (outEl) outEl.value = btn.dataset.outputData || "";
-          if (paramsEl) paramsEl.value = btn.dataset.parameters || "";
+          if (paramsEl) paramsEl.value = btn.dataset.parametersJson || "{}";
           if (codeEl) codeEl.value = btn.dataset.codeReference || "";
           if (titleEl) titleEl.textContent = `Correct ${assayName} — Step ${stepNum}`;
           if (subtitleEl) subtitleEl.textContent = "These edits update the structured methods payload and can be re-saved in JSON below.";

@@ -1416,6 +1416,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                 for w in step_warning_rows
                 if isinstance(w.get("warning_index"), int)
             ]
+            parameters_dict = _normalize_step_parameters(step.get("parameters"))
             step_rows.append(
                 {
                     "assay_index": assay_idx,
@@ -1426,7 +1427,8 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "software_version": str(step.get("software_version") or "").strip(),
                     "input_data": str(step.get("input_data") or "").strip(),
                     "output_data": str(step.get("output_data") or "").strip(),
-                    "parameters": str(step.get("parameters") or "").strip(),
+                    "parameters": parameters_dict,
+                    "parameters_json": json.dumps(parameters_dict, ensure_ascii=True),
                     "code_reference": str(step.get("code_reference") or "").strip(),
                     "warnings": step_warning_rows,
                     "warning_indices_csv": ",".join(str(i) for i in warning_indices),
@@ -1454,6 +1456,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "input_data": "",
                     "output_data": "",
                     "parameters": "",
+                    "parameters_json": "{}",
                     "code_reference": "",
                     "warnings": [
                         {
@@ -1669,6 +1672,15 @@ def _method_missing_field_hints(step: dict[str, Any]) -> list[str]:
     return hints
 
 
+def _normalize_step_parameters(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        normalized: dict[str, str] = {}
+        for key, val in value.items():
+            normalized[str(key)] = "" if val is None else str(val)
+        return normalized
+    return {}
+
+
 def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any]) -> dict[str, Any]:
     """Apply a user correction to one methods assay step and return updated payload."""
     payload = json.loads(json.dumps(method_payload if isinstance(method_payload, dict) else {}))
@@ -1703,7 +1715,7 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
                 "software_version": "",
                 "input_data": "",
                 "output_data": "",
-                "parameters": "",
+                "parameters": {},
                 "code_reference": "",
                 "inferred_from_warning": "template_missing_stages",
             }
@@ -1719,7 +1731,13 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     step["software_version"] = str(cleaned.get("software_version") or "").strip()
     step["input_data"] = str(cleaned.get("input_data") or "").strip()
     step["output_data"] = str(cleaned.get("output_data") or "").strip()
-    step["parameters"] = str(cleaned.get("parameters") or "").strip()
+    parameters_value = cleaned.get("parameters")
+    if parameters_value is None:
+        step["parameters"] = {}
+    elif isinstance(parameters_value, dict):
+        step["parameters"] = _normalize_step_parameters(parameters_value)
+    else:
+        raise ValueError("Parameters must be a dictionary.")
     step["code_reference"] = str(cleaned.get("code_reference") or "").strip()
     if inferred_stage_name:
         step["template_stage"] = inferred_stage_name
