@@ -76,6 +76,9 @@ The Figure step has an additional **Figure Ground Truth** panel below the JSON e
 - View the proxied figure image.
 - Override the plot type, axis labels, title, and caption.
 - Mark figures you want excluded from method matching.
+- Figure IDs are normalized before figure interpretation so aliases like `Figure 1`, `Fig. 1`, and `F1` collapse to one figure record.
+  Primary and supplementary references stay separate (for example, `Figure 1` is not merged with `Figure S1` or `Supplementary Figure 1`).
+- If a preview image fails to load, use **Open in popup** to view the source figure in a modal without leaving the page.
 
 Ground truth corrections are injected into the figure payload and propagate to the Method and Pipeline steps during rebuild.
 

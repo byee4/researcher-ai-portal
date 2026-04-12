@@ -86,6 +86,7 @@ _PMC_FETCH_HEADERS = {
 _PRIMARY_FIG_ID_RE = re.compile(r"(?i)\b(?:figure|fig\.?)\s*(\d{1,3})\b")
 _SUPP_FIG_ID_RE = re.compile(r"(?i)\b(?:supplementary|supp\.?)\s*(?:figure|fig\.?)\s*(?:s)?(\d{1,3})\b")
 _EXT_DATA_FIG_ID_RE = re.compile(r"(?i)\bextended\s+data\s+(?:figure|fig\.?)\s*(\d{1,3})\b")
+_SUPP_SHORT_FIG_ID_RE = re.compile(r"(?i)\b(?:fig(?:ure)?\.?|f)\s*s\s*(\d{1,3})\b")
 _VISION_FALLBACK_WARN_RE = re.compile(
     r"paper_rag_vision_fallback:\s*count\s*=\s*(\d+)\s+latency_seconds\s*=\s*([0-9]+(?:\.[0-9]+)?)",
     re.IGNORECASE | re.DOTALL,
@@ -707,19 +708,31 @@ def _figure_merged_rows(
         label, plot_type, confidence, is_uncertain, issue_tags,
         confidence_scores, calibration_rules, ground_truth_tags
     """
-    # Build lookup dicts keyed by figure_id
-    uncertainty_map: dict[str, list[str]] = {
-        r["figure_id"]: r["reasons"] for r in uncertainty_rows
-    }
-    provenance_map: dict[str, list[dict[str, Any]]] = {
-        r["figure_id"]: r["panels"] for r in provenance_rows
-    }
+    # Build lookup dicts keyed by canonical figure reference.
+    uncertainty_map: dict[str, list[str]] = {}
+    for row in uncertainty_rows:
+        key, _ = _canonical_figure_reference(str(row.get("figure_id") or ""))
+        if not key:
+            continue
+        uncertainty_map.setdefault(key, []).extend(row.get("reasons") or [])
+
+    provenance_map: dict[str, list[dict[str, Any]]] = {}
+    for row in provenance_rows:
+        key, _ = _canonical_figure_reference(str(row.get("figure_id") or ""))
+        if not key:
+            continue
+        provenance_map.setdefault(key, []).extend(row.get("panels") or [])
 
     merged: list[dict[str, Any]] = []
+    emitted: set[str] = set()
     for media in media_rows:
-        fid = media["figure_id"]
-        reasons = uncertainty_map.get(fid, [])
-        raw_panels = provenance_map.get(fid, [])
+        fid = str(media.get("figure_id") or "")
+        key, display = _canonical_figure_reference(fid)
+        if not key or key in emitted:
+            continue
+        emitted.add(key)
+        reasons = uncertainty_map.get(key, [])
+        raw_panels = provenance_map.get(key, [])
 
         # Per-panel: tag which issues belong to each panel label
         panels: list[dict[str, Any]] = []
@@ -744,6 +757,8 @@ def _figure_merged_rows(
 
         merged.append({
             **media,
+            "figure_id": display or fid,
+            "figure_key": _figure_id_key(display or fid),
             "is_uncertain": is_uncertain,
             "uncertainty_reasons": reasons,
             "panels": panels,
@@ -837,6 +852,61 @@ def _split_primary_and_supplementary_figure_ids(figure_ids: list[str]) -> tuple[
     return primary, supplementary
 
 
+def _canonical_figure_reference(figure_id: str) -> tuple[str, str]:
+    """Return a canonical (dedup_key, display_label) tuple for figure references.
+
+    Dedup keys intentionally keep primary and supplementary references separate:
+    - Figure 1 / Fig. 1 / F1              -> primary:1
+    - Figure S1 / Supplementary Figure 1  -> supplementary:1
+    - Extended Data Figure 1              -> extended_data:1
+    """
+    raw = str(figure_id or "").strip()
+    if not raw:
+        return ("", "")
+
+    ext_match = _EXT_DATA_FIG_ID_RE.search(raw)
+    if ext_match:
+        number = int(ext_match.group(1))
+        return (f"extended_data:{number}", f"Extended Data Figure {number}")
+
+    is_supp = _is_supplementary_figure_id(raw)
+    supp_match = _SUPP_FIG_ID_RE.search(raw)
+    if supp_match:
+        number = int(supp_match.group(1))
+        return (f"supplementary:{number}", f"Supplementary Figure {number}")
+    short = _SUPP_SHORT_FIG_ID_RE.search(raw)
+    if short:
+        number = int(short.group(1))
+        return (f"supplementary:{number}", f"Supplementary Figure {number}")
+
+    primary = _primary_figure_number(raw)
+    if primary:
+        number = int(primary)
+        return (f"primary:{number}", f"Figure {number}")
+
+    # Fallback for non-standard labels where no figure number is detectable.
+    key = _figure_id_key(raw) or raw.casefold()
+    return (f"text:{key}", raw)
+
+
+def _collapse_figure_reference_variants(figure_ids: list[str]) -> list[str]:
+    """Collapse equivalent figure-id aliases into one canonical label.
+
+    This runs before parser interpretation to avoid duplicate figure parsing for
+    aliases like Figure 1 / Fig. 1 / F1. Supplementary and primary references
+    remain distinct by design.
+    """
+    collapsed: list[str] = []
+    seen: set[str] = set()
+    for fid in figure_ids or []:
+        key, display = _canonical_figure_reference(str(fid or ""))
+        if not key or not display or key in seen:
+            continue
+        seen.add(key)
+        collapsed.append(display)
+    return collapsed
+
+
 def _infer_figure_ids_from_paper_text(paper: Any) -> list[str]:
     """Infer figure ids from paper text when parser-produced ids are absent."""
     parts: list[str] = []
@@ -915,14 +985,13 @@ def _sort_figure_ids_alphanumerically(figure_ids: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for fid in figure_ids or []:
-        text = str(fid or "").strip()
-        if not text:
+        key, label = _canonical_figure_reference(str(fid or ""))
+        if not key or not label:
             continue
-        key = text.casefold()
         if key in seen:
             continue
         seen.add(key)
-        out.append(text)
+        out.append(label)
     return sorted(out, key=_alphanumeric_sort_key)
 
 
@@ -1962,6 +2031,7 @@ def _run_step(
                     figure_ids = list(recover(paper) or [])
             if not figure_ids:
                 figure_ids = _infer_figure_ids_from_paper_text(paper)
+            figure_ids = _collapse_figure_reference_variants(figure_ids)
             primary_figure_ids, supplementary_figure_ids = _split_primary_and_supplementary_figure_ids(figure_ids)
             primary_figure_ids = sorted(primary_figure_ids, key=_alphanumeric_sort_key)
             supplementary_figure_ids = sorted(supplementary_figure_ids, key=_alphanumeric_sort_key)
