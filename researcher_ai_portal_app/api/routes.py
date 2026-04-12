@@ -52,6 +52,10 @@ from .schemas import (
     ParsePublicationResponse,
     PingResponse,
     RagWorkflowResponse,
+    ValidationPlanResponse,
+    WarningResolveRequest,
+    WarningResolveResponse,
+    WarningsListResponse,
     WorkflowGraph,
 )
 from . import repository
@@ -248,6 +252,139 @@ async def get_rag_workflow(
             detail=f"Job '{job_id}' not found.",
         )
     return RagWorkflowResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Structured parse warnings with resolution workflow
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/jobs/{job_id}/warnings",
+    response_model=WarningsListResponse,
+    summary="List structured parse warnings for a job",
+    tags=["warnings"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+async def list_warnings(
+    job_id: str,
+    user: Annotated[object, Depends(get_current_user)],
+) -> WarningsListResponse:
+    """Return all parse warnings for a job as structured, actionable items.
+
+    Each raw warning string from the Methods parser is classified into a
+    category (e.g. ``assay_stub``, ``dependency_dropped``), assigned a severity,
+    and enriched with a human-readable summary and suggested fix.
+
+    Warnings track a resolution lifecycle: ``open`` → ``resolved`` or
+    ``dismissed``.  Use ``POST /warnings/{index}/resolve`` to advance the
+    state.  Resolving a warning removes it from the raw ``parse_warnings``
+    list, which immediately improves the confidence score.
+
+    ``confidence_impact`` estimates the total confidence percentage lost
+    due to remaining open warnings (based on the 15% warning weight in the
+    confidence model, at 25 points per warning).
+    """
+    data = await repository.get_warnings_for_job(
+        job_id=job_id, user_id=user.pk
+    )
+    if data is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+    return WarningsListResponse(**data)
+
+
+@router.post(
+    "/jobs/{job_id}/warnings/{index}/resolve",
+    response_model=WarningResolveResponse,
+    summary="Resolve or dismiss a specific parse warning",
+    tags=["warnings"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def resolve_warning(
+    job_id: str,
+    index: int,
+    req: WarningResolveRequest,
+    user: Annotated[object, Depends(get_current_user)],
+) -> WarningResolveResponse:
+    """Mark a parse warning as resolved or dismissed.
+
+    **resolve** — the underlying issue has been fixed (e.g. user edited the
+    assay steps, re-ran the parser, or filled in missing parameters).  The
+    warning is removed from the raw ``parse_warnings`` list, which reduces
+    ``open_count`` by 1 and immediately improves the confidence score.
+
+    **dismiss** — the warning is acknowledged but no fix is needed (e.g. an
+    informational diagnostic).  The warning stays in the raw list but is
+    marked as dismissed so it no longer appears as actionable.
+
+    Returns refreshed confidence data so the frontend can update the Command
+    Center without a separate poll.
+    """
+    try:
+        result = await repository.resolve_warning(
+            job_id=job_id,
+            user_id=user.pk,
+            warning_index=index,
+            action=req.action,
+            reason=req.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found or has no method component.",
+        )
+    return WarningResolveResponse(**result)
+
+
+@router.get(
+    "/jobs/{job_id}/warnings/validation-plan",
+    response_model=ValidationPlanResponse,
+    summary="Get a prioritized plan for resolving open warnings",
+    tags=["warnings"],
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+async def get_validation_plan(
+    job_id: str,
+    user: Annotated[object, Depends(get_current_user)],
+) -> ValidationPlanResponse:
+    """Return a step-by-step plan for resolving all open parse warnings.
+
+    Steps are ordered by severity (errors first, then warnings, then info).
+    Each step shows the projected confidence improvement if that warning
+    is resolved, allowing the user to prioritize high-impact fixes.
+
+    ``projected_confidence`` is the estimated overall confidence if every
+    open warning is resolved.  Individual ``projected_confidence_after``
+    values show the running total after each step.
+    """
+    data = await repository.get_validation_plan_for_job(
+        job_id=job_id, user_id=user.pk
+    )
+    if data is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+    return ValidationPlanResponse(**data)
 
 
 # ---------------------------------------------------------------------------

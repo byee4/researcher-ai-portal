@@ -364,3 +364,104 @@ class RagWorkflowResponse(BaseModel):
     timeline: list[RagWorkflowEvent] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     has_telemetry: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Structured parse warnings with resolution workflow
+# ---------------------------------------------------------------------------
+
+
+class ParseWarningDetail(BaseModel):
+    """A single structured parse warning derived from the raw warning string.
+
+    The ``category`` field maps to the machine-readable prefix documented in
+    the Methods parser spec (e.g. ``assay_stub``, ``dependency_dropped``).
+    ``affected_assay`` is non-null when the warning text mentions a known assay.
+    ``status`` tracks the resolution lifecycle.
+    """
+
+    index: int = Field(description="0-based position in the raw parse_warnings list")
+    raw: str = Field(description="Original warning string from the parser")
+    category: str = Field(
+        description=(
+            "Machine-readable category prefix: assay_filtered_non_computational, "
+            "assay_stub, dependency_dropped, paper_rag_vision_fallback, "
+            "inferred_parameters, inferred_parameters_fallback_mode, "
+            "template_missing_stages, or unknown"
+        )
+    )
+    severity: Literal["error", "warning", "info"] = Field(
+        description="Derived severity: error for stubs/drops, warning for inference, info for diagnostics"
+    )
+    summary: str = Field(description="Human-readable one-line explanation of the warning")
+    affected_assay: str | None = Field(
+        default=None, description="Assay name affected by this warning, if identifiable"
+    )
+    suggested_fix: str | None = Field(
+        default=None, description="Concrete suggestion for resolving this warning"
+    )
+    fix_target_tab: str | None = Field(
+        default=None, description="Dashboard tab where the fix can be applied"
+    )
+    fix_target_field: str | None = Field(
+        default=None, description="CSS selector or path to the fixable field"
+    )
+    status: Literal["open", "resolved", "dismissed"] = Field(
+        default="open", description="Resolution lifecycle status"
+    )
+    resolved_by: str | None = Field(
+        default=None, description="How the warning was resolved (e.g. user_edit, reparse, dismiss)"
+    )
+
+
+class WarningsListResponse(BaseModel):
+    """Returned by GET /api/v1/jobs/{job_id}/warnings."""
+
+    job_id: str
+    total_count: int = Field(description="Total raw warnings in the method payload")
+    open_count: int = Field(description="Warnings still needing attention")
+    resolved_count: int = Field(description="Warnings that have been fixed or dismissed")
+    warnings: list[ParseWarningDetail]
+    confidence_impact: float = Field(
+        description="Estimated overall confidence percentage lost due to open warnings"
+    )
+
+
+class WarningResolveRequest(BaseModel):
+    """Body for POST /api/v1/jobs/{job_id}/warnings/{index}/resolve."""
+
+    action: Literal["resolve", "dismiss"] = Field(
+        description="resolve = the underlying issue was fixed; dismiss = acknowledged but no fix needed"
+    )
+    reason: str = Field(
+        default="",
+        max_length=500,
+        description="Optional explanation (shown in audit trail)",
+    )
+
+
+class WarningResolveResponse(BaseModel):
+    """Returned after resolving or dismissing a warning."""
+
+    job_id: str
+    index: int
+    status: Literal["resolved", "dismissed"]
+    open_count: int = Field(description="Remaining open warnings after this action")
+    confidence: dict[str, Any] = Field(description="Refreshed confidence data")
+
+
+class ValidationPlanResponse(BaseModel):
+    """Returned by GET /api/v1/jobs/{job_id}/warnings/validation-plan.
+
+    Provides a prioritized plan for resolving open warnings to maximize
+    confidence improvement.
+    """
+
+    job_id: str
+    current_confidence: float
+    projected_confidence: float = Field(
+        description="Estimated confidence if all open warnings are resolved"
+    )
+    steps: list[dict[str, Any]] = Field(
+        description="Ordered resolution steps with projected delta per step"
+    )

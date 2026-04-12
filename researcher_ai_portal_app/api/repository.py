@@ -59,6 +59,7 @@ _PATCH_WHITELIST: dict[str, set[str]] = {
     "method": {
         "assay_graph",
         "assay_graph.assays",
+        "parse_warnings",
     },
     "pipeline": {
         "steps",
@@ -708,3 +709,385 @@ async def patch_component_snapshot(
         }
 
     return await _fetch_and_patch()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Structured parse warnings with resolution workflow
+# ---------------------------------------------------------------------------
+
+
+# Mapping from warning prefix to (category, severity, summary_template, suggested_fix, tab)
+_WARNING_CATEGORY_MAP: dict[str, tuple[str, str, str, str | None, str | None]] = {
+    "assay_filtered_non_computational:": (
+        "assay_filtered_non_computational",
+        "info",
+        "Assay skipped because computational_only=True was set",
+        "Re-run the method parser with computational_only=False to include this assay",
+        "editing",
+    ),
+    "assay_stub:": (
+        "assay_stub",
+        "error",
+        "LLM parse failed for this assay; a fallback stub was synthesized",
+        "Re-run the method parser, or manually fill in the assay steps",
+        "editing",
+    ),
+    "dependency_dropped:": (
+        "dependency_dropped",
+        "error",
+        "A dependency edge was removed because the assay name could not be resolved",
+        "Check that upstream and downstream assay names match exactly",
+        "workflow-graph",
+    ),
+    "paper_rag_vision_fallback:": (
+        "paper_rag_vision_fallback",
+        "info",
+        "RAG retrieval fell back to vision-based extraction",
+        None,
+        None,
+    ),
+    "inferred_parameters:": (
+        "inferred_parameters",
+        "warning",
+        "Some parameters were backfilled from defaults rather than extracted from the paper",
+        "Review the inferred parameters and update with values stated in the paper",
+        "editing",
+    ),
+    "inferred_parameters_fallback_mode:": (
+        "inferred_parameters_fallback_mode",
+        "warning",
+        "Parameter inference used a non-tool fallback path",
+        "Re-run the method parser with a more capable LLM model",
+        "editing",
+    ),
+    "template_missing_stages:": (
+        "template_missing_stages",
+        "warning",
+        "Validation template detected missing expected analysis stages",
+        "Add the missing pipeline stages or confirm they are intentionally omitted",
+        "pipeline",
+    ),
+}
+
+
+def _classify_warning(
+    index: int,
+    raw: str,
+    assay_names: list[str],
+    resolution_map: dict[int, dict[str, str]],
+) -> dict[str, Any]:
+    """Parse a raw warning string into a structured ParseWarningDetail dict."""
+    category = "unknown"
+    severity = "warning"
+    summary = raw
+    suggested_fix: str | None = None
+    fix_tab: str | None = None
+
+    # Check longer prefixes first to avoid partial matches
+    # (e.g. "inferred_parameters:" must not match before "inferred_parameters_fallback_mode:")
+    sorted_prefixes = sorted(_WARNING_CATEGORY_MAP.keys(), key=len, reverse=True)
+    for prefix in sorted_prefixes:
+        cat, sev, tmpl, fix, tab = _WARNING_CATEGORY_MAP[prefix]
+        if raw.startswith(prefix) or raw.lower().startswith(prefix.rstrip(":")):
+            category = cat
+            severity = sev
+            detail = raw[len(prefix):].strip() if raw.startswith(prefix) else raw
+            summary = f"{tmpl}: {detail}" if detail else tmpl
+            suggested_fix = fix
+            fix_tab = tab
+            break
+
+    # Try to identify the affected assay
+    affected_assay: str | None = None
+    raw_lower = raw.lower()
+    for name in assay_names:
+        if name.lower() in raw_lower:
+            affected_assay = name
+            break
+
+    # Check resolution state
+    resolution = resolution_map.get(index, {})
+    status = resolution.get("status", "open")
+    resolved_by = resolution.get("resolved_by")
+
+    return {
+        "index": index,
+        "raw": raw,
+        "category": category,
+        "severity": severity,
+        "summary": summary,
+        "affected_assay": affected_assay,
+        "suggested_fix": suggested_fix,
+        "fix_target_tab": fix_tab,
+        "fix_target_field": None,
+        "status": status,
+        "resolved_by": resolved_by,
+    }
+
+
+async def get_warnings_for_job(
+    job_id: str, user_id: int
+) -> dict[str, Any] | None:
+    """Return structured parse warnings for a job.
+
+    Returns None if the job doesn't exist or doesn't belong to user_id.
+    """
+    from researcher_ai_portal_app.models import ComponentSnapshot, WorkflowJob
+    from researcher_ai_portal_app.confidence import compute_confidence
+
+    @sync_to_async
+    def _fetch() -> dict[str, Any] | None:
+        try:
+            job = WorkflowJob.objects.get(id=job_id, user_id=user_id)
+        except WorkflowJob.DoesNotExist:
+            return None
+
+        components = {s.step: s.payload for s in ComponentSnapshot.objects.filter(job=job)}
+        method = components.get("method") or {}
+        raw_warnings: list[str] = list(method.get("parse_warnings") or [])
+        assay_graph = method.get("assay_graph") or {}
+        assay_names = [
+            str(a.get("name") or "")
+            for a in (assay_graph.get("assays") or [])
+            if str(a.get("name") or "").strip()
+        ]
+
+        # Resolution state is stored in job_metadata.warning_resolutions
+        metadata = dict(job.job_metadata or {})
+        resolution_map: dict[int, dict[str, str]] = {}
+        for entry in metadata.get("warning_resolutions") or []:
+            if isinstance(entry, dict) and "index" in entry:
+                resolution_map[entry["index"]] = entry
+
+        warnings = [
+            _classify_warning(i, str(w), assay_names, resolution_map)
+            for i, w in enumerate(raw_warnings)
+        ]
+
+        open_count = sum(1 for w in warnings if w["status"] == "open")
+        resolved_count = sum(1 for w in warnings if w["status"] in ("resolved", "dismissed"))
+
+        # Compute confidence impact of open warnings
+        confidence = compute_confidence(components)
+        # Impact = what we'd gain if all open warnings were resolved
+        # Each warning costs 25% within the 15% warning weight bucket
+        warning_count_in_confidence = len(raw_warnings)
+        open_warning_count = open_count
+        impact = round(min(open_warning_count * 25.0, 100.0) * 0.15, 2)
+
+        return {
+            "job_id": str(job_id),
+            "total_count": len(raw_warnings),
+            "open_count": open_count,
+            "resolved_count": resolved_count,
+            "warnings": warnings,
+            "confidence_impact": impact,
+        }
+
+    return await _fetch()
+
+
+async def resolve_warning(
+    job_id: str,
+    user_id: int,
+    warning_index: int,
+    action: str,
+    reason: str,
+) -> dict[str, Any] | None:
+    """Resolve or dismiss a specific parse warning by index.
+
+    Updates the resolution state in job_metadata.warning_resolutions and
+    optionally removes the raw warning from parse_warnings when resolved.
+
+    Returns None if job not found. Raises ValueError for invalid index.
+    Returns refreshed confidence + open_count on success.
+    """
+    from researcher_ai_portal_app.models import ComponentSnapshot, WorkflowJob
+    from researcher_ai_portal_app.confidence import (
+        compute_confidence,
+        compute_actionable_items,
+    )
+
+    @sync_to_async
+    def _resolve() -> dict[str, Any] | None:
+        try:
+            job = WorkflowJob.objects.get(id=job_id, user_id=user_id)
+        except WorkflowJob.DoesNotExist:
+            return None
+
+        # Get current method payload to validate index
+        try:
+            method_snap = ComponentSnapshot.objects.get(job=job, step="method")
+        except ComponentSnapshot.DoesNotExist:
+            return None
+
+        method_payload = dict(method_snap.payload or {})
+        raw_warnings: list[str] = list(method_payload.get("parse_warnings") or [])
+
+        if warning_index < 0 or warning_index >= len(raw_warnings):
+            raise ValueError(
+                f"Warning index {warning_index} out of range "
+                f"(0..{len(raw_warnings) - 1})"
+            )
+
+        # Update resolution map in job_metadata
+        metadata = dict(job.job_metadata or {})
+        resolutions: list[dict[str, Any]] = list(metadata.get("warning_resolutions") or [])
+
+        # Remove any existing entry for this index
+        resolutions = [r for r in resolutions if r.get("index") != warning_index]
+
+        new_status = "resolved" if action == "resolve" else "dismissed"
+        resolutions.append({
+            "index": warning_index,
+            "status": new_status,
+            "resolved_by": "user_" + action,
+            "reason": reason,
+        })
+        metadata["warning_resolutions"] = resolutions
+
+        # When a warning is resolved (not dismissed), remove it from the
+        # raw parse_warnings list so confidence scoring improves.
+        if action == "resolve":
+            raw_warnings.pop(warning_index)
+            method_payload["parse_warnings"] = raw_warnings
+            method_snap.payload = method_payload
+            method_snap.save(update_fields=["payload"])
+
+            # Re-index resolutions: shift down indices above the removed one
+            adjusted = []
+            for r in resolutions:
+                idx = r.get("index", -1)
+                if idx == warning_index:
+                    continue  # removed
+                if idx > warning_index:
+                    r = dict(r)
+                    r["index"] = idx - 1
+                adjusted.append(r)
+            metadata["warning_resolutions"] = adjusted
+
+        job.job_metadata = metadata
+        job.save(update_fields=["job_metadata"])
+
+        # Recompute confidence
+        all_components = {s.step: s.payload for s in ComponentSnapshot.objects.filter(job=job)}
+        # Refresh method since we may have modified it
+        all_components["method"] = method_snap.payload
+        confidence = compute_confidence(all_components)
+
+        # Count remaining open warnings
+        updated_warnings = list((method_snap.payload or {}).get("parse_warnings") or [])
+        updated_resolutions = {
+            r["index"]: r
+            for r in (metadata.get("warning_resolutions") or [])
+            if isinstance(r, dict) and "index" in r
+        }
+        open_count = sum(
+            1 for i in range(len(updated_warnings))
+            if updated_resolutions.get(i, {}).get("status", "open") == "open"
+        )
+
+        return {
+            "job_id": str(job_id),
+            "index": warning_index,
+            "status": new_status,
+            "open_count": open_count,
+            "confidence": confidence,
+        }
+
+    return await _resolve()
+
+
+async def get_validation_plan_for_job(
+    job_id: str, user_id: int
+) -> dict[str, Any] | None:
+    """Build a prioritized validation plan for resolving open warnings.
+
+    Returns None if the job doesn't exist or doesn't belong to user_id.
+    """
+    from researcher_ai_portal_app.models import ComponentSnapshot, WorkflowJob
+    from researcher_ai_portal_app.confidence import compute_confidence
+
+    @sync_to_async
+    def _build() -> dict[str, Any] | None:
+        try:
+            job = WorkflowJob.objects.get(id=job_id, user_id=user_id)
+        except WorkflowJob.DoesNotExist:
+            return None
+
+        components = {s.step: s.payload for s in ComponentSnapshot.objects.filter(job=job)}
+        method = components.get("method") or {}
+        raw_warnings: list[str] = list(method.get("parse_warnings") or [])
+        assay_graph = method.get("assay_graph") or {}
+        assays = assay_graph.get("assays") or []
+        assay_names = [str(a.get("name") or "") for a in assays if str(a.get("name") or "").strip()]
+
+        metadata = dict(job.job_metadata or {})
+        resolution_map: dict[int, dict[str, str]] = {}
+        for entry in metadata.get("warning_resolutions") or []:
+            if isinstance(entry, dict) and "index" in entry:
+                resolution_map[entry["index"]] = entry
+
+        # Current confidence
+        confidence = compute_confidence(components)
+        current_overall = confidence.get("overall", 0.0)
+
+        # Classify open warnings
+        open_warnings = []
+        for i, w in enumerate(raw_warnings):
+            res = resolution_map.get(i, {})
+            if res.get("status", "open") != "open":
+                continue
+            detail = _classify_warning(i, str(w), assay_names, resolution_map)
+            open_warnings.append(detail)
+
+        # Priority: error > warning > info
+        severity_order = {"error": 0, "warning": 1, "info": 2}
+        open_warnings.sort(key=lambda w: severity_order.get(w["severity"], 3))
+
+        # Estimate projected confidence if all open warnings are resolved
+        # Each removed warning improves the warning component of confidence
+        # (15% weight, 25 points per warning removed, capped at 100)
+        total_warning_count = len(raw_warnings)
+        open_count = len(open_warnings)
+        if total_warning_count > 0:
+            current_warning_score = max(0.0, 100.0 - total_warning_count * 25.0)
+            projected_warning_score = max(0.0, 100.0 - (total_warning_count - open_count) * 25.0)
+            delta = (projected_warning_score - current_warning_score) * 0.15
+        else:
+            delta = 0.0
+        projected_overall = min(100.0, round(current_overall + delta, 1))
+
+        # Build step-by-step plan
+        steps = []
+        cumulative_delta = 0.0
+        remaining_count = total_warning_count
+        for w in open_warnings:
+            remaining_count -= 1
+            new_score = max(0.0, 100.0 - remaining_count * 25.0)
+            old_score = max(0.0, 100.0 - (remaining_count + 1) * 25.0)
+            step_delta = round((new_score - old_score) * 0.15, 2)
+            cumulative_delta += step_delta
+            steps.append({
+                "warning_index": w["index"],
+                "category": w["category"],
+                "severity": w["severity"],
+                "summary": w["summary"],
+                "suggested_fix": w["suggested_fix"],
+                "fix_target_tab": w["fix_target_tab"],
+                "affected_assay": w["affected_assay"],
+                "projected_confidence_delta": step_delta,
+                "projected_confidence_after": min(
+                    100.0,
+                    round(current_overall + cumulative_delta, 1),
+                ),
+            })
+
+        return {
+            "job_id": str(job_id),
+            "current_confidence": current_overall,
+            "projected_confidence": projected_overall,
+            "steps": steps,
+        }
+
+    return await _build()
