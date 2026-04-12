@@ -43,6 +43,7 @@ def test_method_assay_rows_returns_plain_english_step_rows():
     assert first["step_number"] == 1
     assert first["software"] == "STAR"
     assert first["input_data"] == "FASTQ"
+    assert first["warnings"] == []
 
 
 def test_inject_method_step_correction_updates_selected_step_only():
@@ -85,6 +86,7 @@ def test_inject_method_step_correction_updates_selected_step_only():
             "output_data": "sorted BAM",
             "parameters": "--twopassMode Basic",
             "code_reference": "nf-core/rnaseq",
+            "inferred_stage_name": "",
         },
     )
 
@@ -111,9 +113,100 @@ def test_inject_method_step_correction_rejects_missing_step_indices():
                 "output_data": "",
                 "parameters": "",
                 "code_reference": "",
+                "inferred_stage_name": "",
             },
         )
     except ValueError as exc:
         assert "Selected step was not found" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("Expected ValueError for unknown step index")
+
+
+def test_method_warning_rows_map_to_assay_and_step_with_severity():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "RNA-seq alignment",
+                    "steps": [
+                        {"step_number": 1, "software": "STAR"},
+                        {"step_number": 2, "software": "featureCounts"},
+                    ],
+                }
+            ]
+        },
+        "parse_warnings": [
+            "assay_stub: RNA-seq alignment parse failed",
+            "inferred_parameters: STAR.outSAMtype=BAM",
+        ],
+    }
+    rows = views._method_warning_rows(payload)
+    assert len(rows) == 2
+    assert rows[0]["assay_index"] == 0
+    assert rows[0]["severity"] == "error"
+    assert rows[1]["step_index"] == 0
+    assert rows[1]["severity"] == "warning"
+
+
+def test_method_assay_rows_add_inferred_stage_skeletons_for_template_warning():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "RNA-seq alignment",
+                    "steps": [{"step_number": 1, "description": "Align", "software": "STAR"}],
+                }
+            ]
+        },
+        "parse_warnings": ["template_missing_stages: normalization, differential_expression"],
+    }
+    rows = views._method_assay_rows(payload)
+    assert len(rows) == 1
+    assert len(rows[0]["steps"]) == 3
+    inferred = [s for s in rows[0]["steps"] if s["is_inferred_stage"]]
+    assert len(inferred) == 2
+    assert inferred[0]["inferred_stage_name"] == "normalization"
+
+
+def test_inject_method_step_correction_appends_inferred_stage_when_missing():
+    payload = {"assay_graph": {"assays": [{"name": "A", "steps": [{"step_number": 1, "description": "x"}]}]}}
+    updated = views._inject_method_step_correction(
+        payload,
+        {
+            "assay_index": 0,
+            "step_index": 1,
+            "description": "Normalize counts",
+            "software": "DESeq2",
+            "software_version": "1.42.0",
+            "input_data": "counts.tsv",
+            "output_data": "normalized_counts.tsv",
+            "parameters": "fitType=parametric",
+            "code_reference": "bioc::DESeq2",
+            "inferred_stage_name": "normalization",
+        },
+    )
+    steps = updated["assay_graph"]["assays"][0]["steps"]
+    assert len(steps) == 2
+    assert steps[1]["template_stage"] == "normalization"
+    assert steps[1]["software"] == "DESeq2"
+
+
+def test_remove_method_step_renumbers_remaining_steps():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "A",
+                    "steps": [
+                        {"step_number": 1, "description": "A"},
+                        {"step_number": 2, "description": "B"},
+                        {"step_number": 3, "description": "C"},
+                    ],
+                }
+            ]
+        }
+    }
+    updated = views._remove_method_step(payload, assay_index=0, step_index=1)
+    steps = updated["assay_graph"]["assays"][0]["steps"]
+    assert [s["description"] for s in steps] == ["A", "C"]
+    assert [s["step_number"] for s in steps] == [1, 2]

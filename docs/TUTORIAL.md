@@ -87,8 +87,11 @@ Ground truth corrections are injected into the figure payload and propagate to t
 The Method step now includes an **Assay step outline** card above the JSON editor. It gives a plain-English view of each assay and every extracted step.
 
 - Use **Correct this step** on any step to open a side drawer with editable fields.
+- Empty constrained fields include example formats and dropdown suggestions (for example `2.7.11b`, `FASTQ.gz`, `sorted BAM`) so it's clear what shape to enter.
 - Update description, software, version, input/output data, parameters, and code reference without touching raw JSON.
 - Save the correction to write changes directly into the structured `method.assay_graph.assays[*].steps[*]` payload.
+- Step cards highlight related `parse_warnings` so you can resolve issues in context.
+- If `template_missing_stages` appears, the UI shows inferred empty stage skeletons. You can fill and save those stages, or remove suggestions you do not need.
 - The **Methods Parser data** JSON card is still available for full manual edits when needed.
 
 ---

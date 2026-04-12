@@ -149,6 +149,9 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "correct-method-step-btn" in text
     assert "inject_method_step_correction" in text
     assert "method-correction-drawer" in text
+    assert "method-input-format-options" in text
+    assert "remove-inferred-stage-btn" in text
+    assert "Remove step" in text
 
 
 def test_job_status_merges_cached_logs():
