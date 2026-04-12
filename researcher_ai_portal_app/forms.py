@@ -160,3 +160,52 @@ class MethodStepCorrectionForm(forms.Form):
         for key, val in value.items():
             cleaned[str(key)] = "" if val is None else str(val)
         return cleaned
+
+
+_DATASET_SOURCE_CHOICES = [
+    ("geo", "GEO"),
+    ("sra", "SRA"),
+    ("encode", "ENCODE"),
+    ("supplementary", "Supplementary"),
+    ("other", "Other"),
+]
+
+
+class DatasetCorrectionForm(forms.Form):
+    """Structured form to correct one dataset record from the datasets step."""
+
+    dataset_index = forms.IntegerField(min_value=0, required=True)
+    accession = forms.CharField(required=True, max_length=160)
+    source = forms.ChoiceField(choices=_DATASET_SOURCE_CHOICES, required=True, initial="other")
+    title = forms.CharField(required=False, max_length=500)
+    organism = forms.CharField(required=False, max_length=240)
+    experiment_type = forms.CharField(required=False, max_length=240)
+    summary = forms.CharField(required=False, max_length=5000, widget=forms.Textarea(attrs={"rows": 4}))
+    primary_url = forms.URLField(required=False, max_length=1000, assume_scheme="https")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["accession"].widget.attrs.update(
+            {"placeholder": "e.g., GSE314176, SRP123456, or NO_DATASET_REPORTED"}
+        )
+        self.fields["title"].widget.attrs.update(
+            {"placeholder": "Short dataset title for human readers"}
+        )
+        self.fields["organism"].widget.attrs.update(
+            {"placeholder": "e.g., Homo sapiens"}
+        )
+        self.fields["experiment_type"].widget.attrs.update(
+            {"placeholder": "e.g., RNA-seq, CLIP-seq, ATAC-seq"}
+        )
+        self.fields["summary"].widget.attrs.update(
+            {"placeholder": "Plain-English description of what this dataset contains"}
+        )
+        self.fields["primary_url"].widget.attrs.update(
+            {"placeholder": "https://... link to GEO/SRA/portal landing page"}
+        )
+
+    def clean_accession(self) -> str:
+        value = str(self.cleaned_data.get("accession") or "").strip()
+        if not value:
+            raise forms.ValidationError("Accession is required.")
+        return value

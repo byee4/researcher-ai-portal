@@ -99,6 +99,16 @@ The Method step now includes an **Assay step outline** card above the JSON edito
 - Cryptic template warnings are translated inline. For example, `assay='iPSC neuron differentiation' template=generic missing=align` is shown as a plain-English message that the assay is missing the `align` stage from the generic template.
 - The **Methods Parser data** JSON card is still available for full manual edits when needed.
 
+### The Datasets step
+
+The Datasets step now includes a **Dataset outline** card above the JSON editor.
+
+- Use **Correct dataset** on any dataset row to open a side drawer with editable fields.
+- Update accession, source, title, organism, experiment type, summary, and primary URL without touching raw JSON.
+- If the parser cannot resolve any real dataset accession, the portal now creates a placeholder row (`NO_DATASET_REPORTED`) automatically so you still have a dataset record to correct immediately.
+- Save the drawer form to write changes directly into `datasets[*]`.
+- The **Dataset Parsers data** JSON card remains available for full manual edits when needed.
+
 ---
 
 ## Step 5 — Open the dashboard

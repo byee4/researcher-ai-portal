@@ -425,6 +425,125 @@
         </div>
       {% endif %}
 
+      {% if step == "datasets" %}
+        {% if dataset_correction_form and dataset_correction_form.errors %}
+          <div class="alert alert-error mb-3">{{ dataset_correction_form.errors }}</div>
+        {% endif %}
+        <div class="card" style="padding: 16px;">
+          <div class="section-header mb-3">
+            <h2>Dataset outline</h2>
+            <p class="text-xs text-muted" style="margin-top: 6px;">
+              Correct dataset accessions and metadata field-by-field without editing raw JSON.
+            </p>
+          </div>
+          {% if dataset_rows %}
+            <div class="dataset-row-list">
+              {% for ds in dataset_rows %}
+                <div class="dataset-row-card {% if ds.placeholder %}dataset-row-card-placeholder{% endif %}">
+                  <div class="dataset-row-head">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
+                      <span class="method-step-chip">Dataset {{ forloop.counter }}</span>
+                      {% if ds.placeholder %}
+                        <span class="pill pill-inferred">Placeholder</span>
+                      {% else %}
+                        <span class="pill pill-found">Resolved</span>
+                      {% endif %}
+                    </div>
+                    <span class="text-xs text-muted">{{ ds.source|upper }}</span>
+                  </div>
+                  <p class="text-xs" style="margin: 6px 0 4px 0; color: var(--text);">
+                    <code>{{ ds.accession|default:"NO_DATASET_REPORTED" }}</code>
+                    {% if ds.title %} · {{ ds.title }}{% endif %}
+                  </p>
+                  <p class="text-xs text-muted" style="margin: 0 0 4px 0;">
+                    Organism: {{ ds.organism|default:"Unknown" }} · Type: {{ ds.experiment_type|default:"Unknown" }}
+                  </p>
+                  <p class="text-xs text-muted" style="margin: 0;">
+                    {{ ds.summary|default:"No summary yet." }}
+                  </p>
+                  {% if ds.primary_url %}
+                    <p class="text-xs" style="margin: 6px 0 0 0;">
+                      <a href="{{ ds.primary_url }}" target="_blank" rel="noopener">{{ ds.primary_url }}</a>
+                    </p>
+                  {% endif %}
+                  <div style="margin-top: 8px;">
+                    <button type="button"
+                            class="btn btn-ghost btn-sm correct-dataset-btn"
+                            data-dataset-index="{{ ds.dataset_index }}"
+                            data-accession="{{ ds.accession }}"
+                            data-source="{{ ds.source }}"
+                            data-title="{{ ds.title }}"
+                            data-organism="{{ ds.organism }}"
+                            data-experiment-type="{{ ds.experiment_type }}"
+                            data-summary="{{ ds.summary|escapejs }}"
+                            data-primary-url="{{ ds.primary_url }}"
+                            data-placeholder="{{ ds.placeholder|yesno:'1,0' }}">
+                      ✏ Correct dataset
+                    </button>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="text-xs text-muted">No dataset rows available yet. Run the Datasets step to populate one.</p>
+          {% endif %}
+        </div>
+
+        <div id="dataset-correction-drawer" class="dataset-correction-drawer" aria-hidden="true">
+          <div class="dataset-correction-drawer-backdrop" data-close-dataset-drawer></div>
+          <div class="dataset-correction-drawer-panel">
+            <div class="dataset-correction-drawer-header">
+              <div>
+                <h3 id="dataset-correction-title" style="margin: 0; font-size: 1rem;">Correct dataset</h3>
+                <p id="dataset-correction-subtitle" class="text-xs text-muted" style="margin: 4px 0 0 0;">Update one dataset record field-by-field.</p>
+              </div>
+              <button type="button" class="btn btn-ghost btn-sm" data-close-dataset-drawer>Close</button>
+            </div>
+            <form method="post" action="{{ request.path }}" style="display: flex; flex-direction: column; gap: 8px;">
+              {% csrf_token %}
+              <input type="hidden" name="step_action" value="inject_dataset_correction">
+              {{ dataset_correction_form.dataset_index }}
+              <div class="card card-sm" style="background: var(--surface-2);">
+                <p class="text-xs text-muted" style="margin: 0;">
+                  Format guidance:
+                  accession values can be repository IDs like <code>GSE314176</code> or <code>SRP123456</code>.
+                  If no accession is available, keep <code>NO_DATASET_REPORTED</code> and add a plain-English summary.
+                </p>
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Accession</label>
+                {{ dataset_correction_form.accession }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Source</label>
+                {{ dataset_correction_form.source }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Title</label>
+                {{ dataset_correction_form.title }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Organism</label>
+                {{ dataset_correction_form.organism }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Experiment type</label>
+                {{ dataset_correction_form.experiment_type }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Summary</label>
+                {{ dataset_correction_form.summary }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Primary URL</label>
+                {{ dataset_correction_form.primary_url }}
+              </div>
+              <button type="submit" class="btn btn-primary" style="justify-content: center;">Save dataset correction</button>
+            </form>
+          </div>
+        </div>
+      {% endif %}
+
       <!-- JSON editor -->
       <div class="card" style="padding: 20px;">
         <div class="section-header mb-3">
@@ -456,7 +575,10 @@
   }
   .method-correction-drawer .form-group input,
   .method-correction-drawer .form-group select,
-  .method-correction-drawer .form-group textarea {
+  .method-correction-drawer .form-group textarea,
+  .dataset-correction-drawer .form-group input,
+  .dataset-correction-drawer .form-group select,
+  .dataset-correction-drawer .form-group textarea {
     width: 100%; padding: 7px 9px; border: 1.5px solid var(--border-2); border-radius: var(--radius-sm);
     font-family: var(--font); font-size: 0.875rem; color: var(--text); background: var(--surface);
     outline: none; transition: border-color .15s; box-sizing: border-box;
@@ -465,7 +587,10 @@
   .accordion .form-group select:focus { border-color: var(--primary); }
   .method-correction-drawer .form-group input:focus,
   .method-correction-drawer .form-group select:focus,
-  .method-correction-drawer .form-group textarea:focus { border-color: var(--primary); }
+  .method-correction-drawer .form-group textarea:focus,
+  .dataset-correction-drawer .form-group input:focus,
+  .dataset-correction-drawer .form-group select:focus,
+  .dataset-correction-drawer .form-group textarea:focus { border-color: var(--primary); }
   .method-assay-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -593,6 +718,63 @@
   #method-correction-drawer [id$="-inferred_stage_name"],
   #method-correction-drawer [id$="-resolved_warning_indices"],
   #method-correction-drawer [id$="-inferred_stage_warning_index"] {
+    display: none;
+  }
+  .dataset-row-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 10px;
+  }
+  .dataset-row-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    padding: 10px;
+  }
+  .dataset-row-card-placeholder {
+    border-color: var(--warning-mid);
+    background: var(--warning-soft);
+  }
+  .dataset-row-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .dataset-correction-drawer {
+    position: fixed;
+    inset: 0;
+    display: none;
+    z-index: 1000;
+  }
+  .dataset-correction-drawer.open {
+    display: block;
+  }
+  .dataset-correction-drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+  }
+  .dataset-correction-drawer-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: min(560px, 94vw);
+    height: 100%;
+    background: var(--surface);
+    border-left: 1px solid var(--border-2);
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  .dataset-correction-drawer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  #dataset-correction-drawer [id$="-dataset_index"] {
     display: none;
   }
   @media (max-width: 900px) {
@@ -961,6 +1143,57 @@
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && methodDrawer.classList.contains("open")) {
           closeMethodDrawer();
+        }
+      });
+    }
+
+    const datasetDrawer = document.getElementById("dataset-correction-drawer");
+    if (datasetDrawer) {
+      const titleEl = document.getElementById("dataset-correction-title");
+      const subtitleEl = document.getElementById("dataset-correction-subtitle");
+      const datasetField = (suffix) => datasetDrawer.querySelector(`[id$="-${suffix}"]`);
+      const openDatasetDrawer = () => {
+        datasetDrawer.classList.add("open");
+        datasetDrawer.setAttribute("aria-hidden", "false");
+      };
+      const closeDatasetDrawer = () => {
+        datasetDrawer.classList.remove("open");
+        datasetDrawer.setAttribute("aria-hidden", "true");
+      };
+      datasetDrawer.querySelectorAll("[data-close-dataset-drawer]").forEach((el) => {
+        el.addEventListener("click", closeDatasetDrawer);
+      });
+      document.querySelectorAll(".correct-dataset-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idxEl = datasetField("dataset_index");
+          const accessionEl = datasetField("accession");
+          const sourceEl = datasetField("source");
+          const titleFieldEl = datasetField("title");
+          const organismEl = datasetField("organism");
+          const expTypeEl = datasetField("experiment_type");
+          const summaryEl = datasetField("summary");
+          const urlEl = datasetField("primary_url");
+          if (idxEl) idxEl.value = btn.dataset.datasetIndex || "0";
+          if (accessionEl) accessionEl.value = btn.dataset.accession || "";
+          if (sourceEl) sourceEl.value = btn.dataset.source || "other";
+          if (titleFieldEl) titleFieldEl.value = btn.dataset.title || "";
+          if (organismEl) organismEl.value = btn.dataset.organism || "";
+          if (expTypeEl) expTypeEl.value = btn.dataset.experimentType || "";
+          if (summaryEl) summaryEl.value = btn.dataset.summary || "";
+          if (urlEl) urlEl.value = btn.dataset.primaryUrl || "";
+          const n = Number(btn.dataset.datasetIndex || "0") + 1;
+          if (titleEl) titleEl.textContent = `Correct dataset ${n}`;
+          if (subtitleEl) {
+            subtitleEl.textContent = btn.dataset.placeholder === "1"
+              ? "This placeholder row needs a real accession and metadata."
+              : "Update one dataset record field-by-field.";
+          }
+          openDatasetDrawer();
+        });
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && datasetDrawer.classList.contains("open")) {
+          closeDatasetDrawer();
         }
       });
     }

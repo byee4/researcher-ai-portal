@@ -95,3 +95,43 @@ def test_portal_dataset_step_collects_key_resources_table_accessions(monkeypatch
     accessions = {d.get("accession") for d in datasets}
     assert "GSE314176" in accessions
     assert "SRP123456" in accessions
+
+
+def test_portal_dataset_step_adds_placeholder_when_no_accessions_found(monkeypatch):
+    paper = Paper(
+        title="No datasets paper",
+        pmid="99999999",
+        source=PaperSource.PMID,
+        source_path="99999999",
+        sections=[],
+        raw_text="",
+    )
+    job_id = create_job(
+        input_type="pmid",
+        input_value="99999999",
+        source="99999999",
+        source_type="pmid",
+        llm_model="gpt-5.4",
+        llm_api_key="sk-test-placeholder-abcdefghijklmnopqrstuvwxyz",
+        components={"paper": paper.model_dump(mode="json"), "method": {}},
+    )
+
+    original_import_runtime_modules = views._import_runtime_modules
+
+    def patched_import_runtime_modules():
+        mods = original_import_runtime_modules()
+        mods["GEOParser"] = _StubGEOParser
+        mods["SRAParser"] = _StubSRAParser
+        return mods
+
+    monkeypatch.setattr(views, "_import_runtime_modules", patched_import_runtime_modules)
+
+    views._run_step(job_id, "datasets")
+    job = get_job(job_id)
+    assert job is not None
+    datasets = (job.get("components") or {}).get("datasets") or []
+    assert len(datasets) == 1
+    row = datasets[0]
+    assert row.get("accession") == "NO_DATASET_REPORTED"
+    assert row.get("source") == "other"
+    assert bool((row.get("raw_metadata") or {}).get("placeholder")) is True

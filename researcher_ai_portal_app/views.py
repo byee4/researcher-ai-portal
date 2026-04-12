@@ -27,7 +27,7 @@ from django.views.decorators.http import require_GET, require_POST
 from .confidence import compute_actionable_items, compute_confidence
 from .dag_app import build_dag_app
 from .dashboards import build_dashboard_app
-from .forms import ComponentJSONForm, FigureGroundTruthForm, MethodStepCorrectionForm
+from .forms import ComponentJSONForm, DatasetCorrectionForm, FigureGroundTruthForm, MethodStepCorrectionForm
 from .job_events import append_job_log, merge_logs
 from .models import PaperCache, WorkflowJob
 from .job_store import create_job, get_job, update_job
@@ -296,6 +296,41 @@ def _collect_accessions(text: str) -> list[str]:
             seen.add(acc)
             out.append(acc)
     return out
+
+
+def _build_dataset_placeholder_entry(paper_payload: Any, accessions_checked: int) -> dict[str, Any]:
+    """Return a placeholder dataset row users can correct when none were resolved.
+
+    Plain-English behavior:
+    - Keep the datasets component non-empty so users can open a correction drawer
+      immediately.
+    - Mark the row in ``raw_metadata.placeholder`` so the UI can explain why it
+      exists and encourage replacement with a real accession.
+    """
+    paper = paper_payload if isinstance(paper_payload, dict) else {}
+    title = str(paper.get("title") or "").strip()
+    return {
+        "accession": "NO_DATASET_REPORTED",
+        "source": "other",
+        "source_type": "other",
+        "title": f"Placeholder dataset for {title}" if title else "Placeholder dataset",
+        "organism": "",
+        "summary": (
+            "No dataset accession could be resolved automatically from this publication. "
+            "Use 'Correct dataset' to enter the real accession and metadata."
+        ),
+        "experiment_type": "",
+        "samples": [],
+        "total_samples": 0,
+        "processed_data_urls": [],
+        "supplementary_files": [],
+        "related_datasets": [],
+        "raw_metadata": {
+            "placeholder": True,
+            "placeholder_reason": "no_dataset_accessions_resolved",
+            "accessions_checked": int(max(accessions_checked, 0)),
+        },
+    }
 
 
 def _component_status(step: str, payload: Any) -> tuple[str, list[str]]:
@@ -1781,6 +1816,80 @@ def _normalize_step_parameters(value: Any) -> dict[str, str]:
     return {}
 
 
+def _dataset_rows(datasets_payload: Any) -> list[dict[str, Any]]:
+    """Return plain-English dataset rows for the workflow datasets step UI."""
+    rows: list[dict[str, Any]] = []
+    raw_items = datasets_payload if isinstance(datasets_payload, list) else []
+    for idx, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or item.get("source_type") or "other").strip().lower() or "other"
+        urls = item.get("processed_data_urls") if isinstance(item.get("processed_data_urls"), list) else []
+        primary_url = ""
+        for url in urls:
+            text = str(url or "").strip()
+            if text:
+                primary_url = text
+                break
+        metadata = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+        accession = str(item.get("accession") or "").strip()
+        placeholder = bool(metadata.get("placeholder")) or accession == "NO_DATASET_REPORTED"
+        rows.append(
+            {
+                "dataset_index": idx,
+                "accession": accession,
+                "source": source,
+                "title": str(item.get("title") or "").strip(),
+                "organism": str(item.get("organism") or "").strip(),
+                "experiment_type": str(item.get("experiment_type") or "").strip(),
+                "summary": str(item.get("summary") or "").strip(),
+                "primary_url": primary_url,
+                "placeholder": placeholder,
+                "placeholder_reason": str(metadata.get("placeholder_reason") or "").strip(),
+            }
+        )
+    return rows
+
+
+def _inject_dataset_correction(datasets_payload: Any, cleaned: dict[str, Any]) -> list[dict[str, Any]]:
+    """Apply one dataset correction and return an updated datasets payload."""
+    datasets = json.loads(json.dumps(datasets_payload if isinstance(datasets_payload, list) else []))
+    idx = int(cleaned.get("dataset_index", -1))
+    if idx < 0 or idx >= len(datasets):
+        raise ValueError("Selected dataset row was not found.")
+    row = datasets[idx]
+    if not isinstance(row, dict):
+        raise ValueError("Selected dataset row is malformed.")
+
+    source = str(cleaned.get("source") or "other").strip().lower() or "other"
+    row["accession"] = str(cleaned.get("accession") or "").strip()
+    row["source"] = source
+    row["source_type"] = source
+    row["title"] = str(cleaned.get("title") or "").strip() or None
+    row["organism"] = str(cleaned.get("organism") or "").strip() or None
+    row["experiment_type"] = str(cleaned.get("experiment_type") or "").strip() or None
+    row["summary"] = str(cleaned.get("summary") or "").strip() or None
+
+    primary_url = str(cleaned.get("primary_url") or "").strip()
+    existing_urls = row.get("processed_data_urls") if isinstance(row.get("processed_data_urls"), list) else []
+    keep_tail = [str(url or "").strip() for url in existing_urls[1:] if str(url or "").strip()]
+    new_urls: list[str] = []
+    if primary_url:
+        new_urls.append(primary_url)
+    for url in keep_tail:
+        if url not in new_urls:
+            new_urls.append(url)
+    row["processed_data_urls"] = new_urls
+
+    metadata = row.get("raw_metadata") if isinstance(row.get("raw_metadata"), dict) else {}
+    metadata = dict(metadata)
+    metadata["placeholder"] = False
+    metadata["corrected_by_user"] = True
+    row["raw_metadata"] = metadata
+    datasets[idx] = row
+    return datasets
+
+
 def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any]) -> dict[str, Any]:
     """Apply a user correction to one methods assay step and return updated payload."""
     payload = json.loads(json.dumps(method_payload if isinstance(method_payload, dict) else {}))
@@ -2923,8 +3032,16 @@ def _run_step(
                         _log_job_event(job_id, f"Skipped {acc} (unrecognised prefix)", step=step)
                 except Exception as ds_exc:
                     _log_job_event(job_id, f"Failed to resolve {acc}: {ds_exc}", level="warning", step=step)
+            if not datasets:
+                datasets.append(_build_dataset_placeholder_entry(paper.model_dump(mode="json"), len(capped)))
+                _log_job_event(
+                    job_id,
+                    "No dataset accession was resolved; added a placeholder dataset row for manual correction.",
+                    level="warning",
+                    step=step,
+                )
             _persist_component(job_id, "datasets", datasets, "parsed")
-            _log_job_event(job_id, f"Dataset parsing complete: {len(datasets)} datasets resolved", step=step)
+            _log_job_event(job_id, f"Dataset step complete: {len(datasets)} dataset row(s) available", step=step)
             return
 
         datasets = _typed_component(job, "datasets", mods) or []
@@ -3659,6 +3776,7 @@ def workflow_step(request, job_id: str, step: str):
     figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
     figure_gt_form: FigureGroundTruthForm | None = None
     method_step_correction_form: MethodStepCorrectionForm | None = None
+    dataset_correction_form: DatasetCorrectionForm | None = None
 
     if request.method == "POST":
         action = request.POST.get("action", "") or request.POST.get("step_action", "")
@@ -3705,6 +3823,16 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("method", payload, mods)
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Saved method step correction."
+            elif action == "inject_dataset_correction" and step == "datasets":
+                dataset_correction_form = DatasetCorrectionForm(request.POST, prefix=f"dataset_{step}")
+                if not dataset_correction_form.is_valid():
+                    raise ValueError("Dataset correction form is invalid. Please check dataset fields.")
+                datasets_now = (job.get("components") or {}).get("datasets") or []
+                payload = _inject_dataset_correction(datasets_now, dataset_correction_form.cleaned_data)
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("datasets", payload, mods)
+                _persist_component(job_id, "datasets", validated, "corrected_by_user")
+                info = "Saved dataset correction."
             elif action == "remove_method_step" and step == "method":
                 assay_idx = int(request.POST.get("assay_index", "-1"))
                 step_idx = int(request.POST.get("step_index", "-1"))
@@ -3805,6 +3933,7 @@ def workflow_step(request, job_id: str, step: str):
         figure_ids_for_ui = _sort_figure_ids_alphanumerically(figure_ids_for_ui)
     supplementary_figure_ids = _sort_figure_ids_alphanumerically(list(job.get("supplementary_figure_ids") or []))
     method_assay_rows: list[dict[str, Any]] = _method_assay_rows((job.get("components") or {}).get("method") or {})
+    dataset_rows: list[dict[str, Any]] = _dataset_rows((job.get("components") or {}).get("datasets") or [])
     i = STEP_ORDER.index(step)
     prev_step = STEP_ORDER[i - 1] if i > 0 else None
     next_step = STEP_ORDER[i + 1] if i < len(STEP_ORDER) - 1 else None
@@ -3833,6 +3962,21 @@ def workflow_step(request, job_id: str, step: str):
                 "inferred_stage_name": "",
                 "resolved_warning_indices": "",
                 "inferred_stage_warning_index": None,
+            },
+        )
+    if step == "datasets" and dataset_correction_form is None:
+        first_row = dataset_rows[0] if dataset_rows else {}
+        dataset_correction_form = DatasetCorrectionForm(
+            prefix=f"dataset_{step}",
+            initial={
+                "dataset_index": int(first_row.get("dataset_index", 0) or 0),
+                "accession": str(first_row.get("accession") or "NO_DATASET_REPORTED"),
+                "source": str(first_row.get("source") or "other"),
+                "title": str(first_row.get("title") or ""),
+                "organism": str(first_row.get("organism") or ""),
+                "experiment_type": str(first_row.get("experiment_type") or ""),
+                "summary": str(first_row.get("summary") or ""),
+                "primary_url": str(first_row.get("primary_url") or ""),
             },
         )
 
@@ -3880,6 +4024,8 @@ def workflow_step(request, job_id: str, step: str):
             "supplementary_figure_ids": supplementary_figure_ids,
             "method_assay_rows": method_assay_rows,
             "method_step_correction_form": method_step_correction_form,
+            "dataset_rows": dataset_rows,
+            "dataset_correction_form": dataset_correction_form,
             "prev_step": prev_step,
             "next_step": next_step,
             "progress": progress,

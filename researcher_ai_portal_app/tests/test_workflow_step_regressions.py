@@ -165,6 +165,21 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "Example warning translation" in text
 
 
+def test_workflow_step_template_includes_dataset_correction_drawer():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "workflow_step.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert "Dataset outline" in text
+    assert "correct-dataset-btn" in text
+    assert "dataset-correction-drawer" in text
+    assert "inject_dataset_correction" in text
+    assert "NO_DATASET_REPORTED" in text
+
+
 def test_job_status_merges_cached_logs():
     views_path = Path(__file__).resolve().parents[1] / "views.py"
     text = views_path.read_text(encoding="utf-8")
