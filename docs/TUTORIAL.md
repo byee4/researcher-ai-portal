@@ -88,6 +88,7 @@ The Method step now includes an **Assay step outline** card above the JSON edito
 
 - Use **Correct this step** on any step to open a side drawer with editable fields.
 - Empty constrained fields include example formats and dropdown suggestions (for example `2.7.11b`, `FASTQ.gz`, `sorted BAM`) so it's clear what shape to enter.
+- The **Parameters** field in the sidebar uses JSON-object editing and must stay a dictionary (for example `{"threads": "16", "min_mapq": "30"}`).
 - Update description, software, version, input/output data, parameters, and code reference without touching raw JSON.
 - Save the correction to write changes directly into the structured `method.assay_graph.assays[*].steps[*]` payload.
 - Step cards highlight related `parse_warnings` so you can resolve issues in context.

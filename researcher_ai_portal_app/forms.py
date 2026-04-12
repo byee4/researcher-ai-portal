@@ -99,7 +99,19 @@ class MethodStepCorrectionForm(forms.Form):
     software_version = forms.CharField(required=False, max_length=240)
     input_data = forms.CharField(required=False, max_length=500)
     output_data = forms.CharField(required=False, max_length=500)
-    parameters = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 3}))
+    parameters = forms.JSONField(
+        required=False,
+        initial=dict,
+        widget=SvelteJSONEditorWidget(
+            props={
+                "mode": "tree",
+                "mainMenuBar": False,
+                "navigationBar": False,
+                "statusBar": False,
+            },
+            allow_file_import=False,
+        ),
+    )
     code_reference = forms.CharField(required=False, max_length=500)
     inferred_stage_name = forms.CharField(required=False, max_length=240)
     resolved_warning_indices = forms.CharField(required=False, max_length=500)
@@ -132,10 +144,19 @@ class MethodStepCorrectionForm(forms.Form):
             }
         )
         self.fields["parameters"].widget.attrs.update(
-            {
-                "placeholder": "e.g., --twopassMode Basic --outFilterMultimapNmax 20",
-            }
+            {"title": "Parameters must be a JSON dictionary"}
         )
         self.fields["code_reference"].widget.attrs.update(
             {"placeholder": "e.g., nf-core/rnaseq@3.14.0 or https://github.com/org/repo"}
         )
+
+    def clean_parameters(self) -> dict[str, str]:
+        value = self.cleaned_data.get("parameters")
+        if value in (None, ""):
+            return {}
+        if not isinstance(value, dict):
+            raise forms.ValidationError("Parameters must be a JSON object/dictionary.")
+        cleaned: dict[str, str] = {}
+        for key, val in value.items():
+            cleaned[str(key)] = "" if val is None else str(val)
+        return cleaned

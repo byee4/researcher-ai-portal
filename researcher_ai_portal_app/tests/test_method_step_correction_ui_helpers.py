@@ -26,7 +26,7 @@ def test_method_assay_rows_returns_plain_english_step_rows():
                                 "software_version": "2.7.10a",
                                 "input_data": "FASTQ",
                                 "output_data": "BAM",
-                                "parameters": "--twopassMode Basic",
+                                "parameters": {"twopassMode": "Basic"},
                                 "code_reference": "https://github.com/example/workflow",
                             }
                         ],
@@ -60,7 +60,7 @@ def test_inject_method_step_correction_updates_selected_step_only():
                             "software_version": "0.1",
                             "input_data": "old_in",
                             "output_data": "old_out",
-                            "parameters": "old_params",
+                            "parameters": {"old_params": "1"},
                             "code_reference": "old_ref",
                         },
                         {
@@ -84,7 +84,7 @@ def test_inject_method_step_correction_updates_selected_step_only():
             "software_version": "2.7.10a",
             "input_data": "FASTQ.gz",
             "output_data": "sorted BAM",
-            "parameters": "--twopassMode Basic",
+            "parameters": {"twopassMode": "Basic"},
             "code_reference": "nf-core/rnaseq",
             "inferred_stage_name": "",
         },
@@ -180,7 +180,7 @@ def test_inject_method_step_correction_appends_inferred_stage_when_missing():
             "software_version": "1.42.0",
             "input_data": "counts.tsv",
             "output_data": "normalized_counts.tsv",
-            "parameters": "fitType=parametric",
+            "parameters": {"fitType": "parametric"},
             "code_reference": "bioc::DESeq2",
             "inferred_stage_name": "normalization",
             "resolved_warning_indices": "0",
@@ -232,7 +232,7 @@ def test_inject_method_step_correction_removes_resolved_warning_indices():
             "software_version": "2.7.11b",
             "input_data": "FASTQ.gz",
             "output_data": "BAM",
-            "parameters": "",
+            "parameters": {"outSAMtype": "BAM"},
             "code_reference": "",
             "inferred_stage_name": "",
             "resolved_warning_indices": "0",
@@ -240,6 +240,7 @@ def test_inject_method_step_correction_removes_resolved_warning_indices():
         },
     )
     assert updated["parse_warnings"] == ["paper_rag_vision_fallback: count=1 latency_seconds=0.2"]
+    assert updated["assay_graph"]["assays"][0]["steps"][0]["parameters"] == {"outSAMtype": "BAM"}
 
 
 def test_clear_template_missing_stage_warning_removes_only_selected_stage():
@@ -257,3 +258,23 @@ def test_clear_template_missing_stage_warning_removes_only_selected_stage():
     )
     assert updated["parse_warnings"][0] == "template_missing_stages: differential_expression"
     assert len(updated["parse_warnings"]) == 2
+
+
+def test_method_assay_rows_normalizes_non_dict_parameters_to_empty_dict():
+    rows = views._method_assay_rows(
+        {
+            "assay_graph": {
+                "assays": [
+                    {
+                        "name": "A",
+                        "steps": [
+                            {"step_number": 1, "software": "STAR", "parameters": "bad-string"}
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    first = rows[0]["steps"][0]
+    assert first["parameters"] == {}
+    assert first["parameters_json"] == "{}"
