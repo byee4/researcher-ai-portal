@@ -422,3 +422,44 @@ def test_method_assay_rows_normalizes_non_dict_parameters_to_empty_dict():
     first = rows[0]["steps"][0]
     assert first["parameters"] == {}
     assert first["parameters_json"] == "{}"
+
+
+def test_stepper_badge_counts_method_uses_raw_parse_warning_count():
+    """Methods badge should mirror parse_warnings list length exactly."""
+    counts = views._stepper_badge_counts(
+        {
+            "component_meta": {
+                "paper": {"missing": []},
+                "figures": {"missing": ["missing_caption"]},
+                "method": {"missing": ["parse_warnings=2"]},
+                "datasets": {"missing": []},
+                "software": {"missing": []},
+                "pipeline": {"missing": []},
+            },
+            "components": {
+                "method": {
+                    "parse_warnings": ["w1", "w2", "w3", "w4"],
+                }
+            },
+        }
+    )
+    assert counts["method"] == 4
+    assert counts["figures"] == 1
+
+
+def test_stepper_badge_counts_method_falls_back_to_component_meta_when_payload_missing():
+    """Legacy jobs without method payload still parse parse_warnings=N fallback."""
+    counts = views._stepper_badge_counts(
+        {
+            "component_meta": {
+                "paper": {"missing": []},
+                "figures": {"missing": []},
+                "method": {"missing": ["parse_warnings=32"]},
+                "datasets": {"missing": []},
+                "software": {"missing": []},
+                "pipeline": {"missing": []},
+            },
+            "components": {},
+        }
+    )
+    assert counts["method"] == 32

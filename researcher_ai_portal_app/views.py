@@ -3131,6 +3131,40 @@ def _build_step_chips_enhanced(
     return chips
 
 
+def _stepper_badge_counts(job: dict[str, Any]) -> dict[str, int]:
+    """Return per-step warning counts for the workflow stepper badge.
+
+    Plain-English behavior:
+    - For most steps, the badge count is the number of "missing / weak" entries
+      shown in that step's status card.
+    - For the Methods Parser step, the badge count is the raw
+      ``parse_warnings`` list length so it matches the method warning summary.
+    """
+    counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
+    meta_map = job.get("component_meta") or {}
+
+    for step in STEP_ORDER:
+        missing = (meta_map.get(step) or {}).get("missing") or []
+        if isinstance(missing, list):
+            counts[step] = sum(1 for item in missing if str(item or "").strip())
+
+    method_payload = ((job.get("components") or {}).get("method") or {})
+    parse_warnings = method_payload.get("parse_warnings")
+    if isinstance(parse_warnings, list):
+        counts["method"] = sum(1 for warning in parse_warnings if str(warning or "").strip())
+        return counts
+
+    # Backward-compatible fallback for legacy metadata-only jobs where the
+    # method warning count may only be present as "parse_warnings=N".
+    method_missing = (meta_map.get("method") or {}).get("missing") or []
+    for item in method_missing:
+        match = re.search(r"\bparse_warnings\s*=\s*(\d+)\b", str(item), re.IGNORECASE)
+        if match:
+            counts["method"] = int(match.group(1))
+            break
+    return counts
+
+
 def _humanize_step_error(exc: Exception) -> str:
     text = str(exc or "").strip()
     lower = text.lower()
@@ -3226,19 +3260,9 @@ def _dashboard_context(job: dict[str, Any]) -> dict[str, Any]:
         else:
             step_confidence_scores[s] = None  # use component status for non-method steps
 
-    # Count actionable items per step-target for stepper badges
-    step_action_counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
-    tab_to_step = {
-        "editing": "method",
-        "datasets": "datasets",
-        "figures": "figures",
-        "advanced": "pipeline",
-        "workflow-graph": "method",
-    }
-    for item in actionable_items:
-        mapped = tab_to_step.get(item["fix_target_tab"])
-        if mapped:
-            step_action_counts[mapped] = step_action_counts.get(mapped, 0) + 1
+    # Stepper badge counts intentionally represent warning counts users can
+    # directly verify in each step status panel.
+    step_action_counts = _stepper_badge_counts(job)
 
     return {
         "paper": paper,
@@ -3826,18 +3850,7 @@ def workflow_step(request, job_id: str, step: str):
             )
         else:
             _step_confidence_scores[_s] = None
-    _step_action_items = compute_actionable_items(_job_result_from_components(job), _step_conf_result)
-    _step_action_counts: dict[str, int] = {s: 0 for s in STEP_ORDER}
-    _tab_to_step = {
-        "editing": "method",
-        "datasets": "datasets",
-        "figures": "figures",
-        "advanced": "pipeline",
-    }
-    for _item in _step_action_items:
-        _mapped = _tab_to_step.get(_item["fix_target_tab"])
-        if _mapped:
-            _step_action_counts[_mapped] = _step_action_counts.get(_mapped, 0) + 1
+    _step_action_counts = _stepper_badge_counts(job)
 
     stepper_chips = _build_step_chips_enhanced(job, _step_confidence_scores, _step_action_counts)
 
