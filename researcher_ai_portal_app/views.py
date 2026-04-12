@@ -1535,6 +1535,8 @@ def _warning_category(raw: str) -> str:
         return "inferred_parameters"
     if lower.startswith("template_missing_stages:"):
         return "template_missing_stages"
+    if " template=" in lower and " missing=" in lower:
+        return "template_missing_stages"
     if lower.startswith("paper_rag_vision_fallback:"):
         return "paper_rag_vision_fallback"
     if lower.startswith("assay_filtered_non_computational:"):
@@ -1563,6 +1565,16 @@ def _warning_summary(raw: str) -> str:
     if category == "inferred_parameters_fallback_mode":
         return f"Parameter inference used fallback mode: {suffix}"
     if category == "template_missing_stages":
+        detail = _parse_template_warning_kv(raw)
+        if detail:
+            assay_name = detail.get("assay") or "this assay"
+            template_name = detail.get("template") or "template"
+            missing_names = ", ".join(detail.get("missing_stages") or [])
+            if missing_names:
+                return (
+                    f'Assay "{assay_name}" is missing expected "{template_name}" stage(s): '
+                    f"{missing_names}. Add these stages in the assay step outline."
+                )
         return f"Expected template stages are missing: {suffix}"
     if category == "assay_filtered_non_computational":
         return f"Assay filtered as non-computational: {suffix}"
@@ -1574,6 +1586,9 @@ def _warning_summary(raw: str) -> str:
 def _parse_template_missing_stages(raw: str) -> list[str]:
     if _warning_category(raw) != "template_missing_stages":
         return []
+    detail = _parse_template_warning_kv(raw)
+    if detail and detail.get("missing_stages"):
+        return list(detail["missing_stages"])
     suffix = raw.split(":", 1)[1] if ":" in raw else ""
     tokens = [t.strip() for t in re.split(r"[;,]", suffix) if t.strip()]
     normalized: list[str] = []
@@ -1585,6 +1600,35 @@ def _parse_template_missing_stages(raw: str) -> list[str]:
         seen.add(key)
         normalized.append(token)
     return normalized
+
+
+def _parse_template_warning_kv(raw: str) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if "missing=" not in text:
+        return {}
+    assay = _warning_assay_name_hint(text)
+    template_match = re.search(r"(?i)\btemplate\s*=\s*([A-Za-z0-9_.-]+)", text)
+    missing_match = re.search(r"(?i)\bmissing\s*=\s*([A-Za-z0-9_.,;| -]+)", text)
+    template_name = str(template_match.group(1) or "").strip() if template_match else ""
+    missing_raw = str(missing_match.group(1) or "").strip() if missing_match else ""
+    missing_tokens = [
+        token.strip()
+        for token in re.split(r"[|,;/]", missing_raw)
+        if token and token.strip()
+    ]
+    seen: set[str] = set()
+    missing_stages: list[str] = []
+    for token in missing_tokens:
+        key = token.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        missing_stages.append(token)
+    return {
+        "assay": assay,
+        "template": template_name,
+        "missing_stages": missing_stages,
+    }
 
 
 def _infer_warning_assay_index(raw: str, raw_assays: list[Any]) -> int | None:

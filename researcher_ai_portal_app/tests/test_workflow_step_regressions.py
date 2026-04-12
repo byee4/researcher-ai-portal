@@ -154,6 +154,8 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "remove_inferred_stage_suggestion" in text
     assert "Remove step" in text
     assert "parameters as a JSON dictionary" in text
+    assert "Expected methods payload shape per step" in text
+    assert "Example warning translation" in text
 
 
 def test_job_status_merges_cached_logs():

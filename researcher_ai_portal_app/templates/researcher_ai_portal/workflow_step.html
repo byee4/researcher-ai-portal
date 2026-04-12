@@ -198,6 +198,10 @@
             <p class="text-xs text-muted" style="margin-top: 6px;">
               Review each assay and correct individual method steps without editing raw JSON.
             </p>
+            <p class="text-xs text-muted" style="margin-top: 6px;">
+              Expected methods payload shape per step:
+              <code>{"description":"...","software":"...","software_version":"...","input_data":"...","output_data":"...","parameters":{"key":"value"},"code_reference":"..."}</code>
+            </p>
           </div>
           {% if method_assay_rows %}
             <div class="method-assay-grid">
@@ -334,6 +338,11 @@
                   input/output types like <code>FASTQ.gz</code>, <code>BAM</code>, <code>TSV</code>,
                   code references like <code>nf-core/rnaseq@3.14.0</code> or a GitHub URL,
                   and parameters as a JSON dictionary such as <code>{"threads":"16","min_mapq":"30"}</code>.
+                </p>
+                <p class="text-xs text-muted" style="margin: 6px 0 0 0;">
+                  Example warning translation:
+                  <code>assay='iPSC neuron differentiation' template=generic missing=align</code>
+                  means this assay is missing an expected <code>align</code> stage from the generic template.
                 </p>
               </div>
               <div class="form-group">

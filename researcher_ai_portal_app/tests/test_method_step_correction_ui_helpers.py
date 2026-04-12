@@ -148,6 +148,16 @@ def test_method_warning_rows_map_to_assay_and_step_with_severity():
     assert rows[1]["severity"] == "warning"
 
 
+def test_template_warning_kv_format_is_classified_and_humanized():
+    raw = "assay='iPSC neuron differentiation' template=generic missing=align"
+    assert views._warning_category(raw) == "template_missing_stages"
+    summary = views._warning_summary(raw)
+    assert "iPSC neuron differentiation" in summary
+    assert "align" in summary
+    stages = views._parse_template_missing_stages(raw)
+    assert stages == ["align"]
+
+
 def test_method_assay_rows_add_inferred_stage_skeletons_for_template_warning():
     payload = {
         "assay_graph": {
