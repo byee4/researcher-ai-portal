@@ -1603,11 +1603,14 @@ def _parse_template_missing_stages(raw: str) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
     for token in tokens:
-        key = token.casefold()
+        stage = _normalize_template_stage_token(token)
+        if not stage:
+            continue
+        key = stage.casefold()
         if key in seen:
             continue
         seen.add(key)
-        normalized.append(token)
+        normalized.append(stage)
     return normalized
 
 
@@ -1628,16 +1631,32 @@ def _parse_template_warning_kv(raw: str) -> dict[str, Any]:
     seen: set[str] = set()
     missing_stages: list[str] = []
     for token in missing_tokens:
-        key = token.casefold()
+        stage = _normalize_template_stage_token(token)
+        if not stage:
+            continue
+        key = stage.casefold()
         if key in seen:
             continue
         seen.add(key)
-        missing_stages.append(token)
+        missing_stages.append(stage)
     return {
         "assay": assay,
         "template": template_name,
         "missing_stages": missing_stages,
     }
+
+
+def _normalize_template_stage_token(token: str) -> str:
+    """Normalize a template stage token by removing parser-source metadata suffixes."""
+    text = str(token or "").strip()
+    if not text:
+        return ""
+    # Convert legacy variants like "analyze source=partial_skeleton" and
+    # "analyze source" into canonical "analyze".
+    text = re.sub(r"(?i)\s+source(?:\s*=\s*[A-Za-z0-9_.-]+)?\s*$", "", text).strip()
+    if text.casefold() in {"source", "partial_skeleton"}:
+        return ""
+    return text
 
 
 def _infer_warning_assay_index(raw: str, raw_assays: list[Any]) -> int | None:
