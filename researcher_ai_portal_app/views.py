@@ -1500,6 +1500,7 @@ def _method_warning_rows(method_payload: Any) -> list[dict[str, Any]]:
         raw = str(warning or "").strip()
         if not raw:
             continue
+        assay_name_hint = _warning_assay_name_hint(raw)
         assay_idx = _infer_warning_assay_index(raw, raw_assays)
         if assay_idx is None:
             inferred_assay_idx, inferred_step_idx = _infer_warning_target_by_software(raw, raw_assays)
@@ -1516,6 +1517,7 @@ def _method_warning_rows(method_payload: Any) -> list[dict[str, Any]]:
                 "summary": _warning_summary(raw),
                 "assay_index": assay_idx,
                 "step_index": step_idx,
+                "assay_name_hint": assay_name_hint,
             }
         )
     return rows
@@ -1586,6 +1588,15 @@ def _parse_template_missing_stages(raw: str) -> list[str]:
 
 
 def _infer_warning_assay_index(raw: str, raw_assays: list[Any]) -> int | None:
+    hint = _warning_assay_name_hint(raw)
+    if hint:
+        hint_key = hint.casefold()
+        for idx, assay in enumerate(raw_assays):
+            if not isinstance(assay, dict):
+                continue
+            name = str(assay.get("name") or "").strip()
+            if name and name.casefold() == hint_key:
+                return idx
     lower = raw.lower()
     for idx, assay in enumerate(raw_assays):
         if not isinstance(assay, dict):
@@ -1643,8 +1654,12 @@ def _inferred_missing_stage_items_for_assay(
         if row.get("category") != "template_missing_stages":
             continue
         target_assay = row.get("assay_index")
+        target_hint = str(row.get("assay_name_hint") or "").strip()
         if target_assay is not None and target_assay != assay_index:
             continue
+        if target_assay is None and target_hint:
+            if target_hint.casefold() != str(assay_name or "").strip().casefold():
+                continue
         for stage in _parse_template_missing_stages(str(row.get("raw") or "")):
             key = stage.casefold()
             if key in seen:
@@ -1657,6 +1672,19 @@ def _inferred_missing_stage_items_for_assay(
                 }
             )
     return stage_items
+
+
+def _warning_assay_name_hint(raw: str) -> str:
+    text = str(raw or "")
+    patterns = [
+        r"(?i)\bassay\s*=\s*'([^']+)'",
+        r'(?i)\bassay\s*=\s*"([^"]+)"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
 
 
 def _method_missing_field_hints(step: dict[str, Any]) -> list[str]:
