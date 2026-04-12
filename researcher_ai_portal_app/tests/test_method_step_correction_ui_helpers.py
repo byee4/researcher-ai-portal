@@ -168,6 +168,31 @@ def test_method_assay_rows_add_inferred_stage_skeletons_for_template_warning():
     assert inferred[0]["inferred_stage_name"] == "normalization"
 
 
+def test_template_stage_items_respect_assay_name_hint_when_index_unresolved():
+    warning_rows = [
+        {
+            "category": "template_missing_stages",
+            "raw": "template_missing_stages: align",
+            "assay_index": None,
+            "assay_name_hint": "iPSC neuron differentiation",
+            "warning_index": 0,
+        }
+    ]
+    assay1_items = views._inferred_missing_stage_items_for_assay(
+        warning_rows,
+        assay_index=0,
+        assay_name="RNA-seq alignment",
+    )
+    assay2_items = views._inferred_missing_stage_items_for_assay(
+        warning_rows,
+        assay_index=1,
+        assay_name="iPSC neuron differentiation",
+    )
+    assert assay1_items == []
+    assert len(assay2_items) == 1
+    assert assay2_items[0]["stage_name"] == "align"
+
+
 def test_inject_method_step_correction_appends_inferred_stage_when_missing():
     payload = {"assay_graph": {"assays": [{"name": "A", "steps": [{"step_number": 1, "description": "x"}]}]}}
     updated = views._inject_method_step_correction(
