@@ -352,6 +352,58 @@ def test_clear_template_missing_stages_by_pairs_supports_batch_remove():
     assert updated["parse_warnings"] == ["template_missing_stages: quantify"]
 
 
+def test_remove_method_steps_batch_handles_mixed_persisted_and_inferred_rows():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "RNA-seq",
+                    "steps": [
+                        {"step_number": 1, "description": "qc"},
+                        {"step_number": 2, "description": "align"},
+                        {"step_number": 3, "description": "quantify"},
+                    ],
+                }
+            ]
+        },
+        "parse_warnings": [
+            "inferred_parameters: assay='RNA-seq' updated_steps=1",
+            "template_missing_stages: analyze, differential",
+        ],
+    }
+    updated = views._remove_method_steps_batch(
+        payload,
+        assay_index=0,
+        selected_rows=[
+            {
+                "step_index": 1,
+                "is_inferred_stage": False,
+                "warning_indices": [0],
+            },
+            {
+                "step_index": 3,
+                "is_inferred_stage": True,
+                "inferred_stage_name": "analyze",
+                "inferred_stage_warning_index": 1,
+                "warning_indices": [],
+            },
+        ],
+    )
+    steps = updated["assay_graph"]["assays"][0]["steps"]
+    assert [s["description"] for s in steps] == ["qc", "quantify"]
+    assert updated["parse_warnings"] == ["template_missing_stages: differential"]
+
+
+def test_parse_step_batch_payload_parses_checkbox_value():
+    parsed = views._parse_step_batch_payload("2||1||analyze||4||0,3")
+    assert parsed is not None
+    assert parsed["step_index"] == 2
+    assert parsed["is_inferred_stage"] is True
+    assert parsed["inferred_stage_name"] == "analyze"
+    assert parsed["inferred_stage_warning_index"] == 4
+    assert parsed["warning_indices"] == [0, 3]
+
+
 def test_method_assay_rows_normalizes_non_dict_parameters_to_empty_dict():
     rows = views._method_assay_rows(
         {

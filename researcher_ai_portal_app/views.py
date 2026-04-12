@@ -1972,6 +1972,73 @@ def _clear_template_missing_stages_by_pairs(method_payload: Any, pair_tokens: li
     return payload
 
 
+def _parse_step_batch_payload(token: str) -> dict[str, Any] | None:
+    """Parse one batch-selection token from method outline checkboxes."""
+    text = str(token or "")
+    parts = text.split("||", 4)
+    if len(parts) != 5:
+        return None
+    step_idx_s, inferred_s, stage_name, warning_idx_s, warning_csv = parts
+    step_idx_s = step_idx_s.strip()
+    if not step_idx_s or not step_idx_s.lstrip("-").isdigit():
+        return None
+    inferred = inferred_s.strip() == "1"
+    warning_index = int(warning_idx_s) if warning_idx_s.strip().isdigit() else None
+    warning_indices = _parse_warning_indices_csv(warning_csv.strip())
+    return {
+        "step_index": int(step_idx_s),
+        "is_inferred_stage": inferred,
+        "inferred_stage_name": str(stage_name or "").strip(),
+        "inferred_stage_warning_index": warning_index,
+        "warning_indices": warning_indices,
+    }
+
+
+def _remove_method_steps_batch(
+    method_payload: Any,
+    *,
+    assay_index: int,
+    selected_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Remove multiple selected method rows in one persisted operation."""
+    payload = json.loads(json.dumps(method_payload if isinstance(method_payload, dict) else {}))
+    warning_indices: list[int] = []
+    inferred_rows: list[tuple[str, int | None]] = []
+    persisted_step_indices: list[int] = []
+
+    for row in selected_rows:
+        if not isinstance(row, dict):
+            continue
+        warning_indices.extend([i for i in (row.get("warning_indices") or []) if isinstance(i, int)])
+        if bool(row.get("is_inferred_stage")):
+            stage_name = str(row.get("inferred_stage_name") or "").strip()
+            warning_index = row.get("inferred_stage_warning_index")
+            warning_index = warning_index if isinstance(warning_index, int) else None
+            if stage_name:
+                inferred_rows.append((stage_name, warning_index))
+        else:
+            step_idx = row.get("step_index")
+            if isinstance(step_idx, int):
+                persisted_step_indices.append(step_idx)
+
+    for stage_name, warning_index in inferred_rows:
+        payload = _clear_template_missing_stage_warning(
+            payload,
+            stage_name=stage_name,
+            warning_index=warning_index,
+        )
+    payload = _remove_parse_warnings_by_indices(payload, warning_indices)
+
+    for step_idx in sorted(set(persisted_step_indices), reverse=True):
+        try:
+            payload = _remove_method_step(payload, assay_index=assay_index, step_index=step_idx)
+        except ValueError:
+            # If a stale UI selection references an index that no longer exists,
+            # ignore it so other valid selections still apply.
+            continue
+    return payload
+
+
 def _typed_component(job: dict[str, Any], step: str, mods: dict[str, Any]) -> Any:
     payload = (job.get("components") or {}).get(step)
     if payload is None:
@@ -3644,6 +3711,21 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("method", payload, mods)
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Removed inferred stage suggestions for this assay."
+            elif action == "remove_method_steps_batch" and step == "method":
+                assay_idx = int(request.POST.get("assay_index", "-1"))
+                row_tokens = request.POST.getlist("selected_step_payloads")
+                selected_rows = [row for row in (_parse_step_batch_payload(t) for t in row_tokens) if row]
+                if not selected_rows:
+                    raise ValueError("No steps were selected for batch removal.")
+                payload = _remove_method_steps_batch(
+                    method_now,
+                    assay_index=assay_idx,
+                    selected_rows=selected_rows,
+                )
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("method", payload, mods)
+                _persist_component(job_id, "method", validated, "corrected_by_user")
+                info = "Removed selected steps."
             elif action == "next":
                 i = STEP_ORDER.index(step)
                 target = STEP_ORDER[min(i + 1, len(STEP_ORDER) - 1)]

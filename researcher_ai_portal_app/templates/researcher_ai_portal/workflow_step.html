@@ -212,6 +212,15 @@
                       <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
                       <span class="pill pill-neutral">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
                     </div>
+                    <form method="post" action="{{ request.path }}" class="batch-remove-steps-form" style="display: inline-flex; gap: 6px; align-items: center;">
+                      {% csrf_token %}
+                      <input type="hidden" name="step_action" value="remove_method_steps_batch">
+                      <input type="hidden" name="assay_index" value="{{ assay.assay_index }}">
+                      <div class="batch-selected-container"></div>
+                      <button type="submit" class="btn btn-ghost btn-sm batch-remove-selected-btn" disabled>
+                        Remove selected
+                      </button>
+                    </form>
                     {% if assay.has_inferred_stage_suggestions %}
                       <form method="post" action="{{ request.path }}" class="batch-remove-inferred-form" style="display: inline-flex; gap: 6px;">
                         {% csrf_token %}
@@ -240,7 +249,13 @@
                         <div id="inferred-row-{{ assay_step.assay_index }}-{{ assay_step.step_index }}"
                              class="method-step-row {% if assay_step.is_inferred_stage %}method-step-row-inferred{% endif %}">
                           <div class="method-step-top">
-                            <span class="method-step-chip">{% if assay_step.is_inferred_stage %}Suggested stage{% else %}Step {{ assay_step.step_number }}{% endif %}</span>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                              <input type="checkbox"
+                                     class="method-step-select"
+                                     title="Select for batch remove"
+                                     value="{{ assay_step.step_index }}||{% if assay_step.is_inferred_stage %}1{% else %}0{% endif %}||{{ assay_step.inferred_stage_name }}||{{ assay_step.inferred_stage_warning_index }}||{{ assay_step.warning_indices_csv }}">
+                              <span class="method-step-chip">{% if assay_step.is_inferred_stage %}Suggested stage{% else %}Step {{ assay_step.step_number }}{% endif %}</span>
+                            </div>
                             <span class="text-xs text-muted">
                               {% if assay_step.is_inferred_stage %}
                                 {{ assay_step.inferred_stage_name }}
@@ -904,6 +919,43 @@
         formEl.addEventListener("submit", (event) => {
           const ok = window.confirm("Remove all inferred stage suggestions for this assay?");
           if (!ok) event.preventDefault();
+        });
+      });
+      document.querySelectorAll(".method-assay-card").forEach((cardEl) => {
+        const formEl = cardEl.querySelector(".batch-remove-steps-form");
+        const submitBtn = cardEl.querySelector(".batch-remove-selected-btn");
+        const selectedContainer = cardEl.querySelector(".batch-selected-container");
+        const checkboxes = Array.from(cardEl.querySelectorAll(".method-step-select"));
+        if (!formEl || !submitBtn || !selectedContainer || !checkboxes.length) return;
+
+        const syncBatchButton = () => {
+          const selectedCount = checkboxes.filter((cb) => cb.checked).length;
+          submitBtn.disabled = selectedCount === 0;
+          submitBtn.textContent = selectedCount > 0 ? `Remove selected (${selectedCount})` : "Remove selected";
+        };
+
+        checkboxes.forEach((cb) => cb.addEventListener("change", syncBatchButton));
+        syncBatchButton();
+
+        formEl.addEventListener("submit", (event) => {
+          const selected = checkboxes.filter((cb) => cb.checked).map((cb) => cb.value);
+          if (!selected.length) {
+            event.preventDefault();
+            return;
+          }
+          selectedContainer.innerHTML = "";
+          selected.forEach((value) => {
+            const input = document.createElement("input");
+            input.type = "hidden";
+            input.name = "selected_step_payloads";
+            input.value = value;
+            selectedContainer.appendChild(input);
+          });
+          const ok = window.confirm(`Remove ${selected.length} selected step(s) from this assay?`);
+          if (!ok) {
+            event.preventDefault();
+            selectedContainer.innerHTML = "";
+          }
         });
       });
       document.addEventListener("keydown", (event) => {
