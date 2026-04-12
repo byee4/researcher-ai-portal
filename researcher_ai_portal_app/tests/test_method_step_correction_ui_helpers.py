@@ -244,6 +244,32 @@ def test_inject_method_step_correction_appends_inferred_stage_when_missing():
     assert steps[1]["software"] == "DESeq2"
 
 
+def test_inject_method_step_correction_appends_inferred_stage_when_virtual_index_is_beyond_len():
+    """Regression: second inferred row can carry a virtual index > len(steps)."""
+    payload = {"assay_graph": {"assays": [{"name": "A", "steps": [{"step_number": 1, "description": "x"}]}]}}
+    updated = views._inject_method_step_correction(
+        payload,
+        {
+            "assay_index": 0,
+            "step_index": 2,  # virtual inferred row index (len=1, second suggestion)
+            "description": "Analyze expression programs",
+            "software": "scanpy",
+            "software_version": "1.10.1",
+            "input_data": "normalized_counts.tsv",
+            "output_data": "umap_embeddings.csv",
+            "parameters": {"n_pcs": "30"},
+            "code_reference": "scanpy.tl.umap",
+            "inferred_stage_name": "analyze",
+            "resolved_warning_indices": "0",
+            "inferred_stage_warning_index": 0,
+        },
+    )
+    steps = updated["assay_graph"]["assays"][0]["steps"]
+    assert len(steps) == 2
+    assert steps[1]["template_stage"] == "analyze"
+    assert steps[1]["software"] == "scanpy"
+
+
 def test_remove_method_step_renumbers_remaining_steps():
     payload = {
         "assay_graph": {

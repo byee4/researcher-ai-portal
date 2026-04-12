@@ -94,6 +94,7 @@ The Method step now includes an **Assay step outline** card above the JSON edito
 - Step cards highlight related `parse_warnings` so you can resolve issues in context.
 - If `template_missing_stages` appears, the UI shows inferred empty stage skeletons. You can fill and save those stages, or remove suggestions you do not need.
 - You can also click **Remove all suggestions** at the assay level to batch-clear inferred template stages for that assay.
+- If you fill a suggested stage from the outline, the portal now maps virtual suggestion rows to a real appended step reliably (no step-index mismatch errors).
 - Cryptic template warnings are translated inline. For example, `assay='iPSC neuron differentiation' template=generic missing=align` is shown as a plain-English message that the assay is missing the `align` stage from the generic template.
 - The **Methods Parser data** JSON card is still available for full manual edits when needed.
 

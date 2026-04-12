@@ -1806,7 +1806,10 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     inferred_stage_warning_index = cleaned.get("inferred_stage_warning_index")
     if isinstance(inferred_stage_warning_index, int):
         warning_indices.append(inferred_stage_warning_index)
-    if step_idx == len(steps) and inferred_stage_name:
+    if step_idx >= len(steps) and inferred_stage_name:
+        # UI inferred rows can be virtual indices beyond current persisted
+        # steps (e.g., len+1 when multiple suggestions are shown). Any such
+        # inferred selection should append one new step, then edit that row.
         steps.append(
             {
                 "step_number": len(steps) + 1,
@@ -1820,6 +1823,7 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
                 "inferred_from_warning": "template_missing_stages",
             }
         )
+        step_idx = len(steps) - 1
     elif step_idx < 0 or step_idx >= len(steps):
         raise ValueError("Selected step was not found in the current assay.")
     step = steps[step_idx]
