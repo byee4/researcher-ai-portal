@@ -183,6 +183,8 @@ def test_inject_method_step_correction_appends_inferred_stage_when_missing():
             "parameters": "fitType=parametric",
             "code_reference": "bioc::DESeq2",
             "inferred_stage_name": "normalization",
+            "resolved_warning_indices": "0",
+            "inferred_stage_warning_index": 0,
         },
     )
     steps = updated["assay_graph"]["assays"][0]["steps"]
@@ -210,3 +212,48 @@ def test_remove_method_step_renumbers_remaining_steps():
     steps = updated["assay_graph"]["assays"][0]["steps"]
     assert [s["description"] for s in steps] == ["A", "C"]
     assert [s["step_number"] for s in steps] == [1, 2]
+
+
+def test_inject_method_step_correction_removes_resolved_warning_indices():
+    payload = {
+        "assay_graph": {"assays": [{"name": "A", "steps": [{"step_number": 1, "software": "STAR"}]}]},
+        "parse_warnings": [
+            "inferred_parameters: STAR.outSAMtype=BAM",
+            "paper_rag_vision_fallback: count=1 latency_seconds=0.2",
+        ],
+    }
+    updated = views._inject_method_step_correction(
+        payload,
+        {
+            "assay_index": 0,
+            "step_index": 0,
+            "description": "desc",
+            "software": "STAR",
+            "software_version": "2.7.11b",
+            "input_data": "FASTQ.gz",
+            "output_data": "BAM",
+            "parameters": "",
+            "code_reference": "",
+            "inferred_stage_name": "",
+            "resolved_warning_indices": "0",
+            "inferred_stage_warning_index": None,
+        },
+    )
+    assert updated["parse_warnings"] == ["paper_rag_vision_fallback: count=1 latency_seconds=0.2"]
+
+
+def test_clear_template_missing_stage_warning_removes_only_selected_stage():
+    payload = {
+        "assay_graph": {"assays": []},
+        "parse_warnings": [
+            "template_missing_stages: normalization, differential_expression",
+            "inferred_parameters: foo=bar",
+        ],
+    }
+    updated = views._clear_template_missing_stage_warning(
+        payload,
+        stage_name="normalization",
+        warning_index=0,
+    )
+    assert updated["parse_warnings"][0] == "template_missing_stages: differential_expression"
+    assert len(updated["parse_warnings"]) == 2

@@ -1411,6 +1411,11 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                 for w in warning_rows
                 if w.get("assay_index") == assay_idx and w.get("step_index") == step_idx
             ]
+            warning_indices = [
+                int(w["warning_index"])
+                for w in step_warning_rows
+                if isinstance(w.get("warning_index"), int)
+            ]
             step_rows.append(
                 {
                     "assay_index": assay_idx,
@@ -1424,18 +1429,20 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "parameters": str(step.get("parameters") or "").strip(),
                     "code_reference": str(step.get("code_reference") or "").strip(),
                     "warnings": step_warning_rows,
+                    "warning_indices_csv": ",".join(str(i) for i in warning_indices),
                     "missing_field_hints": _method_missing_field_hints(step),
                     "is_inferred_stage": False,
                     "inferred_stage_name": "",
                 }
             )
         # For template warnings, infer empty stage skeletons users can fill or remove.
-        missing_stages = _inferred_missing_stage_names_for_assay(
+        missing_stages = _inferred_missing_stage_items_for_assay(
             warning_rows,
             assay_index=assay_idx,
             assay_name=assay_name,
         )
-        for offset, stage_name in enumerate(missing_stages):
+        for offset, stage_item in enumerate(missing_stages):
+            stage_name = stage_item["stage_name"]
             step_rows.append(
                 {
                     "assay_index": assay_idx,
@@ -1454,13 +1461,18 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                             "summary": f'Missing template stage "{stage_name}"',
                             "raw": f"template_missing_stages:{stage_name}",
                             "category": "template_missing_stages",
+                            "warning_index": stage_item.get("warning_index"),
                         }
                     ],
+                    "warning_indices_csv": str(stage_item.get("warning_index"))
+                    if isinstance(stage_item.get("warning_index"), int)
+                    else "",
                     "missing_field_hints": [
                         "Fill the stage details manually, or remove this suggestion if not needed."
                     ],
                     "is_inferred_stage": True,
                     "inferred_stage_name": stage_name,
+                    "inferred_stage_warning_index": stage_item.get("warning_index"),
                 }
             )
         rows.append(
@@ -1616,13 +1628,13 @@ def _infer_warning_target_by_software(raw: str, raw_assays: list[Any]) -> tuple[
     return None, None
 
 
-def _inferred_missing_stage_names_for_assay(
+def _inferred_missing_stage_items_for_assay(
     warning_rows: list[dict[str, Any]],
     *,
     assay_index: int,
     assay_name: str,
-) -> list[str]:
-    stage_names: list[str] = []
+) -> list[dict[str, Any]]:
+    stage_items: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in warning_rows:
         if row.get("category") != "template_missing_stages":
@@ -1635,8 +1647,13 @@ def _inferred_missing_stage_names_for_assay(
             if key in seen:
                 continue
             seen.add(key)
-            stage_names.append(stage)
-    return stage_names
+            stage_items.append(
+                {
+                    "stage_name": stage,
+                    "warning_index": row.get("warning_index"),
+                }
+            )
+    return stage_items
 
 
 def _method_missing_field_hints(step: dict[str, Any]) -> list[str]:
@@ -1673,6 +1690,10 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     if not isinstance(steps, list):
         raise ValueError("Selected assay has no editable steps.")
     inferred_stage_name = str(cleaned.get("inferred_stage_name") or "").strip()
+    warning_indices = _parse_warning_indices_csv(str(cleaned.get("resolved_warning_indices") or ""))
+    inferred_stage_warning_index = cleaned.get("inferred_stage_warning_index")
+    if isinstance(inferred_stage_warning_index, int):
+        warning_indices.append(inferred_stage_warning_index)
     if step_idx == len(steps) and inferred_stage_name:
         steps.append(
             {
@@ -1702,6 +1723,12 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     step["code_reference"] = str(cleaned.get("code_reference") or "").strip()
     if inferred_stage_name:
         step["template_stage"] = inferred_stage_name
+        payload = _clear_template_missing_stage_warning(
+            payload,
+            stage_name=inferred_stage_name,
+            warning_index=inferred_stage_warning_index if isinstance(inferred_stage_warning_index, int) else None,
+        )
+    payload = _remove_parse_warnings_by_indices(payload, warning_indices)
     return payload
 
 
@@ -1728,6 +1755,73 @@ def _remove_method_step(method_payload: Any, *, assay_index: int, step_index: in
     for idx, step in enumerate(steps):
         if isinstance(step, dict):
             step["step_number"] = idx + 1
+    return payload
+
+
+def _parse_warning_indices_csv(text: str) -> list[int]:
+    values: list[int] = []
+    for token in (text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.isdigit():
+            values.append(int(token))
+    return values
+
+
+def _remove_parse_warnings_by_indices(method_payload: Any, indices: list[int]) -> dict[str, Any]:
+    payload = method_payload if isinstance(method_payload, dict) else {}
+    raw_warnings = list(payload.get("parse_warnings") or [])
+    if not raw_warnings:
+        payload["parse_warnings"] = []
+        return payload
+    keep: list[str] = []
+    skip = {i for i in indices if isinstance(i, int) and i >= 0}
+    for idx, warning in enumerate(raw_warnings):
+        if idx in skip:
+            continue
+        keep.append(str(warning))
+    payload["parse_warnings"] = keep
+    return payload
+
+
+def _clear_template_missing_stage_warning(
+    method_payload: Any,
+    *,
+    stage_name: str,
+    warning_index: int | None = None,
+) -> dict[str, Any]:
+    payload = method_payload if isinstance(method_payload, dict) else {}
+    raw_warnings = list(payload.get("parse_warnings") or [])
+    if not raw_warnings:
+        payload["parse_warnings"] = []
+        return payload
+    normalized_target = str(stage_name or "").strip().casefold()
+    if not normalized_target:
+        return payload
+
+    def _rewrite_warning(text: str) -> str | None:
+        if _warning_category(text) != "template_missing_stages":
+            return text
+        stages = _parse_template_missing_stages(text)
+        remaining = [s for s in stages if s.casefold() != normalized_target]
+        if not remaining:
+            return None
+        return f"template_missing_stages: {', '.join(remaining)}"
+
+    updated: list[str] = []
+    for idx, warning in enumerate(raw_warnings):
+        text = str(warning or "")
+        if warning_index is not None and idx != warning_index:
+            updated.append(text)
+            continue
+        rewritten = _rewrite_warning(text)
+        if rewritten is None:
+            if warning_index is not None and idx != warning_index:
+                updated.append(text)
+            continue
+        updated.append(rewritten)
+    payload["parse_warnings"] = updated
     return payload
 
 
@@ -3376,11 +3470,26 @@ def workflow_step(request, job_id: str, step: str):
             elif action == "remove_method_step" and step == "method":
                 assay_idx = int(request.POST.get("assay_index", "-1"))
                 step_idx = int(request.POST.get("step_index", "-1"))
+                warning_indices = _parse_warning_indices_csv(str(request.POST.get("warning_indices", "")))
                 payload = _remove_method_step(method_now, assay_index=assay_idx, step_index=step_idx)
+                payload = _remove_parse_warnings_by_indices(payload, warning_indices)
                 mods = _import_runtime_modules()
                 validated = _validate_component_json("method", payload, mods)
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Removed method step."
+            elif action == "remove_inferred_stage_suggestion" and step == "method":
+                stage_name = str(request.POST.get("inferred_stage_name", "")).strip()
+                warning_index_raw = str(request.POST.get("inferred_stage_warning_index", "")).strip()
+                warning_index = int(warning_index_raw) if warning_index_raw.isdigit() else None
+                payload = _clear_template_missing_stage_warning(
+                    method_now,
+                    stage_name=stage_name,
+                    warning_index=warning_index,
+                )
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("method", payload, mods)
+                _persist_component(job_id, "method", validated, "corrected_by_user")
+                info = "Removed inferred stage suggestion."
             elif action == "next":
                 i = STEP_ORDER.index(step)
                 target = STEP_ORDER[min(i + 1, len(STEP_ORDER) - 1)]
@@ -3458,7 +3567,13 @@ def workflow_step(request, job_id: str, step: str):
     if step == "method" and method_step_correction_form is None:
         method_step_correction_form = MethodStepCorrectionForm(
             prefix=method_step_form_prefix,
-            initial={"assay_index": 0, "step_index": 0, "inferred_stage_name": ""},
+            initial={
+                "assay_index": 0,
+                "step_index": 0,
+                "inferred_stage_name": "",
+                "resolved_warning_indices": "",
+                "inferred_stage_warning_index": None,
+            },
         )
 
     # Phase 5: compute confidence to colour-code stepper circles.

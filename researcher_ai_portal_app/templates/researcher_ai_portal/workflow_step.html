@@ -271,21 +271,26 @@
                                     data-output-data="{{ assay_step.output_data }}"
                                     data-parameters="{{ assay_step.parameters }}"
                                     data-code-reference="{{ assay_step.code_reference }}"
-                                    data-inferred-stage-name="{{ assay_step.inferred_stage_name }}">
+                                    data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
+                                    data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
+                                    data-warning-indices="{{ assay_step.warning_indices_csv }}">
                               {% if assay_step.is_inferred_stage %}✏ Fill this stage{% else %}✏ Correct this step{% endif %}
                             </button>
                             {% if assay_step.is_inferred_stage %}
-                              <button type="button"
-                                      class="btn btn-ghost btn-sm remove-inferred-stage-btn"
-                                      data-remove-target="inferred-row-{{ assay_step.assay_index }}-{{ assay_step.step_index }}">
-                                Remove suggestion
-                              </button>
+                              <form method="post" action="{{ request.path }}" class="inline-remove-inferred-stage-form" style="display: inline-flex; margin-left: 6px;">
+                                {% csrf_token %}
+                                <input type="hidden" name="step_action" value="remove_inferred_stage_suggestion">
+                                <input type="hidden" name="inferred_stage_name" value="{{ assay_step.inferred_stage_name }}">
+                                <input type="hidden" name="inferred_stage_warning_index" value="{{ assay_step.inferred_stage_warning_index }}">
+                                <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">Remove suggestion</button>
+                              </form>
                             {% else %}
                               <form method="post" action="{{ request.path }}" class="inline-remove-step-form" style="display: inline-flex; margin-left: 6px;">
                                 {% csrf_token %}
                                 <input type="hidden" name="step_action" value="remove_method_step">
                                 <input type="hidden" name="assay_index" value="{{ assay_step.assay_index }}">
                                 <input type="hidden" name="step_index" value="{{ assay_step.step_index }}">
+                                <input type="hidden" name="warning_indices" value="{{ assay_step.warning_indices_csv }}">
                                 <button type="submit" class="btn btn-ghost btn-sm remove-method-step-btn">Remove step</button>
                               </form>
                             {% endif %}
@@ -320,6 +325,8 @@
               {{ method_step_correction_form.assay_index }}
               {{ method_step_correction_form.step_index }}
               {{ method_step_correction_form.inferred_stage_name }}
+              {{ method_step_correction_form.resolved_warning_indices }}
+              {{ method_step_correction_form.inferred_stage_warning_index }}
               <div class="card card-sm" style="background: var(--surface-2);">
                 <p class="text-xs text-muted" style="margin: 0;">
                   Format guidance:
@@ -544,7 +551,9 @@
   }
   #method-correction-drawer [id$="-assay_index"],
   #method-correction-drawer [id$="-step_index"],
-  #method-correction-drawer [id$="-inferred_stage_name"] {
+  #method-correction-drawer [id$="-inferred_stage_name"],
+  #method-correction-drawer [id$="-resolved_warning_indices"],
+  #method-correction-drawer [id$="-inferred_stage_warning_index"] {
     display: none;
   }
   @media (max-width: 900px) {
@@ -824,9 +833,13 @@
           const stepNum = btn.dataset.stepNumber || "1";
           const assayName = btn.dataset.assayName || "Assay";
           const inferredStageName = btn.dataset.inferredStageName || "";
+          const inferredStageWarningIndex = btn.dataset.inferredStageWarningIndex || "";
+          const warningIndices = btn.dataset.warningIndices || "";
           const aiEl = methodField("assay_index");
           const siEl = methodField("step_index");
           const stageEl = methodField("inferred_stage_name");
+          const warnEl = methodField("resolved_warning_indices");
+          const stageWarnEl = methodField("inferred_stage_warning_index");
           const descEl = methodField("description");
           const swEl = methodField("software");
           const svEl = methodField("software_version");
@@ -837,6 +850,8 @@
           if (aiEl) aiEl.value = assayIdx;
           if (siEl) siEl.value = stepIdx;
           if (stageEl) stageEl.value = inferredStageName;
+          if (warnEl) warnEl.value = warningIndices;
+          if (stageWarnEl) stageWarnEl.value = inferredStageWarningIndex;
           if (descEl) descEl.value = btn.dataset.description || "";
           if (swEl) swEl.value = btn.dataset.software || "";
           if (svEl) svEl.value = btn.dataset.softwareVersion || "";
@@ -849,11 +864,10 @@
           openMethodDrawer();
         });
       });
-      document.querySelectorAll(".remove-inferred-stage-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const targetId = btn.dataset.removeTarget || "";
-          const row = targetId ? document.getElementById(targetId) : null;
-          if (row) row.remove();
+      document.querySelectorAll(".inline-remove-inferred-stage-form").forEach((formEl) => {
+        formEl.addEventListener("submit", (event) => {
+          const ok = window.confirm("Remove this inferred stage suggestion and clear its warning?");
+          if (!ok) event.preventDefault();
         });
       });
       document.querySelectorAll(".inline-remove-step-form").forEach((formEl) => {
