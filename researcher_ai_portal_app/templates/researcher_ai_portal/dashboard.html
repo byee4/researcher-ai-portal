@@ -561,6 +561,35 @@
       {% endfor %}
     </div>
 
+    <!-- ── Section 3b: Parse warnings detail panel ──────────── -->
+    <div id="cc-parse-warnings-panel" style="margin-bottom: 24px;">
+      <h2 class="mb-3" style="display: flex; align-items: center; gap: 8px;">
+        Parse Warnings
+        <span id="cc-warnings-badge" class="tab-badge"
+              style="background: var(--warning-soft); color: var(--warning); display: none;">0</span>
+      </h2>
+      <div id="cc-warnings-loading" class="card" style="padding: 20px; text-align: center;">
+        <p class="text-muted text-sm">Loading warnings...</p>
+      </div>
+      <div id="cc-warnings-empty" class="card" style="padding: 20px; text-align: center; display: none;">
+        <p class="text-muted text-sm">No parse warnings — looking good!</p>
+      </div>
+      <div id="cc-warnings-list" style="display: none; flex-direction: column; gap: 8px;">
+        <!-- Populated by JavaScript -->
+      </div>
+      <div id="cc-warnings-plan" style="display: none; margin-top: 12px;">
+        <div class="card" style="padding: 16px 20px; background: var(--surface-2); border: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+            <p class="text-xs font-600 text-muted" style="text-transform: uppercase; letter-spacing: .04em;">Validation Plan</p>
+            <span id="cc-plan-projected" class="text-sm font-600" style="color: var(--success);">—</span>
+          </div>
+          <div id="cc-plan-steps" style="display: flex; flex-direction: column; gap: 6px;">
+            <!-- Populated by JavaScript -->
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Section 4: Dataset readiness table ───────────────── -->
     {% if datasets %}
       <h2 class="mb-3">Dataset readiness</h2>
@@ -1345,6 +1374,236 @@
       // First poll after a brief delay for the server to start the job
       setTimeout(pollStatus, 1200);
     });
+  })();
+
+  // ── Phase 5: Parse warnings panel ──────────────────────────────
+  // Fetch structured warnings from the API and render interactive cards.
+  (function() {
+    const JOB_ID = '{{ job_id }}';
+    const API_BASE = '/api/v1';
+    const panel = document.getElementById('cc-parse-warnings-panel');
+    const loadingEl = document.getElementById('cc-warnings-loading');
+    const emptyEl = document.getElementById('cc-warnings-empty');
+    const listEl = document.getElementById('cc-warnings-list');
+    const badgeEl = document.getElementById('cc-warnings-badge');
+    const planEl = document.getElementById('cc-warnings-plan');
+    const planStepsEl = document.getElementById('cc-plan-steps');
+    const planProjectedEl = document.getElementById('cc-plan-projected');
+
+    if (!panel) return;
+
+    const severityColors = {
+      error:   { bg: 'var(--danger-soft)',  border: 'var(--danger-mid)',  text: 'var(--danger)' },
+      warning: { bg: 'var(--warning-soft)', border: 'var(--warning-mid)', text: 'var(--warning)' },
+      info:    { bg: 'var(--surface-2)',    border: 'var(--border-2)',    text: 'var(--text-3)' },
+    };
+
+    const severityIcons = { error: '✗', warning: '⚠', info: 'ℹ' };
+
+    function renderWarning(w) {
+      const colors = severityColors[w.severity] || severityColors.warning;
+      const icon = severityIcons[w.severity] || '⚠';
+      const isResolved = w.status === 'resolved' || w.status === 'dismissed';
+
+      let html = `
+        <div class="card" id="warning-card-${w.index}"
+             style="padding: 14px 18px; border-left: 4px solid ${colors.border};
+                    background: ${isResolved ? 'var(--surface-2)' : colors.bg};
+                    ${isResolved ? 'opacity: 0.6;' : ''}
+                    transition: opacity 0.3s;">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
+            <div style="flex: 1;">
+              <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+                <span class="pill" style="font-size: 0.65rem; padding: 1px 6px;
+                  background: ${colors.bg}; color: ${colors.text}; border: 1px solid ${colors.border};">
+                  ${icon} ${w.severity}
+                </span>
+                <span class="pill" style="font-size: 0.65rem; padding: 1px 6px;
+                  background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border);">
+                  ${w.category}
+                </span>
+                ${w.affected_assay ? `<span class="pill" style="font-size: 0.65rem; padding: 1px 6px;
+                  background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border);">
+                  ${w.affected_assay}</span>` : ''}
+                ${isResolved ? `<span class="pill pill-found" style="font-size: 0.65rem; padding: 1px 6px;">
+                  ${w.status}</span>` : ''}
+              </div>
+              <p class="text-sm font-600" style="color: var(--text); margin-bottom: 3px;">${w.summary}</p>`;
+
+      if (w.suggested_fix && !isResolved) {
+        html += `<p class="text-xs" style="color: var(--text-3); margin-bottom: 2px;">
+                   <strong>Fix:</strong> ${w.suggested_fix}
+                 </p>`;
+      }
+
+      html += `<p class="text-xs" style="color: var(--text-3);">
+                 <code style="font-size: 0.7rem; background: var(--surface-2); padding: 1px 4px; border-radius: 3px;">${w.raw}</code>
+               </p>
+            </div>`;
+
+      if (!isResolved) {
+        html += `
+            <div style="display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;">
+              ${w.fix_target_tab ? `<button class="btn btn-primary btn-sm" style="font-size: 0.75rem;"
+                onclick="activateAction({fix_target_tab:'${w.fix_target_tab}',fix_target_field:${w.fix_target_field ? `'${w.fix_target_field}'` : 'null'}})">
+                Fix →</button>` : ''}
+              <button class="btn btn-ghost btn-sm" style="font-size: 0.75rem;"
+                onclick="window._resolveWarning(${w.index}, 'resolve')">
+                Resolve</button>
+              <button class="btn btn-ghost btn-sm" style="font-size: 0.72rem; color: var(--text-3);"
+                onclick="window._resolveWarning(${w.index}, 'dismiss')">
+                Dismiss</button>
+            </div>`;
+      }
+
+      html += `</div></div>`;
+      return html;
+    }
+
+    function renderWarningsList(data) {
+      loadingEl.style.display = 'none';
+
+      if (!data.warnings || data.warnings.length === 0) {
+        emptyEl.style.display = '';
+        listEl.style.display = 'none';
+        badgeEl.style.display = 'none';
+        planEl.style.display = 'none';
+        return;
+      }
+
+      emptyEl.style.display = 'none';
+      listEl.style.display = 'flex';
+
+      if (data.open_count > 0) {
+        badgeEl.textContent = data.open_count;
+        badgeEl.style.display = '';
+      } else {
+        badgeEl.style.display = 'none';
+      }
+
+      // Sort: open first, then by severity
+      const order = { error: 0, warning: 1, info: 2 };
+      const sorted = [...data.warnings].sort((a, b) => {
+        const aOpen = a.status === 'open' ? 0 : 1;
+        const bOpen = b.status === 'open' ? 0 : 1;
+        if (aOpen !== bOpen) return aOpen - bOpen;
+        return (order[a.severity] || 3) - (order[b.severity] || 3);
+      });
+
+      listEl.innerHTML = sorted.map(renderWarning).join('');
+
+      // Summary row
+      const summaryHtml = `
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 0;">
+          <span class="text-xs text-muted">
+            ${data.total_count} total · ${data.open_count} open · ${data.resolved_count} resolved
+          </span>
+          ${data.confidence_impact > 0 ? `
+            <span class="text-xs" style="color: var(--warning);">
+              -${data.confidence_impact.toFixed(1)}% confidence from open warnings
+            </span>
+          ` : ''}
+          ${data.open_count > 0 ? `
+            <button class="btn btn-ghost btn-sm" style="font-size: 0.72rem; margin-left: auto;"
+              onclick="window._fetchValidationPlan()">
+              View validation plan
+            </button>
+          ` : ''}
+        </div>`;
+      listEl.insertAdjacentHTML('afterbegin', summaryHtml);
+    }
+
+    function renderValidationPlan(data) {
+      if (!data.steps || data.steps.length === 0) {
+        planEl.style.display = 'none';
+        return;
+      }
+      planEl.style.display = '';
+      planProjectedEl.textContent =
+        `${data.current_confidence.toFixed(0)}% → ${data.projected_confidence.toFixed(0)}%`;
+
+      planStepsEl.innerHTML = data.steps.map((s, i) => `
+        <div style="display: flex; align-items: center; gap: 10px; padding: 6px 0;
+                    border-bottom: 1px solid var(--border);">
+          <span class="text-xs font-600" style="color: var(--text-3); min-width: 20px;">${i + 1}.</span>
+          <div style="flex: 1;">
+            <p class="text-sm" style="color: var(--text); margin-bottom: 1px;">${s.summary}</p>
+            ${s.suggested_fix ? `<p class="text-xs" style="color: var(--text-3);">${s.suggested_fix}</p>` : ''}
+          </div>
+          <span class="text-xs font-600" style="color: var(--success); white-space: nowrap;">
+            +${s.projected_confidence_delta.toFixed(1)}% → ${s.projected_confidence_after.toFixed(0)}%
+          </span>
+        </div>
+      `).join('');
+    }
+
+    // API calls
+    function fetchWarnings() {
+      fetch(`${API_BASE}/jobs/${JOB_ID}/warnings`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) renderWarningsList(data);
+        else {
+          loadingEl.style.display = 'none';
+          emptyEl.style.display = '';
+        }
+      })
+      .catch(() => {
+        loadingEl.style.display = 'none';
+        emptyEl.style.display = '';
+      });
+    }
+
+    window._resolveWarning = function(index, action) {
+      const card = document.getElementById(`warning-card-${index}`);
+      if (card) card.style.opacity = '0.4';
+
+      fetch(`${API_BASE}/jobs/${JOB_ID}/warnings/${index}/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]')?.value || '',
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ action: action, reason: '' }),
+      })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) {
+          // Refresh the full warnings list
+          fetchWarnings();
+          // Update confidence if handler available
+          if (typeof window._refreshConfidenceHint === 'function') {
+            window._refreshConfidenceHint({
+              confidence: data.confidence,
+              actionable_items: [],
+            });
+          }
+        } else {
+          if (card) card.style.opacity = '1';
+        }
+      })
+      .catch(() => {
+        if (card) card.style.opacity = '1';
+      });
+    };
+
+    window._fetchValidationPlan = function() {
+      fetch(`${API_BASE}/jobs/${JOB_ID}/warnings/validation-plan`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) renderValidationPlan(data); })
+      .catch(() => {});
+    };
+
+    // Load on page ready
+    fetchWarnings();
   })();
 </script>
 

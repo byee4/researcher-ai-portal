@@ -246,6 +246,62 @@ def test_figure_media_rows_are_sorted_by_normalized_figure_id():
     assert [r["figure_id"] for r in rows] == ["F1", "Fig 2", "Figure 10"]
 
 
+def test_collapse_figure_reference_variants_deduplicates_primary_ids():
+    """Equivalent primary figure aliases should collapse to one canonical label."""
+    collapsed = views._collapse_figure_reference_variants(
+        ["Figure 1", "Fig. 1", "F1", "figure 1", "Figure 2"]
+    )
+    assert collapsed == ["Figure 1", "Figure 2"]
+
+
+def test_collapse_figure_reference_variants_keeps_primary_and_supplementary_separate():
+    """Primary Figure 1 must never collapse into Supplementary Figure 1."""
+    collapsed = views._collapse_figure_reference_variants(
+        ["Figure 1", "Figure S1", "Supplementary Figure 1", "Fig. S1", "F1"]
+    )
+    assert collapsed == ["Figure 1", "Supplementary Figure 1"]
+
+
+def test_figure_merged_rows_collapses_variant_ids_before_joining_sources():
+    """Media/uncertainty/provenance rows should join even when figure prefixes differ."""
+    merged = views._figure_merged_rows(
+        media_rows=[
+            {
+                "figure_id": "Figure 1",
+                "figure_key": "figure1",
+                "title": "Title",
+                "caption": "Caption",
+                "entries": [{"url": "https://example.org/fig1", "proxy_url": "/proxy"}],
+                "deferred_parser": "",
+            }
+        ],
+        uncertainty_rows=[{"figure_id": "Fig. 1", "reasons": ["panel_A:low_confidence"]}],
+        provenance_rows=[
+            {
+                "figure_id": "F1",
+                "panels": [
+                    {
+                        "label": "A",
+                        "plot_type": "bar",
+                        "confidence": 44.0,
+                        "confidence_scores": {},
+                        "boundary_box": {},
+                        "calibration_rules": [],
+                        "ground_truth_tags": [],
+                    }
+                ],
+            }
+        ],
+    )
+    assert len(merged) == 1
+    assert merged[0]["figure_id"] == "Figure 1"
+    assert merged[0]["is_uncertain"] is True
+    assert len(merged[0]["panels"]) == 1
+    assert merged[0]["panels"][0]["label"] == "A"
+    assert merged[0]["panels"][0]["is_uncertain"] is True
+    assert merged[0]["panels"][0]["issue_tags"] == ["low_confidence"]
+
+
 @patch("httpx.Client")
 def test_pick_first_valid_url_accepts_html_figure_endpoint(mock_client_cls):
     client = MagicMock()

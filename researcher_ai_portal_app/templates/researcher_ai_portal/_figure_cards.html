@@ -60,7 +60,7 @@
               <a href="{{ entry.url }}" target="_blank" rel="noopener">
                 <img src="{{ entry.proxy_url }}" alt="{{ fig.figure_id }}"
                      loading="lazy" class="fig-img"
-                     onerror="this.closest('.fig-image-col').innerHTML='<p class=\'fig-no-img\'>Image unavailable</p>'" />
+                     onerror="handleFigurePreviewError(this, '{{ entry.url|escapejs }}', '{{ fig.figure_id|escapejs }}')" />
               </a>
               {% if fig.entries|length > 1 %}
                 <p class="text-xs text-muted mt-1">+{{ fig.entries|length|add:"-1" }} more panel image{{ fig.entries|length|add:"-1"|pluralize }}</p>
@@ -263,6 +263,19 @@
 <div id="correction-overlay"
      style="display:none; position:fixed; inset:0; background:rgba(15,23,42,.25); z-index:199;"
      onclick="closeCorrection()"></div>
+<div id="figure-popup-overlay"
+     style="display:none; position:fixed; inset:0; background:rgba(15,23,42,.55); z-index:300;"
+     onclick="closeFigurePopup()"></div>
+<div id="figure-popup-dialog"
+     style="display:none; position:fixed; inset:6vh 6vw; z-index:301;">
+  <div style="height:100%; display:flex; flex-direction:column; border-radius:var(--radius-lg); overflow:hidden; border:1px solid var(--border-2); background:var(--surface); box-shadow:var(--shadow-lg);">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid var(--border); background:var(--surface-2);">
+      <strong id="figure-popup-title" style="font-size:0.875rem; color:var(--text);">Figure preview</strong>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="closeFigurePopup()">Close</button>
+    </div>
+    <iframe id="figure-popup-frame" title="Figure popup preview" style="flex:1; width:100%; border:0; background:#fff;"></iframe>
+  </div>
+</div>
 
 
 <style>
@@ -325,6 +338,22 @@
     display: flex; align-items: center; justify-content: center;
   }
   .fig-no-img { font-size: 0.78rem; color: var(--text-3); }
+  .fig-popup-fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .fig-popup-link {
+    font-size: 0.76rem;
+    color: var(--teal);
+    text-decoration: underline;
+    cursor: pointer;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .fig-popup-link:hover { color: var(--text); }
   .fig-deferred {
     padding: 12px;
     background: var(--warning-soft);
@@ -469,6 +498,68 @@
 
 <script>
 (function() {
+  window.openFigurePopup = function(url, figureId) {
+    const resolvedUrl = String(url || "").trim();
+    if (!resolvedUrl) return;
+    const title = (figureId && String(figureId).trim()) || "Figure preview";
+    const overlay = document.getElementById('figure-popup-overlay');
+    const dialog = document.getElementById('figure-popup-dialog');
+    const frame = document.getElementById('figure-popup-frame');
+    const titleEl = document.getElementById('figure-popup-title');
+    if (!overlay || !dialog || !frame || !titleEl) return;
+    titleEl.textContent = title;
+    frame.src = resolvedUrl;
+    overlay.style.display = '';
+    dialog.style.display = '';
+  };
+
+  window.closeFigurePopup = function() {
+    const overlay = document.getElementById('figure-popup-overlay');
+    const dialog = document.getElementById('figure-popup-dialog');
+    const frame = document.getElementById('figure-popup-frame');
+    if (overlay) overlay.style.display = 'none';
+    if (dialog) dialog.style.display = 'none';
+    if (frame) frame.src = '';
+  };
+
+  window.handleFigurePreviewError = function(imgEl, figureUrl, figureId) {
+    const host = imgEl && imgEl.closest ? imgEl.closest('.fig-image-col') : null;
+    if (!host) return;
+    const fallbackBox = document.createElement('div');
+    fallbackBox.className = 'fig-no-img-box';
+
+    const fallback = document.createElement('div');
+    fallback.className = 'fig-popup-fallback';
+    const message = document.createElement('p');
+    message.className = 'fig-no-img';
+    message.textContent = 'Image unavailable';
+    fallback.appendChild(message);
+
+    const url = String(figureUrl || '').trim();
+    if (url) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'fig-popup-link';
+      link.textContent = 'Open in popup';
+      link.addEventListener('click', function() { window.openFigurePopup(url, figureId || 'Figure preview'); });
+      fallback.appendChild(link);
+    }
+
+    fallbackBox.appendChild(fallback);
+
+    const existingImg = host.querySelector('img.fig-img');
+    const existingAnchor = existingImg && existingImg.closest ? existingImg.closest('a') : null;
+    if (existingAnchor && existingAnchor.parentNode === host) {
+      host.replaceChild(fallbackBox, existingAnchor);
+      return;
+    }
+    if (existingImg && existingImg.parentNode === host) {
+      host.replaceChild(fallbackBox, existingImg);
+      return;
+    }
+    host.insertBefore(fallbackBox, host.firstChild);
+  };
+
   // Find Django form field IDs — they use the form prefix
   // Django renders select as <select id="id_{prefix}-{field}">
   function fieldEl(name) {
@@ -516,7 +607,10 @@
 
   // Close on Escape
   document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') closeCorrection();
+    if (e.key === 'Escape') {
+      closeCorrection();
+      closeFigurePopup();
+    }
   });
 })();
 </script>

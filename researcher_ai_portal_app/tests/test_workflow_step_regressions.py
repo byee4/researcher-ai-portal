@@ -137,6 +137,20 @@ def test_workflow_step_template_includes_worker_log_sidebar():
     assert "renderLogs(data.logs);" in text
 
 
+def test_workflow_step_template_includes_method_step_correction_card():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "workflow_step.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert "Assay step outline" in text
+    assert "correct-method-step-btn" in text
+    assert "inject_method_step_correction" in text
+    assert "method-correction-drawer" in text
+
+
 def test_job_status_merges_cached_logs():
     views_path = Path(__file__).resolve().parents[1] / "views.py"
     text = views_path.read_text(encoding="utf-8")
@@ -156,3 +170,29 @@ def test_figure_proxy_writes_and_reads_disk_cache():
     assert "def _read_cached_figure_proxy_image" in text
     assert "def _write_cached_figure_proxy_image" in text
     assert "cached_image = _read_cached_figure_proxy_image(url)" in text
+
+
+def test_figure_cards_template_has_popup_fallback_for_unavailable_preview_images():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "_figure_cards.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert "handleFigurePreviewError" in text
+    assert "Open in popup" in text
+    assert "window.openFigurePopup" in text
+
+
+def test_figure_cards_template_renders_figure_popup_modal_shell():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "_figure_cards.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'id="figure-popup-overlay"' in text
+    assert 'id="figure-popup-dialog"' in text
+    assert 'id="figure-popup-frame"' in text

@@ -87,3 +87,17 @@ class FigureGroundTruthForm(forms.Form):
         if not choices:
             choices = [("Figure 1", "Figure 1")]
         self.fields["figure_id"].choices = choices
+
+
+class MethodStepCorrectionForm(forms.Form):
+    """Structured form to correct one assay step in the methods payload."""
+
+    assay_index = forms.IntegerField(min_value=0, required=True)
+    step_index = forms.IntegerField(min_value=0, required=True)
+    description = forms.CharField(required=False, max_length=1000)
+    software = forms.CharField(required=False, max_length=240)
+    software_version = forms.CharField(required=False, max_length=240)
+    input_data = forms.CharField(required=False, max_length=500)
+    output_data = forms.CharField(required=False, max_length=500)
+    parameters = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 3}))
+    code_reference = forms.CharField(required=False, max_length=500)
