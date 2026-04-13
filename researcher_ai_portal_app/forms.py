@@ -179,12 +179,19 @@ class DatasetCorrectionForm(forms.Form):
     source = forms.ChoiceField(choices=_DATASET_SOURCE_CHOICES, required=True, initial="other")
     title = forms.CharField(required=False, max_length=500)
     organism = forms.CharField(required=False, max_length=240)
-    experiment_type = forms.CharField(required=False, max_length=240)
+    experiment_type = forms.ChoiceField(choices=(("", "Select assay"),), required=False)
     summary = forms.CharField(required=False, max_length=5000, widget=forms.Textarea(attrs={"rows": 4}))
     primary_url = forms.URLField(required=False, max_length=1000, assume_scheme="https")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, experiment_type_choices: list[str] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
+        options: list[tuple[str, str]] = [("", "Select assay")]
+        for assay_name in experiment_type_choices or []:
+            label = str(assay_name or "").strip()
+            if not label:
+                continue
+            options.append((label, label))
+        self.fields["experiment_type"].choices = options
         self.fields["accession"].widget.attrs.update(
             {"placeholder": "e.g., GSE314176, SRP123456, or NO_DATASET_REPORTED"}
         )
@@ -193,9 +200,6 @@ class DatasetCorrectionForm(forms.Form):
         )
         self.fields["organism"].widget.attrs.update(
             {"placeholder": "e.g., Homo sapiens"}
-        )
-        self.fields["experiment_type"].widget.attrs.update(
-            {"placeholder": "e.g., RNA-seq, CLIP-seq, ATAC-seq"}
         )
         self.fields["summary"].widget.attrs.update(
             {"placeholder": "Plain-English description of what this dataset contains"}

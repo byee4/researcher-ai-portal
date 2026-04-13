@@ -177,6 +177,8 @@ def test_workflow_step_template_includes_dataset_correction_drawer():
     assert "correct-dataset-btn" in text
     assert "dataset-correction-drawer" in text
     assert "inject_dataset_correction" in text
+    assert "add_dataset_row" in text
+    assert "+ Add dataset" in text
     assert "NO_DATASET_REPORTED" in text
 
 

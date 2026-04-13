@@ -1851,6 +1851,27 @@ def _dataset_rows(datasets_payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _method_assay_name_options(method_payload: Any) -> list[str]:
+    """Return ordered assay names for dataset experiment-type dropdowns."""
+    method = method_payload if isinstance(method_payload, dict) else {}
+    assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
+    assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
+    names: list[str] = []
+    seen: set[str] = set()
+    for assay in assays:
+        if not isinstance(assay, dict):
+            continue
+        name = str(assay.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
 def _inject_dataset_correction(datasets_payload: Any, cleaned: dict[str, Any]) -> list[dict[str, Any]]:
     """Apply one dataset correction and return an updated datasets payload."""
     datasets = json.loads(json.dumps(datasets_payload if isinstance(datasets_payload, list) else []))
@@ -1887,6 +1908,29 @@ def _inject_dataset_correction(datasets_payload: Any, cleaned: dict[str, Any]) -
     metadata["corrected_by_user"] = True
     row["raw_metadata"] = metadata
     datasets[idx] = row
+    return datasets
+
+
+def _append_dataset_row(datasets_payload: Any) -> list[dict[str, Any]]:
+    """Append a new editable placeholder dataset row."""
+    datasets = json.loads(json.dumps(datasets_payload if isinstance(datasets_payload, list) else []))
+    datasets.append(
+        {
+            "accession": "NO_DATASET_REPORTED",
+            "source": "other",
+            "source_type": "other",
+            "title": "Manually added dataset",
+            "organism": "",
+            "experiment_type": "",
+            "summary": "Add accession and assay-aligned experiment type.",
+            "processed_data_urls": [],
+            "raw_metadata": {
+                "placeholder": True,
+                "placeholder_reason": "manually_added",
+                "corrected_by_user": True,
+            },
+        }
+    )
     return datasets
 
 
@@ -3764,6 +3808,7 @@ def workflow_step(request, job_id: str, step: str):
     method_step_form_prefix = f"method_step_{step}"
     components_now = job.get("components") or {}
     method_now = components_now.get("method") if isinstance(components_now.get("method"), dict) else {}
+    assay_name_options = _method_assay_name_options(method_now)
     figures_now = _sort_figures_and_panels_alphanumerically(components_now.get("figures") or [])
     figure_ids_for_gt = [
         str(f.get("figure_id"))
@@ -3824,7 +3869,11 @@ def workflow_step(request, job_id: str, step: str):
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Saved method step correction."
             elif action == "inject_dataset_correction" and step == "datasets":
-                dataset_correction_form = DatasetCorrectionForm(request.POST, prefix=f"dataset_{step}")
+                dataset_correction_form = DatasetCorrectionForm(
+                    request.POST,
+                    prefix=f"dataset_{step}",
+                    experiment_type_choices=assay_name_options,
+                )
                 if not dataset_correction_form.is_valid():
                     raise ValueError("Dataset correction form is invalid. Please check dataset fields.")
                 datasets_now = (job.get("components") or {}).get("datasets") or []
@@ -3833,6 +3882,13 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("datasets", payload, mods)
                 _persist_component(job_id, "datasets", validated, "corrected_by_user")
                 info = "Saved dataset correction."
+            elif action == "add_dataset_row" and step == "datasets":
+                datasets_now = (job.get("components") or {}).get("datasets") or []
+                payload = _append_dataset_row(datasets_now)
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("datasets", payload, mods)
+                _persist_component(job_id, "datasets", validated, "corrected_by_user")
+                info = "Added a new dataset row."
             elif action == "remove_method_step" and step == "method":
                 assay_idx = int(request.POST.get("assay_index", "-1"))
                 step_idx = int(request.POST.get("step_index", "-1"))
@@ -3968,6 +4024,7 @@ def workflow_step(request, job_id: str, step: str):
         first_row = dataset_rows[0] if dataset_rows else {}
         dataset_correction_form = DatasetCorrectionForm(
             prefix=f"dataset_{step}",
+            experiment_type_choices=assay_name_options,
             initial={
                 "dataset_index": int(first_row.get("dataset_index", 0) or 0),
                 "accession": str(first_row.get("accession") or "NO_DATASET_REPORTED"),
@@ -4154,6 +4211,7 @@ def dashboard(request, job_id: str):
             }
         )
     raw_structured_assays = ((components.get("method") or {}).get("assay_graph") or {}).get("assays") or []
+    assay_name_options = _method_assay_name_options(components.get("method") or {})
     structured_assays: list[dict[str, Any]] = []
     for assay in raw_structured_assays:
         if not isinstance(assay, dict):
@@ -4192,6 +4250,7 @@ def dashboard(request, job_id: str):
             "step_rows": step_rows,
             "dashboard_form_media": dashboard_form_media,
             "structured_assays": structured_assays,
+            "assay_name_options": assay_name_options,
             "figure_uncertain_rows": figure_uncertain_rows,
             "figure_provenance_rows": figure_provenance_rows,
             "figure_media_rows": figure_media_rows,

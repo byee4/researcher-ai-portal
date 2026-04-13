@@ -43,6 +43,9 @@ def test_phase2_dashboard_template_has_structured_step_editor_ui():
     # Step add/remove controls exist in structured editor
     assert "se-add-step-btn" in text
     assert "se-remove-step-btn" in text
+    # Dataset editor includes explicit row creation + constrained experiment type.
+    assert "ds-add-btn" in text
+    assert "ds-exp-type-select" in text
 
 
 def test_phase2_legacy_save_structured_step_post_removed():

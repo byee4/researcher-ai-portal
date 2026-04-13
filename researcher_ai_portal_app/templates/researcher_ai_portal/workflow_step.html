@@ -430,11 +430,18 @@
           <div class="alert alert-error mb-3">{{ dataset_correction_form.errors }}</div>
         {% endif %}
         <div class="card" style="padding: 16px;">
-          <div class="section-header mb-3">
-            <h2>Dataset outline</h2>
-            <p class="text-xs text-muted" style="margin-top: 6px;">
-              Correct dataset accessions and metadata field-by-field without editing raw JSON.
-            </p>
+          <div class="section-header mb-3" style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+            <div>
+              <h2>Dataset outline</h2>
+              <p class="text-xs text-muted" style="margin-top: 6px;">
+                Correct dataset accessions and metadata field-by-field without editing raw JSON.
+              </p>
+            </div>
+            <form method="post" action="{{ request.path }}">
+              {% csrf_token %}
+              <input type="hidden" name="step_action" value="add_dataset_row">
+              <button type="submit" class="btn btn-ghost btn-sm" style="white-space:nowrap;">+ Add dataset</button>
+            </form>
           </div>
           {% if dataset_rows %}
             <div class="dataset-row-list">
@@ -1178,7 +1185,17 @@
           if (sourceEl) sourceEl.value = btn.dataset.source || "other";
           if (titleFieldEl) titleFieldEl.value = btn.dataset.title || "";
           if (organismEl) organismEl.value = btn.dataset.organism || "";
-          if (expTypeEl) expTypeEl.value = btn.dataset.experimentType || "";
+          if (expTypeEl) {
+            const expType = btn.dataset.experimentType || "";
+            const known = Array.from(expTypeEl.options || []).some((opt) => opt.value === expType);
+            if (expType && !known) {
+              const legacy = document.createElement("option");
+              legacy.value = expType;
+              legacy.textContent = `${expType} (legacy)`;
+              expTypeEl.appendChild(legacy);
+            }
+            expTypeEl.value = expType;
+          }
           if (summaryEl) summaryEl.value = btn.dataset.summary || "";
           if (urlEl) urlEl.value = btn.dataset.primaryUrl || "";
           const n = Number(btn.dataset.datasetIndex || "0") + 1;

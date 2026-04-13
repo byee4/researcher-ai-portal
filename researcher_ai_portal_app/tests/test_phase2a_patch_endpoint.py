@@ -65,6 +65,9 @@ class TestPathAllowed:
     def test_datasets_organism_allowed(self):
         assert _path_allowed("datasets", "[3].organism")
 
+    def test_datasets_append_row_allowed(self):
+        assert _path_allowed("datasets", "[+]")
+
     def test_datasets_raw_metadata_blocked(self):
         assert not _path_allowed("datasets", "[0].raw_metadata")
 

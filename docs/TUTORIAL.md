@@ -104,8 +104,9 @@ The Method step now includes an **Assay step outline** card above the JSON edito
 The Datasets step now includes a **Dataset outline** card above the JSON editor.
 
 - Use **Correct dataset** on any dataset row to open a side drawer with editable fields.
+- Use **+ Add dataset** to append a new placeholder row when a dataset is missing.
 - Update accession, source, title, organism, experiment type, summary, and primary URL without touching raw JSON.
-- To associate a dataset with a specific assay, set **Experiment type** to the assay name (or include it, for example `RNA-seq profiling` for an `RNA-seq` assay). The confidence model now uses this as an explicit assay-link hint.
+- To associate a dataset with a specific assay, set **Experiment type** to that assay name. The correction drawer now uses a dropdown seeded from method assay names to prevent typing mismatches.
 - If the parser cannot resolve any real dataset accession, the portal now creates a placeholder row (`NO_DATASET_REPORTED`) automatically so you still have a dataset record to correct immediately.
 - Save the drawer form to write changes directly into `datasets[*]`.
 - The **Dataset Parsers data** JSON card remains available for full manual edits when needed.
@@ -122,6 +123,7 @@ The dashboard shows:
 - **Component quality** — bar chart of found / inferred / missing status across steps.
 - **Pipeline topology** — the ordered sequence of pipeline steps.
 - **Entity lists** — dataset accessions (GEO/SRA), software names, figure IDs.
+- **Dataset editor** — add dataset rows and choose assay-aligned experiment types from a dropdown so dataset-to-assay links stay consistent.
 
 ### Assay DAG
 

@@ -876,9 +876,12 @@
     <div class="flex items-center justify-between mb-4">
       <div>
         <h2 style="margin-bottom: 4px;">Datasets</h2>
-        <p class="text-sm text-muted">Inline edits autosave after 800 ms. Accession format is validated client-side.</p>
+        <p class="text-sm text-muted">Inline edits autosave after 800 ms. Accession format is validated client-side. Experiment type is constrained to assay names to prevent mismatches.</p>
       </div>
-      <span id="ds-save-status" style="font-size:0.8125rem;color:var(--text-2);"></span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <button type="button" id="ds-add-btn" class="btn btn-ghost btn-sm">+ Add dataset</button>
+        <span id="ds-save-status" style="font-size:0.8125rem;color:var(--text-2);"></span>
+      </div>
     </div>
     <div id="ds-editor-root">
       {% if datasets %}
@@ -922,8 +925,20 @@
                          value="{{ ds.organism|default:'' }}" placeholder="Homo sapiens" />
                 </td>
                 <td style="padding:7px 10px;">
-                  <input class="step-edit-input ds-field" data-field="experiment_type" data-idx="{{ forloop.counter0 }}"
-                         value="{{ ds.experiment_type|default:'' }}" placeholder="RNA-seq" />
+                  <select class="step-edit-input ds-field ds-exp-type-select"
+                          data-field="experiment_type"
+                          data-idx="{{ forloop.counter0 }}"
+                          style="font-size:0.82rem;cursor:pointer;">
+                    {% with cur=ds.experiment_type|default:"" %}
+                    <option value="">Select assay…</option>
+                    {% for assay_name in assay_name_options %}
+                      <option value="{{ assay_name }}" {% if cur == assay_name %}selected{% endif %}>{{ assay_name }}</option>
+                    {% endfor %}
+                    {% if cur and cur not in assay_name_options %}
+                      <option value="{{ cur }}" selected>{{ cur }} (legacy)</option>
+                    {% endif %}
+                    {% endwith %}
+                  </select>
                 </td>
                 <td style="padding:7px 10px;">
                   {% if ds.accession %}
@@ -3196,11 +3211,40 @@ if (root) {
      Phase 2b — Dataset editor
   ══════════════════════════════════════════════════════════ */
   const dsTimers = {};
+  const assayNameOptions = JSON.parse(document.getElementById('_pb-method-assays').textContent || '[]')
+    .map(a => String(a?.name || '').trim())
+    .filter(Boolean);
 
   document.querySelectorAll('.ds-field').forEach(input => {
     input.addEventListener('input', handleDsChange);
     input.addEventListener('change', handleDsChange);
   });
+
+  const dsAddBtn = document.getElementById('ds-add-btn');
+  if (dsAddBtn) {
+    dsAddBtn.addEventListener('click', async () => {
+      const globalEl = document.getElementById('ds-save-status');
+      setStatus(globalEl, 'saving');
+      dsAddBtn.disabled = true;
+      try {
+        const resp = await patchComponent('datasets', '[+]', {
+          accession: 'NO_DATASET_REPORTED',
+          source: 'other',
+          organism: '',
+          experiment_type: '',
+          summary: 'Add accession and select the matching assay for experiment type.',
+        });
+        setStatus(globalEl, 'saved');
+        refreshConfidenceHint(resp);
+        setTimeout(() => { window.location.reload(); }, 120);
+      } catch (err) {
+        setStatus(globalEl, 'error');
+        dsAddBtn.title = err.message;
+      } finally {
+        dsAddBtn.disabled = false;
+      }
+    });
+  }
 
   function handleDsChange(e) {
     const el    = e.target;
@@ -3215,6 +3259,16 @@ if (root) {
       return;
     }
     el.style.borderColor = '';
+
+    // Ensure experiment_type only uses known assay names (or blank).
+    if (field === 'experiment_type' && value) {
+      const exact = assayNameOptions.includes(String(value).trim());
+      if (!exact) {
+        el.style.borderColor = '#f87171';
+        setStatus(document.getElementById('ds-save-status'), 'error');
+        return;
+      }
+    }
 
     const key = `${idx}:${field}`;
     clearTimeout(dsTimers[key]);

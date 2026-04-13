@@ -131,6 +131,8 @@ def _path_allowed(step: str, path: str) -> bool:
     matching against the whitelist so the whitelist can list bare field names.
     """
     allowed = _PATCH_WHITELIST.get(step, set())
+    if step == "datasets" and path == "[+]":
+        return True
     effective = path
     if step in _LIST_STEPS:
         # Strip leading "[n]." or "[n]" prefix
@@ -142,6 +144,46 @@ def _path_allowed(step: str, path: str) -> bool:
         if effective == prefix or effective.startswith(prefix + ".") or effective.startswith(prefix + "["):
             return True
     return False
+
+
+def _coerce_new_dataset_row(value: Any) -> dict[str, Any]:
+    """Return a safe dataset row for append operations.
+
+    Plain-English behavior:
+    - New rows always include the common dataset fields expected by the UI.
+    - Caller-provided values can override defaults for editable fields.
+    """
+    row: dict[str, Any] = {
+        "accession": "NO_DATASET_REPORTED",
+        "source": "other",
+        "source_type": "other",
+        "title": "Manually added dataset",
+        "organism": "",
+        "summary": "",
+        "experiment_type": "",
+        "samples": [],
+        "total_samples": 0,
+        "processed_data_urls": [],
+        "supplementary_files": [],
+        "related_datasets": [],
+        "raw_metadata": {
+            "placeholder": True,
+            "placeholder_reason": "manually_added",
+            "corrected_by_user": True,
+        },
+    }
+    if not isinstance(value, dict):
+        return row
+
+    for key in ("accession", "source", "title", "organism", "summary", "experiment_type"):
+        if key in value:
+            row[key] = str(value.get(key) or "").strip()
+    source = str(row.get("source") or "other").strip().lower() or "other"
+    row["source"] = source
+    row["source_type"] = source
+    row["title"] = row["title"] or "Manually added dataset"
+    row["accession"] = row["accession"] or "NO_DATASET_REPORTED"
+    return row
 
 
 def apply_patch(payload: Any, path: str, value: Any) -> Any:
@@ -653,7 +695,8 @@ async def patch_component_snapshot(
     ``actionable_items`` on success, or None if the job / snapshot is not
     found.  Raises ValueError for disallowed paths or validation failures.
     """
-    if not _path_allowed(step, path):
+    append_dataset_row = step == "datasets" and path == "[+]"
+    if not append_dataset_row and not _path_allowed(step, path):
         raise ValueError(
             f"Path {path!r} is not patchable for step {step!r}. "
             "Check the allowed path whitelist."
@@ -678,8 +721,13 @@ async def patch_component_snapshot(
         except ComponentSnapshot.DoesNotExist:
             return None
 
-        # Apply path mutation
-        new_payload = apply_patch(snap.payload, path, value)
+        # Apply path mutation (or append a new datasets row).
+        if append_dataset_row:
+            current_payload = snap.payload if isinstance(snap.payload, list) else []
+            new_payload = copy.deepcopy(current_payload)
+            new_payload.append(_coerce_new_dataset_row(value))
+        else:
+            new_payload = apply_patch(snap.payload, path, value)
 
         # Re-validate via researcher_ai Pydantic models (same gate as views.py)
         try:
