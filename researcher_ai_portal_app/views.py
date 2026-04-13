@@ -1453,6 +1453,9 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                 if isinstance(w.get("warning_index"), int)
             ]
             parameters_dict = _normalize_step_parameters(step.get("parameters"))
+            template_stage_value = str(step.get("template_stage") or "").strip()
+            if not template_stage_value:
+                template_stage_value = str(parameters_dict.get("expected_stage") or "").strip()
             step_rows.append(
                 {
                     "assay_index": assay_idx,
@@ -1466,7 +1469,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "parameters": parameters_dict,
                     "parameters_json": json.dumps(parameters_dict, ensure_ascii=True),
                     "code_reference": str(step.get("code_reference") or "").strip(),
-                    "template_stage": str(step.get("template_stage") or "").strip(),
+                    "template_stage": template_stage_value,
                     "warnings": step_warning_rows,
                     "warning_indices_csv": ",".join(str(i) for i in warning_indices),
                     "missing_field_hints": _method_missing_field_hints(step),
@@ -1954,6 +1957,7 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     assay = assays[assay_idx]
     if not isinstance(assay, dict):
         raise ValueError("Selected assay is malformed.")
+    assay_name = str(assay.get("name") or "").strip()
     steps = assay.get("steps")
     if not isinstance(steps, list):
         raise ValueError("Selected assay has no editable steps.")
@@ -2001,15 +2005,21 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     step["code_reference"] = str(cleaned.get("code_reference") or "").strip()
     selected_template_stage = str(cleaned.get("template_stage") or "").strip()
     effective_template_stage = selected_template_stage or inferred_stage_name
+    params = _normalize_step_parameters(step.get("parameters"))
     if effective_template_stage:
-        step["template_stage"] = effective_template_stage
+        # AnalysisStep schema does not include a top-level template_stage field.
+        # Persist expected stage in parameters so validation keeps it.
+        params["expected_stage"] = effective_template_stage
     else:
-        step.pop("template_stage", None)
-    if inferred_stage_name:
+        params.pop("expected_stage", None)
+    step["parameters"] = params
+    step.pop("template_stage", None)
+    if effective_template_stage:
         payload = _clear_template_missing_stage_warning(
             payload,
-            stage_name=inferred_stage_name,
+            stage_name=effective_template_stage,
             warning_index=inferred_stage_warning_index if isinstance(inferred_stage_warning_index, int) else None,
+            assay_name=assay_name,
         )
     payload = _remove_parse_warnings_by_indices(payload, warning_indices)
     return payload
@@ -2073,6 +2083,7 @@ def _clear_template_missing_stage_warning(
     *,
     stage_name: str,
     warning_index: int | None = None,
+    assay_name: str = "",
 ) -> dict[str, Any]:
     payload = method_payload if isinstance(method_payload, dict) else {}
     raw_warnings = list(payload.get("parse_warnings") or [])
@@ -2080,12 +2091,17 @@ def _clear_template_missing_stage_warning(
         payload["parse_warnings"] = []
         return payload
     normalized_target = str(stage_name or "").strip().casefold()
+    normalized_assay = str(assay_name or "").strip().casefold()
     if not normalized_target:
         return payload
 
     def _rewrite_warning(text: str) -> str | None:
         if _warning_category(text) != "template_missing_stages":
             return text
+        if normalized_assay:
+            warning_assay = _warning_assay_name_hint(text).casefold()
+            if warning_assay and warning_assay != normalized_assay:
+                return text
         stages = _parse_template_missing_stages(text)
         remaining = [s for s in stages if s.casefold() != normalized_target]
         if not remaining:

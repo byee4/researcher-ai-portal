@@ -241,7 +241,7 @@ def test_inject_method_step_correction_appends_inferred_stage_when_missing():
     )
     steps = updated["assay_graph"]["assays"][0]["steps"]
     assert len(steps) == 2
-    assert steps[1]["template_stage"] == "normalization"
+    assert steps[1]["parameters"]["expected_stage"] == "normalization"
     assert steps[1]["software"] == "DESeq2"
 
 
@@ -267,7 +267,7 @@ def test_inject_method_step_correction_appends_inferred_stage_when_virtual_index
     )
     steps = updated["assay_graph"]["assays"][0]["steps"]
     assert len(steps) == 2
-    assert steps[1]["template_stage"] == "analyze"
+    assert steps[1]["parameters"]["expected_stage"] == "analyze"
     assert steps[1]["software"] == "scanpy"
 
 
@@ -344,7 +344,7 @@ def test_inject_method_step_correction_sets_template_stage_from_dropdown():
             "inferred_stage_warning_index": None,
         },
     )
-    assert updated["assay_graph"]["assays"][0]["steps"][0]["template_stage"] == "qc"
+    assert updated["assay_graph"]["assays"][0]["steps"][0]["parameters"]["expected_stage"] == "qc"
 
 
 def test_inject_method_step_correction_clears_template_stage_when_blank():
@@ -353,7 +353,7 @@ def test_inject_method_step_correction_clears_template_stage_when_blank():
             "assays": [
                 {
                     "name": "A",
-                    "steps": [{"step_number": 1, "software": "STAR", "template_stage": "trim"}],
+                    "steps": [{"step_number": 1, "software": "STAR", "parameters": {"expected_stage": "trim"}}],
                 }
             ]
         },
@@ -377,7 +377,44 @@ def test_inject_method_step_correction_clears_template_stage_when_blank():
             "inferred_stage_warning_index": None,
         },
     )
-    assert "template_stage" not in updated["assay_graph"]["assays"][0]["steps"][0]
+    assert "expected_stage" not in updated["assay_graph"]["assays"][0]["steps"][0]["parameters"]
+
+
+def test_inject_method_step_correction_stage_dropdown_clears_matching_template_warning():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "eCLIP",
+                    "steps": [{"step_number": 1, "software": "STAR", "parameters": {}}],
+                }
+            ]
+        },
+        "parse_warnings": [
+            "template_missing_stages: assay='eCLIP' template=clip_seq missing=qc,trim,analyze"
+        ],
+    }
+    updated = views._inject_method_step_correction(
+        payload,
+        {
+            "assay_index": 0,
+            "step_index": 0,
+            "description": "qc set",
+            "software": "STAR",
+            "software_version": "2.7.11b",
+            "input_data": "FASTQ.gz",
+            "output_data": "BAM",
+            "parameters": {},
+            "code_reference": "",
+            "template_stage": "qc",
+            "inferred_stage_name": "",
+            "resolved_warning_indices": "",
+            "inferred_stage_warning_index": None,
+        },
+    )
+    assert updated["parse_warnings"] == [
+        "template_missing_stages: trim, analyze"
+    ]
 
 
 def test_clear_template_missing_stage_warning_removes_only_selected_stage():

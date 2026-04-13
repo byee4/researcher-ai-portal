@@ -91,6 +91,7 @@ The Method step now includes an **Assay step outline** card above the JSON edito
 - The **Parameters** field in the sidebar uses JSON-object editing and must stay a dictionary (for example `{"threads": "16", "min_mapq": "30"}`).
 - Update description, software, version, input/output data, parameters, code reference, and expected stage without touching raw JSON.
 - Use the **Expected stage** dropdown to associate each step with one stage (`qc`, `trim`, or `analyze`) directly from the drawer.
+- Stage selections are stored in the step parameters as `expected_stage`, so the value persists through model validation and downstream rebuilds.
 - Save the correction to write changes directly into the structured `method.assay_graph.assays[*].steps[*]` payload.
 - Step cards highlight related `parse_warnings` so you can resolve issues in context.
 - If `template_missing_stages` appears, the UI shows inferred empty stage skeletons. You can fill and save those stages, or remove suggestions you do not need.
