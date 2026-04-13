@@ -156,6 +156,7 @@ stepper_state values:
     <div class="stepper-connector"></div>
 
     {% for chip in stepper_chips %}
+      {% if show_pipeline_builder or chip.id != "pipeline" %}
       {% comment %}
         Determine the visual state for this chip:
         1. If this is the page's current step (stepper_current_step) → "current"
@@ -197,6 +198,7 @@ stepper_state values:
             <span class="stepper-label" data-state="{{ dot_state }}">{{ chip.label }}</span>
           </a>
         {% endwith %}
+      {% endif %}
       {% endif %}
     {% endfor %}
 

@@ -3668,6 +3668,7 @@ def parse_progress(request, job_id: str):
         request,
         "researcher_ai_portal/progress.html",
         {
+            "show_pipeline_builder": SHOW_PIPELINE_BUILDER,
             "job_id": job_id,
             "stages": stages,
             "completion_steps": stages,
@@ -4060,6 +4061,7 @@ def workflow_step(request, job_id: str, step: str):
         request,
         "researcher_ai_portal/workflow_step.html",
         {
+            "show_pipeline_builder": SHOW_PIPELINE_BUILDER,
             "job": job,
             "job_id": job_id,
             "step": step,

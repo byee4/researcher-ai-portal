@@ -165,6 +165,17 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "Example warning translation" in text
 
 
+def test_shared_stepper_hides_pipeline_chip_when_pipeline_builder_is_hidden():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "_stepper.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'show_pipeline_builder or chip.id != "pipeline"' in text
+
+
 def test_workflow_step_template_includes_dataset_correction_drawer():
     template_path = (
         Path(__file__).resolve().parents[1]
