@@ -170,6 +170,13 @@ class MethodStepCorrectionForm(forms.Form):
         return cleaned
 
 
+class MethodAssayToggleForm(forms.Form):
+    """Toggle whether one assay is treated as computational."""
+
+    assay_name = forms.CharField(required=True, max_length=500)
+    computational_on = forms.BooleanField(required=False, initial=False)
+
+
 _DATASET_SOURCE_CHOICES = [
     ("geo", "GEO"),
     ("sra", "SRA"),

@@ -27,7 +27,13 @@ from django.views.decorators.http import require_GET, require_POST
 from .confidence import compute_actionable_items, compute_confidence
 from .dag_app import build_dag_app
 from .dashboards import build_dashboard_app
-from .forms import ComponentJSONForm, DatasetCorrectionForm, FigureGroundTruthForm, MethodStepCorrectionForm
+from .forms import (
+    ComponentJSONForm,
+    DatasetCorrectionForm,
+    FigureGroundTruthForm,
+    MethodAssayToggleForm,
+    MethodStepCorrectionForm,
+)
 from .job_events import append_job_log, merge_logs
 from .models import PaperCache, WorkflowJob
 from .job_store import create_job, get_job, update_job
@@ -1422,19 +1428,321 @@ def _inject_figure_ground_truth(figures_payload: Any, cleaned: dict[str, Any]) -
     return payload
 
 
-def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
+def _assay_name_key(name: str) -> str:
+    return str(name or "").strip().casefold()
+
+
+def _extract_filtered_assay_name(raw_warning: str) -> str:
+    text = str(raw_warning or "").strip()
+    if _warning_category(text) != "assay_filtered_non_computational":
+        return ""
+    quoted = re.search(r":\s*'([^']+)'", text)
+    if quoted:
+        return str(quoted.group(1) or "").strip()
+    match = re.search(r":\s*([^:]+?)\s+excluded\b", text, flags=re.IGNORECASE)
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def _method_default_required_stages(method_payload: Any) -> list[str]:
+    method = method_payload if isinstance(method_payload, dict) else {}
+    assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
+    assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
+    include_process = False
+    for assay in assays:
+        if not isinstance(assay, dict):
+            continue
+        for step in (assay.get("steps") if isinstance(assay.get("steps"), list) else []):
+            if not isinstance(step, dict):
+                continue
+            params = step.get("parameters") if isinstance(step.get("parameters"), dict) else {}
+            stage = str(step.get("template_stage") or params.get("expected_stage") or "").strip().casefold()
+            if stage in {"process", "processing"}:
+                include_process = True
+                break
+        if include_process:
+            break
+    required = ["analyze", "qc"]
+    if include_process:
+        required.insert(0, "process")
+    return required
+
+
+def _method_assay_catalog(
+    method_payload: Any,
+    *,
+    overrides: dict[str, bool] | None = None,
+    prior_catalog: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Return ordered assay names plus computational toggle state."""
+    method = method_payload if isinstance(method_payload, dict) else {}
+    assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
+    assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
+    parse_warnings = method.get("parse_warnings") if isinstance(method.get("parse_warnings"), list) else []
+
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for assay in assays:
+        if not isinstance(assay, dict):
+            continue
+        name = str(assay.get("name") or "").strip()
+        if not name:
+            continue
+        key = _assay_name_key(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append({"name": name, "is_computational": True, "source": "assay_graph"})
+
+    for warning in parse_warnings:
+        name = _extract_filtered_assay_name(str(warning or ""))
+        if not name:
+            continue
+        key = _assay_name_key(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append({"name": name, "is_computational": False, "source": "filtered_warning"})
+
+    for row in prior_catalog or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        key = _assay_name_key(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(
+            {
+                "name": name,
+                "is_computational": bool(row.get("is_computational", False)),
+                "source": str(row.get("source") or "metadata"),
+            }
+        )
+
+    for row in ordered:
+        key = _assay_name_key(str(row.get("name") or ""))
+        if overrides and key in overrides:
+            row["is_computational"] = bool(overrides[key])
+    return ordered
+
+
+def _is_toggle_generated_template_warning(raw_warning: str) -> bool:
+    text = str(raw_warning or "").strip().lower()
+    return _warning_category(text) == "template_missing_stages" and "source=assay_toggle" in text
+
+
+def _assay_missing_stage_warning(assay_name: str, stage_name: str) -> str:
+    return (
+        "template_missing_stages: "
+        f"assay='{assay_name}' template=generic missing={stage_name} source=assay_toggle"
+    )
+
+
+def _apply_assay_computational_preferences(
+    method_payload: Any,
+    *,
+    overrides: dict[str, bool] | None = None,
+    prior_catalog: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Apply assay computational toggles and return updated payload + catalog."""
+    payload = json.loads(json.dumps(method_payload if isinstance(method_payload, dict) else {}))
+    assay_graph = payload.get("assay_graph")
+    if not isinstance(assay_graph, dict):
+        assay_graph = {"assays": [], "dependencies": []}
+        payload["assay_graph"] = assay_graph
+    assays = assay_graph.get("assays")
+    if not isinstance(assays, list):
+        assays = []
+        assay_graph["assays"] = assays
+
+    catalog = _method_assay_catalog(payload, overrides=overrides, prior_catalog=prior_catalog)
+    enabled = {
+        _assay_name_key(str(row.get("name") or ""))
+        for row in catalog
+        if bool(row.get("is_computational")) and str(row.get("name") or "").strip()
+    }
+
+    existing_by_key: dict[str, dict[str, Any]] = {}
+    existing_order: list[str] = []
+    for assay in assays:
+        if not isinstance(assay, dict):
+            continue
+        name = str(assay.get("name") or "").strip()
+        key = _assay_name_key(name)
+        if not key:
+            continue
+        if key not in existing_by_key:
+            existing_by_key[key] = assay
+            existing_order.append(key)
+
+    new_assays: list[dict[str, Any]] = []
+    for key in existing_order:
+        if key not in enabled:
+            continue
+        new_assays.append(existing_by_key[key])
+    existing_keys = {_assay_name_key(str(a.get("name") or "")) for a in new_assays if isinstance(a, dict)}
+    for row in catalog:
+        name = str(row.get("name") or "").strip()
+        key = _assay_name_key(name)
+        if not key or key in existing_keys or key not in enabled:
+            continue
+        existing_keys.add(key)
+        new_assays.append(
+            {
+                "name": name,
+                "description": "User-enabled computational assay from experimental list.",
+                "steps": [],
+                "raw_data_source": "",
+            }
+        )
+    assay_graph["assays"] = new_assays
+
+    dependencies = assay_graph.get("dependencies")
+    if isinstance(dependencies, list):
+        kept: list[Any] = []
+        for dep in dependencies:
+            if not isinstance(dep, dict):
+                kept.append(dep)
+                continue
+            source_name = str(dep.get("source") or "").strip()
+            target_name = str(dep.get("target") or "").strip()
+            if source_name and _assay_name_key(source_name) not in enabled:
+                continue
+            if target_name and _assay_name_key(target_name) not in enabled:
+                continue
+            kept.append(dep)
+        assay_graph["dependencies"] = kept
+
+    warnings = payload.get("parse_warnings") if isinstance(payload.get("parse_warnings"), list) else []
+    cleaned: list[str] = []
+    for warning in warnings:
+        text = str(warning or "").strip()
+        if not text:
+            continue
+        if _warning_category(text) == "assay_filtered_non_computational":
+            continue
+        if _is_toggle_generated_template_warning(text):
+            continue
+        cleaned.append(text)
+
+    required = _method_default_required_stages(payload)
+    for assay in new_assays:
+        if not isinstance(assay, dict):
+            continue
+        assay_name = str(assay.get("name") or "").strip()
+        if not assay_name:
+            continue
+        present_stages: set[str] = set()
+        for step in (assay.get("steps") if isinstance(assay.get("steps"), list) else []):
+            if not isinstance(step, dict):
+                continue
+            params = step.get("parameters") if isinstance(step.get("parameters"), dict) else {}
+            stage = str(step.get("template_stage") or params.get("expected_stage") or "").strip().casefold()
+            if stage in {"process", "processing"}:
+                present_stages.add("process")
+            elif stage:
+                present_stages.add(stage)
+        for stage_name in required:
+            if stage_name.casefold() in present_stages:
+                continue
+            cleaned.append(_assay_missing_stage_warning(assay_name, stage_name))
+
+    payload["parse_warnings"] = cleaned
+    refreshed_catalog = _method_assay_catalog(payload, overrides=overrides, prior_catalog=catalog)
+    return payload, refreshed_catalog
+
+
+def _load_assay_overrides_from_cache(job: dict[str, Any]) -> dict[str, bool]:
+    source_type = str(job.get("source_type") or "").strip().lower()
+    source = str(job.get("source") or "").strip()
+    if not source_type or not source:
+        return {}
+    canonical_id = _canonical_paper_cache_id(source_type, source)
+    row = PaperCache.objects.filter(canonical_id=canonical_id).first()
+    if row is None or not isinstance(row.assay_computational_overrides, dict):
+        return {}
+    out: dict[str, bool] = {}
+    for key, value in row.assay_computational_overrides.items():
+        norm = _assay_name_key(str(key or ""))
+        if norm:
+            out[norm] = bool(value)
+    return out
+
+
+def _save_assay_override_to_cache(job: dict[str, Any], assay_name: str, enabled: bool) -> None:
+    source_type = str(job.get("source_type") or "").strip().lower()
+    source = str(job.get("source") or "").strip()
+    key = _assay_name_key(assay_name)
+    if not source_type or not source or not key:
+        return
+    canonical_id = _canonical_paper_cache_id(source_type, source)
+    row, _ = PaperCache.objects.get_or_create(
+        canonical_id=canonical_id,
+        defaults={
+            "paper_json": {},
+            "figures_json": [],
+            "llm_model": str(job.get("llm_model") or ""),
+            "assay_computational_overrides": {},
+        },
+    )
+    overrides = dict(row.assay_computational_overrides or {})
+    overrides[key] = bool(enabled)
+    row.assay_computational_overrides = overrides
+    row.save(update_fields=["assay_computational_overrides"])
+
+
+def _method_assay_rows(method_payload: Any, assay_catalog: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Build plain-English assay/step rows for the methods workflow correction card."""
     warning_rows = _method_warning_rows(method_payload)
     method = method_payload if isinstance(method_payload, dict) else {}
     assay_graph = method.get("assay_graph") if isinstance(method.get("assay_graph"), dict) else {}
     raw_assays = assay_graph.get("assays") if isinstance(assay_graph.get("assays"), list) else []
-    rows: list[dict[str, Any]] = []
+    assay_by_key: dict[str, tuple[int, dict[str, Any]]] = {}
     for assay_idx, assay in enumerate(raw_assays):
         if not isinstance(assay, dict):
             continue
-        assay_name = str(assay.get("name") or f"Assay {assay_idx + 1}").strip() or f"Assay {assay_idx + 1}"
+        key = _assay_name_key(str(assay.get("name") or ""))
+        if key and key not in assay_by_key:
+            assay_by_key[key] = (assay_idx, assay)
+
+    catalog_rows = assay_catalog or _method_assay_catalog(method_payload)
+    if not catalog_rows:
+        catalog_rows = [
+            {
+                "name": str((assay or {}).get("name") or f"Assay {idx + 1}"),
+                "is_computational": True,
+                "source": "assay_graph",
+            }
+            for idx, assay in enumerate(raw_assays)
+            if isinstance(assay, dict)
+        ]
+    rows: list[dict[str, Any]] = []
+    for order_idx, catalog_row in enumerate(catalog_rows):
+        if not isinstance(catalog_row, dict):
+            continue
+        assay_name = str(catalog_row.get("name") or f"Assay {order_idx + 1}").strip() or f"Assay {order_idx + 1}"
+        assay_key = _assay_name_key(assay_name)
+        mapped = assay_by_key.get(assay_key)
+        assay_idx = mapped[0] if mapped else None
+        assay = mapped[1] if mapped else {"name": assay_name, "steps": []}
+        is_computational = bool(catalog_row.get("is_computational", mapped is not None))
+        is_persisted = mapped is not None
         assay_steps = assay.get("steps") if isinstance(assay.get("steps"), list) else []
-        assay_warning_rows = [w for w in warning_rows if w.get("assay_index") == assay_idx and w.get("step_index") is None]
+        assay_warning_rows = [
+            w
+            for w in warning_rows
+            if w.get("step_index") is None
+            and (
+                (assay_idx is not None and w.get("assay_index") == assay_idx)
+                or (
+                    w.get("assay_index") is None
+                    and _assay_name_key(str(w.get("assay_name_hint") or "")) == assay_key
+                )
+            )
+        ]
         step_rows: list[dict[str, Any]] = []
         for step_idx, step in enumerate(assay_steps):
             if not isinstance(step, dict):
@@ -1445,7 +1753,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
             step_warning_rows = [
                 w
                 for w in warning_rows
-                if w.get("assay_index") == assay_idx and w.get("step_index") == step_idx
+                if assay_idx is not None and w.get("assay_index") == assay_idx and w.get("step_index") == step_idx
             ]
             warning_indices = [
                 int(w["warning_index"])
@@ -1458,7 +1766,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                 template_stage_value = str(parameters_dict.get("expected_stage") or "").strip()
             step_rows.append(
                 {
-                    "assay_index": assay_idx,
+                    "assay_index": assay_idx if assay_idx is not None else -1,
                     "step_index": step_idx,
                     "step_number": step_number,
                     "description": str(step.get("description") or "").strip(),
@@ -1494,7 +1802,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
             )
             step_rows.append(
                 {
-                    "assay_index": assay_idx,
+                    "assay_index": assay_idx if assay_idx is not None else -1,
                     "step_index": len(assay_steps) + offset,
                     "step_number": len(assay_steps) + offset + 1,
                     "description": "",
@@ -1528,8 +1836,10 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
             )
         rows.append(
             {
-                "assay_index": assay_idx,
+                "assay_index": assay_idx if assay_idx is not None else -1,
                 "assay_name": assay_name,
+                "is_computational": is_computational,
+                "is_persisted": is_persisted,
                 "assay_warnings": assay_warning_rows,
                 "steps": step_rows,
                 "inferred_stage_pairs": inferred_stage_pairs,
@@ -2248,6 +2558,13 @@ def _persist_component(job_id: str, step: str, payload: Any, source: str) -> Non
     }
     update_job(job_id, components=comps, component_meta=meta)
     if step == "method":
+        prior_catalog = (job.get("job_metadata") or {}).get("method_assay_catalog")
+        catalog = _method_assay_catalog(
+            payload,
+            overrides=_load_assay_overrides_from_cache(job),
+            prior_catalog=prior_catalog if isinstance(prior_catalog, list) else None,
+        )
+        update_job(job_id, job_metadata={"method_assay_catalog": catalog})
         diagnostics = _extract_method_diagnostics(payload)
         if diagnostics:
             update_job(job_id, job_metadata=diagnostics)
@@ -2996,6 +3313,13 @@ def _run_step(
             _log_job_event(job_id, f"LLM response received — {n_assays} assay(s) extracted", step=step)
             update_job(job_id, stage="Methods: Persisting results")
             method_payload = method.model_dump(mode="json")
+            assay_overrides = _load_assay_overrides_from_cache(get_job(job_id) or {})
+            prior_catalog = (get_job(job_id) or {}).get("job_metadata", {}).get("method_assay_catalog")
+            method_payload, method_assay_catalog = _apply_assay_computational_preferences(
+                method_payload,
+                overrides=assay_overrides,
+                prior_catalog=prior_catalog if isinstance(prior_catalog, list) else None,
+            )
             _persist_component(job_id, "method", method_payload, "parsed")
             parse_warnings = list(method_payload.get("parse_warnings") or [])
             retrieval = _extract_retrieval_metrics(parse_warnings, (get_job(job_id) or {}).get("parse_logs") or [])
@@ -3021,6 +3345,7 @@ def _run_step(
             update_job(
                 job_id,
                 job_metadata={
+                    "method_assay_catalog": method_assay_catalog,
                     "rag_workflow": {
                         "mode": rag_mode,
                         "indexing": {
@@ -3846,6 +4171,7 @@ def workflow_step(request, job_id: str, step: str):
     figure_ids_for_gt = _sort_figure_ids_alphanumerically(figure_ids_for_gt)
     figure_gt_form: FigureGroundTruthForm | None = None
     method_step_correction_form: MethodStepCorrectionForm | None = None
+    method_assay_toggle_form: MethodAssayToggleForm | None = None
     dataset_correction_form: DatasetCorrectionForm | None = None
 
     if request.method == "POST":
@@ -3893,6 +4219,33 @@ def workflow_step(request, job_id: str, step: str):
                 validated = _validate_component_json("method", payload, mods)
                 _persist_component(job_id, "method", validated, "corrected_by_user")
                 info = "Saved method step correction."
+            elif action == "toggle_assay_computational" and step == "method":
+                method_assay_toggle_form = MethodAssayToggleForm(request.POST)
+                if not method_assay_toggle_form.is_valid():
+                    raise ValueError("Assay toggle form is invalid. Please choose an assay.")
+                cleaned = method_assay_toggle_form.cleaned_data
+                assay_name = str(cleaned.get("assay_name") or "").strip()
+                enabled = bool(cleaned.get("computational_on"))
+                if not assay_name:
+                    raise ValueError("Assay name was empty; unable to change computational state.")
+                prior_catalog = (job.get("job_metadata") or {}).get("method_assay_catalog")
+                overrides = _load_assay_overrides_from_cache(job)
+                overrides[_assay_name_key(assay_name)] = enabled
+                payload, refreshed_catalog = _apply_assay_computational_preferences(
+                    method_now,
+                    overrides=overrides,
+                    prior_catalog=prior_catalog if isinstance(prior_catalog, list) else None,
+                )
+                mods = _import_runtime_modules()
+                validated = _validate_component_json("method", payload, mods)
+                _persist_component(job_id, "method", validated, "corrected_by_user")
+                _save_assay_override_to_cache(job, assay_name, enabled)
+                update_job(job_id, job_metadata={"method_assay_catalog": refreshed_catalog})
+                info = (
+                    f'"{assay_name}" now contributes to computational confidence.'
+                    if enabled
+                    else f'"{assay_name}" is now marked experimental and excluded from confidence.'
+                )
             elif action == "inject_dataset_correction" and step == "datasets":
                 dataset_correction_form = DatasetCorrectionForm(
                     request.POST,
@@ -4013,7 +4366,11 @@ def workflow_step(request, job_id: str, step: str):
             figure_ids_for_ui = [str(x) for x in (paper_comp.get("figure_ids") or []) if str(x).strip()]
         figure_ids_for_ui = _sort_figure_ids_alphanumerically(figure_ids_for_ui)
     supplementary_figure_ids = _sort_figure_ids_alphanumerically(list(job.get("supplementary_figure_ids") or []))
-    method_assay_rows: list[dict[str, Any]] = _method_assay_rows((job.get("components") or {}).get("method") or {})
+    method_catalog_meta = job_metadata.get("method_assay_catalog")
+    method_assay_rows: list[dict[str, Any]] = _method_assay_rows(
+        (job.get("components") or {}).get("method") or {},
+        assay_catalog=method_catalog_meta if isinstance(method_catalog_meta, list) else None,
+    )
     dataset_rows: list[dict[str, Any]] = _dataset_rows((job.get("components") or {}).get("datasets") or [])
     i = STEP_ORDER.index(step)
     prev_step = STEP_ORDER[i - 1] if i > 0 else None
@@ -4045,6 +4402,13 @@ def workflow_step(request, job_id: str, step: str):
                 "resolved_warning_indices": "",
                 "inferred_stage_warning_index": None,
             },
+        )
+    if step == "method" and method_assay_toggle_form is None:
+        method_assay_toggle_form = MethodAssayToggleForm(
+            initial={
+                "assay_name": "",
+                "computational_on": False,
+            }
         )
     if step == "datasets" and dataset_correction_form is None:
         first_row = dataset_rows[0] if dataset_rows else {}
@@ -4108,6 +4472,7 @@ def workflow_step(request, job_id: str, step: str):
             "supplementary_figure_ids": supplementary_figure_ids,
             "method_assay_rows": method_assay_rows,
             "method_step_correction_form": method_step_correction_form,
+            "method_assay_toggle_form": method_assay_toggle_form,
             "dataset_rows": dataset_rows,
             "dataset_correction_form": dataset_correction_form,
             "prev_step": prev_step,

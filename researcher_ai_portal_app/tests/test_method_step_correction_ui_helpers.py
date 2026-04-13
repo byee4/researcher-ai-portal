@@ -560,3 +560,106 @@ def test_stepper_badge_counts_method_falls_back_to_component_meta_when_payload_m
         }
     )
     assert counts["method"] == 32
+
+
+def test_apply_assay_computational_preferences_removes_filtered_warnings_and_adds_stage_gaps():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "RNA-seq",
+                    "steps": [{"step_number": 1, "parameters": {"expected_stage": "analyze"}}],
+                }
+            ],
+            "dependencies": [],
+        },
+        "parse_warnings": [
+            "assay_filtered_non_computational: 'Western blot' excluded (category=experimental, computational_only=True)"
+        ],
+    }
+    updated, catalog = views._apply_assay_computational_preferences(
+        payload,
+        overrides={"western blot": True},
+    )
+    names = [a["name"] for a in updated["assay_graph"]["assays"]]
+    assert "Western blot" in names
+    assert all("assay_filtered_non_computational" not in w for w in updated["parse_warnings"])
+    wb_warnings = [w for w in updated["parse_warnings"] if "assay='Western blot'" in w]
+    # process is absent in template stages, so only analyze+qc are required
+    assert len(wb_warnings) == 2
+    assert any("missing=analyze" in w for w in wb_warnings)
+    assert any("missing=qc" in w for w in wb_warnings)
+    assert any(row["name"] == "Western blot" and row["is_computational"] for row in catalog)
+
+
+def test_apply_assay_computational_preferences_includes_process_when_template_uses_it():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "RNA-seq",
+                    "steps": [
+                        {"step_number": 1, "parameters": {"expected_stage": "process"}},
+                        {"step_number": 2, "parameters": {"expected_stage": "analyze"}},
+                    ],
+                }
+            ],
+            "dependencies": [],
+        },
+        "parse_warnings": [
+            "assay_filtered_non_computational: 'Immunofluorescence' excluded (category=experimental, computational_only=True)"
+        ],
+    }
+    updated, _ = views._apply_assay_computational_preferences(
+        payload,
+        overrides={"immunofluorescence": True},
+    )
+    if_warnings = [w for w in updated["parse_warnings"] if "assay='Immunofluorescence'" in w]
+    assert len(if_warnings) == 3
+    assert any("missing=process" in w for w in if_warnings)
+    assert any("missing=analyze" in w for w in if_warnings)
+    assert any("missing=qc" in w for w in if_warnings)
+
+
+def test_apply_assay_computational_preferences_turning_off_removes_generated_stage_warnings():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {"name": "RNA-seq", "steps": [{"step_number": 1, "parameters": {"expected_stage": "analyze"}}]},
+                {"name": "Western blot", "steps": []},
+            ],
+            "dependencies": [],
+        },
+        "parse_warnings": [
+            "template_missing_stages: assay='Western blot' template=generic missing=analyze source=assay_toggle",
+            "template_missing_stages: assay='Western blot' template=generic missing=qc source=assay_toggle",
+        ],
+    }
+    updated, catalog = views._apply_assay_computational_preferences(
+        payload,
+        overrides={"western blot": False},
+        prior_catalog=[{"name": "Western blot", "is_computational": True, "source": "assay_graph"}],
+    )
+    names = [a["name"] for a in updated["assay_graph"]["assays"]]
+    assert "Western blot" not in names
+    assert all("Western blot" not in w for w in updated["parse_warnings"])
+    assert any(row["name"] == "Western blot" and not row["is_computational"] for row in catalog)
+
+
+def test_method_assay_rows_includes_catalog_experimental_assays():
+    payload = {
+        "assay_graph": {"assays": [{"name": "RNA-seq", "steps": []}], "dependencies": []},
+        "parse_warnings": [],
+    }
+    rows = views._method_assay_rows(
+        payload,
+        assay_catalog=[
+            {"name": "RNA-seq", "is_computational": True},
+            {"name": "Immunofluorescence", "is_computational": False},
+        ],
+    )
+    assert len(rows) == 2
+    assert rows[0]["assay_name"] == "RNA-seq"
+    assert rows[0]["is_computational"] is True
+    assert rows[1]["assay_name"] == "Immunofluorescence"
+    assert rows[1]["is_computational"] is False

@@ -232,6 +232,11 @@
                         <div class="method-step-list-row-top">
                           <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
                             <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
+                            {% if assay.is_computational %}
+                              <span class="pill pill-found">Computational</span>
+                            {% else %}
+                              <span class="pill pill-neutral">Experimental</span>
+                            {% endif %}
                             <span class="method-step-chip">{% if assay_step.is_inferred_stage %}Suggested stage{% else %}Step {{ assay_step.step_number }}{% endif %}</span>
                             <span class="text-xs text-muted">
                               {% if assay_step.is_inferred_stage %}
@@ -242,42 +247,55 @@
                             </span>
                           </div>
                           <div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end;">
-                            <button type="button"
-                                    class="btn btn-ghost btn-sm correct-method-step-btn"
-                                    data-assay-index="{{ assay_step.assay_index }}"
-                                    data-step-index="{{ assay_step.step_index }}"
-                                    data-step-number="{{ assay_step.step_number }}"
-                                    data-assay-name="{{ assay.assay_name }}"
-                                    data-description="{{ assay_step.description }}"
-                                    data-software="{{ assay_step.software }}"
-                                    data-software-version="{{ assay_step.software_version }}"
-                                    data-input-data="{{ assay_step.input_data }}"
-                                    data-output-data="{{ assay_step.output_data }}"
-                                    data-parameters-json="{{ assay_step.parameters_json|escapejs }}"
-                                    data-code-reference="{{ assay_step.code_reference }}"
-                                    data-template-stage="{{ assay_step.template_stage }}"
-                                    data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
-                                    data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
-                                    data-warning-indices="{{ assay_step.warning_indices_csv }}">
-                              {% if assay_step.is_inferred_stage %}✏ Fill this stage{% else %}✏ Correct this step{% endif %}
-                            </button>
-                            {% if assay_step.is_inferred_stage %}
-                              <form method="post" action="{{ request.path }}" class="inline-remove-inferred-stage-form" style="display: inline-flex;">
-                                {% csrf_token %}
-                                <input type="hidden" name="step_action" value="remove_inferred_stage_suggestion">
-                                <input type="hidden" name="inferred_stage_name" value="{{ assay_step.inferred_stage_name }}">
-                                <input type="hidden" name="inferred_stage_warning_index" value="{{ assay_step.inferred_stage_warning_index }}">
-                                <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">Remove suggestion</button>
-                              </form>
+                            <form method="post" action="{{ request.path }}" style="display:inline-flex;">
+                              {% csrf_token %}
+                              <input type="hidden" name="step_action" value="toggle_assay_computational">
+                              <input type="hidden" name="assay_name" value="{{ assay.assay_name }}">
+                              <input type="hidden" name="computational_on" value="{% if assay.is_computational %}0{% else %}1{% endif %}">
+                              <button type="submit" class="btn btn-ghost btn-sm">
+                                {% if assay.is_computational %}Set experimental{% else %}Set computational{% endif %}
+                              </button>
+                            </form>
+                            {% if assay.is_persisted %}
+                              <button type="button"
+                                      class="btn btn-ghost btn-sm correct-method-step-btn"
+                                      data-assay-index="{{ assay_step.assay_index }}"
+                                      data-step-index="{{ assay_step.step_index }}"
+                                      data-step-number="{{ assay_step.step_number }}"
+                                      data-assay-name="{{ assay.assay_name }}"
+                                      data-description="{{ assay_step.description }}"
+                                      data-software="{{ assay_step.software }}"
+                                      data-software-version="{{ assay_step.software_version }}"
+                                      data-input-data="{{ assay_step.input_data }}"
+                                      data-output-data="{{ assay_step.output_data }}"
+                                      data-parameters-json="{{ assay_step.parameters_json|escapejs }}"
+                                      data-code-reference="{{ assay_step.code_reference }}"
+                                      data-template-stage="{{ assay_step.template_stage }}"
+                                      data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
+                                      data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
+                                      data-warning-indices="{{ assay_step.warning_indices_csv }}">
+                                {% if assay_step.is_inferred_stage %}✏ Fill this stage{% else %}✏ Correct this step{% endif %}
+                              </button>
+                              {% if assay_step.is_inferred_stage %}
+                                <form method="post" action="{{ request.path }}" class="inline-remove-inferred-stage-form" style="display: inline-flex;">
+                                  {% csrf_token %}
+                                  <input type="hidden" name="step_action" value="remove_inferred_stage_suggestion">
+                                  <input type="hidden" name="inferred_stage_name" value="{{ assay_step.inferred_stage_name }}">
+                                  <input type="hidden" name="inferred_stage_warning_index" value="{{ assay_step.inferred_stage_warning_index }}">
+                                  <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">Remove suggestion</button>
+                                </form>
+                              {% else %}
+                                <form method="post" action="{{ request.path }}" class="inline-remove-step-form" style="display: inline-flex;">
+                                  {% csrf_token %}
+                                  <input type="hidden" name="step_action" value="remove_method_step">
+                                  <input type="hidden" name="assay_index" value="{{ assay_step.assay_index }}">
+                                  <input type="hidden" name="step_index" value="{{ assay_step.step_index }}">
+                                  <input type="hidden" name="warning_indices" value="{{ assay_step.warning_indices_csv }}">
+                                  <button type="submit" class="btn btn-ghost btn-sm remove-method-step-btn">Remove step</button>
+                                </form>
+                              {% endif %}
                             {% else %}
-                              <form method="post" action="{{ request.path }}" class="inline-remove-step-form" style="display: inline-flex;">
-                                {% csrf_token %}
-                                <input type="hidden" name="step_action" value="remove_method_step">
-                                <input type="hidden" name="assay_index" value="{{ assay_step.assay_index }}">
-                                <input type="hidden" name="step_index" value="{{ assay_step.step_index }}">
-                                <input type="hidden" name="warning_indices" value="{{ assay_step.warning_indices_csv }}">
-                                <button type="submit" class="btn btn-ghost btn-sm remove-method-step-btn">Remove step</button>
-                              </form>
+                              <span class="text-xs text-muted">Enable computational mode to edit steps.</span>
                             {% endif %}
                           </div>
                         </div>
@@ -314,8 +332,22 @@
                       <div class="method-step-list-row-top">
                         <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
                           <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
+                          {% if assay.is_computational %}
+                            <span class="pill pill-found">Computational</span>
+                          {% else %}
+                            <span class="pill pill-neutral">Experimental</span>
+                          {% endif %}
                           <span class="pill pill-neutral">No extracted steps</span>
                         </div>
+                        <form method="post" action="{{ request.path }}" style="display:inline-flex;">
+                          {% csrf_token %}
+                          <input type="hidden" name="step_action" value="toggle_assay_computational">
+                          <input type="hidden" name="assay_name" value="{{ assay.assay_name }}">
+                          <input type="hidden" name="computational_on" value="{% if assay.is_computational %}0{% else %}1{% endif %}">
+                          <button type="submit" class="btn btn-ghost btn-sm">
+                            {% if assay.is_computational %}Set experimental{% else %}Set computational{% endif %}
+                          </button>
+                        </form>
                       </div>
                       <p class="text-xs text-muted" style="margin: 6px 0 0 0;">No steps extracted for this assay.</p>
                     </div>
@@ -331,29 +363,47 @@
                     <div class="method-assay-head">
                       <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
                         <strong style="color: var(--text);">{{ assay.assay_name }}</strong>
+                        {% if assay.is_computational %}
+                          <span class="pill pill-found">Computational</span>
+                        {% else %}
+                          <span class="pill pill-neutral">Experimental</span>
+                        {% endif %}
                         <span class="pill pill-neutral">{{ assay.steps|length }} step{{ assay.steps|length|pluralize }}</span>
                       </div>
-                      <form method="post" action="{{ request.path }}" class="batch-remove-steps-form" style="display: inline-flex; gap: 6px; align-items: center;">
-                        {% csrf_token %}
-                        <input type="hidden" name="step_action" value="remove_method_steps_batch">
-                        <input type="hidden" name="assay_index" value="{{ assay.assay_index }}">
-                        <div class="batch-selected-container"></div>
-                        <button type="submit" class="btn btn-ghost btn-sm batch-remove-selected-btn" disabled>
-                          Remove selected
-                        </button>
-                      </form>
-                      {% if assay.has_inferred_stage_suggestions %}
-                        <form method="post" action="{{ request.path }}" class="batch-remove-inferred-form" style="display: inline-flex; gap: 6px;">
+                      <div style="display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                        <form method="post" action="{{ request.path }}" style="display:inline-flex;">
                           {% csrf_token %}
-                          <input type="hidden" name="step_action" value="remove_inferred_stage_suggestions_batch">
-                          {% for pair in assay.inferred_stage_pairs %}
-                            <input type="hidden" name="inferred_stage_pairs" value="{{ pair.warning_index }}::{{ pair.stage_name }}">
-                          {% endfor %}
-                          <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">
-                            Remove all suggestions
+                          <input type="hidden" name="step_action" value="toggle_assay_computational">
+                          <input type="hidden" name="assay_name" value="{{ assay.assay_name }}">
+                          <input type="hidden" name="computational_on" value="{% if assay.is_computational %}0{% else %}1{% endif %}">
+                          <button type="submit" class="btn btn-ghost btn-sm">
+                            {% if assay.is_computational %}Set experimental{% else %}Set computational{% endif %}
                           </button>
                         </form>
-                      {% endif %}
+                        {% if assay.is_persisted %}
+                          <form method="post" action="{{ request.path }}" class="batch-remove-steps-form" style="display: inline-flex; gap: 6px; align-items: center;">
+                            {% csrf_token %}
+                            <input type="hidden" name="step_action" value="remove_method_steps_batch">
+                            <input type="hidden" name="assay_index" value="{{ assay.assay_index }}">
+                            <div class="batch-selected-container"></div>
+                            <button type="submit" class="btn btn-ghost btn-sm batch-remove-selected-btn" disabled>
+                              Remove selected
+                            </button>
+                          </form>
+                        {% endif %}
+                        {% if assay.has_inferred_stage_suggestions and assay.is_persisted %}
+                          <form method="post" action="{{ request.path }}" class="batch-remove-inferred-form" style="display: inline-flex; gap: 6px;">
+                            {% csrf_token %}
+                            <input type="hidden" name="step_action" value="remove_inferred_stage_suggestions_batch">
+                            {% for pair in assay.inferred_stage_pairs %}
+                              <input type="hidden" name="inferred_stage_pairs" value="{{ pair.warning_index }}::{{ pair.stage_name }}">
+                            {% endfor %}
+                            <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">
+                              Remove all suggestions
+                            </button>
+                          </form>
+                        {% endif %}
+                      </div>
                     </div>
                     {% if assay.assay_warnings %}
                       <div class="method-assay-warning-stack">
@@ -371,10 +421,12 @@
                                class="method-step-row {% if assay_step.is_inferred_stage %}method-step-row-inferred{% endif %}">
                             <div class="method-step-top">
                               <div style="display:flex; align-items:center; gap:8px;">
-                                <input type="checkbox"
-                                       class="method-step-select"
-                                       title="Select for batch remove"
-                                       value="{{ assay_step.step_index }}||{% if assay_step.is_inferred_stage %}1{% else %}0{% endif %}||{{ assay_step.inferred_stage_name }}||{{ assay_step.inferred_stage_warning_index }}||{{ assay_step.warning_indices_csv }}">
+                                {% if assay.is_persisted %}
+                                  <input type="checkbox"
+                                         class="method-step-select"
+                                         title="Select for batch remove"
+                                         value="{{ assay_step.step_index }}||{% if assay_step.is_inferred_stage %}1{% else %}0{% endif %}||{{ assay_step.inferred_stage_name }}||{{ assay_step.inferred_stage_warning_index }}||{{ assay_step.warning_indices_csv }}">
+                                {% endif %}
                                 <span class="method-step-chip">{% if assay_step.is_inferred_stage %}Suggested stage{% else %}Step {{ assay_step.step_number }}{% endif %}</span>
                               </div>
                               <span class="text-xs text-muted">
@@ -411,45 +463,47 @@
                                 {% endfor %}
                               </div>
                             {% endif %}
-                            <div style="margin-top: 8px;">
-                              <button type="button"
-                                      class="btn btn-ghost btn-sm correct-method-step-btn"
-                                      data-assay-index="{{ assay_step.assay_index }}"
-                                      data-step-index="{{ assay_step.step_index }}"
-                                      data-step-number="{{ assay_step.step_number }}"
-                                      data-assay-name="{{ assay.assay_name }}"
-                                      data-description="{{ assay_step.description }}"
-                                      data-software="{{ assay_step.software }}"
-                                      data-software-version="{{ assay_step.software_version }}"
-                                      data-input-data="{{ assay_step.input_data }}"
-                                      data-output-data="{{ assay_step.output_data }}"
-                                      data-parameters-json="{{ assay_step.parameters_json|escapejs }}"
-                                      data-code-reference="{{ assay_step.code_reference }}"
-                                      data-template-stage="{{ assay_step.template_stage }}"
-                                      data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
-                                      data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
-                                      data-warning-indices="{{ assay_step.warning_indices_csv }}">
-                                {% if assay_step.is_inferred_stage %}✏ Fill this stage{% else %}✏ Correct this step{% endif %}
-                              </button>
-                              {% if assay_step.is_inferred_stage %}
-                                <form method="post" action="{{ request.path }}" class="inline-remove-inferred-stage-form" style="display: inline-flex; margin-left: 6px;">
-                                  {% csrf_token %}
-                                  <input type="hidden" name="step_action" value="remove_inferred_stage_suggestion">
-                                  <input type="hidden" name="inferred_stage_name" value="{{ assay_step.inferred_stage_name }}">
-                                  <input type="hidden" name="inferred_stage_warning_index" value="{{ assay_step.inferred_stage_warning_index }}">
-                                  <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">Remove suggestion</button>
-                                </form>
-                              {% else %}
-                                <form method="post" action="{{ request.path }}" class="inline-remove-step-form" style="display: inline-flex; margin-left: 6px;">
-                                  {% csrf_token %}
-                                  <input type="hidden" name="step_action" value="remove_method_step">
-                                  <input type="hidden" name="assay_index" value="{{ assay_step.assay_index }}">
-                                  <input type="hidden" name="step_index" value="{{ assay_step.step_index }}">
-                                  <input type="hidden" name="warning_indices" value="{{ assay_step.warning_indices_csv }}">
-                                  <button type="submit" class="btn btn-ghost btn-sm remove-method-step-btn">Remove step</button>
-                                </form>
-                              {% endif %}
-                            </div>
+                            {% if assay.is_persisted %}
+                              <div style="margin-top: 8px;">
+                                <button type="button"
+                                        class="btn btn-ghost btn-sm correct-method-step-btn"
+                                        data-assay-index="{{ assay_step.assay_index }}"
+                                        data-step-index="{{ assay_step.step_index }}"
+                                        data-step-number="{{ assay_step.step_number }}"
+                                        data-assay-name="{{ assay.assay_name }}"
+                                        data-description="{{ assay_step.description }}"
+                                        data-software="{{ assay_step.software }}"
+                                        data-software-version="{{ assay_step.software_version }}"
+                                        data-input-data="{{ assay_step.input_data }}"
+                                        data-output-data="{{ assay_step.output_data }}"
+                                        data-parameters-json="{{ assay_step.parameters_json|escapejs }}"
+                                        data-code-reference="{{ assay_step.code_reference }}"
+                                        data-template-stage="{{ assay_step.template_stage }}"
+                                        data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
+                                        data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
+                                        data-warning-indices="{{ assay_step.warning_indices_csv }}">
+                                  {% if assay_step.is_inferred_stage %}✏ Fill this stage{% else %}✏ Correct this step{% endif %}
+                                </button>
+                                {% if assay_step.is_inferred_stage %}
+                                  <form method="post" action="{{ request.path }}" class="inline-remove-inferred-stage-form" style="display: inline-flex; margin-left: 6px;">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="step_action" value="remove_inferred_stage_suggestion">
+                                    <input type="hidden" name="inferred_stage_name" value="{{ assay_step.inferred_stage_name }}">
+                                    <input type="hidden" name="inferred_stage_warning_index" value="{{ assay_step.inferred_stage_warning_index }}">
+                                    <button type="submit" class="btn btn-ghost btn-sm remove-inferred-stage-btn">Remove suggestion</button>
+                                  </form>
+                                {% else %}
+                                  <form method="post" action="{{ request.path }}" class="inline-remove-step-form" style="display: inline-flex; margin-left: 6px;">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="step_action" value="remove_method_step">
+                                    <input type="hidden" name="assay_index" value="{{ assay_step.assay_index }}">
+                                    <input type="hidden" name="step_index" value="{{ assay_step.step_index }}">
+                                    <input type="hidden" name="warning_indices" value="{{ assay_step.warning_indices_csv }}">
+                                    <button type="submit" class="btn btn-ghost btn-sm remove-method-step-btn">Remove step</button>
+                                  </form>
+                                {% endif %}
+                              </div>
+                            {% endif %}
                           </div>
                         {% endfor %}
                       </div>
@@ -682,13 +736,16 @@
       {% endif %}
 
       <!-- JSON editor -->
-      <div class="card" style="padding: 20px;">
-        <div class="section-header mb-3">
-          <h2>{{ step_label }} data</h2>
-          <code class="text-xs" style="color: var(--text-3);">step: {{ step }}</code>
+      <details class="accordion" {% if step != "method" %}open{% endif %}>
+        <summary>{{ step_label }} data</summary>
+        <div class="card accordion-body" style="padding: 20px; margin-top: 10px;">
+          <div class="section-header mb-3">
+            <h2>{{ step_label }} data</h2>
+            <code class="text-xs" style="color: var(--text-3);">step: {{ step }}</code>
+          </div>
+          <div class="json-editor">{{ form.component_json }}</div>
         </div>
-        <div class="json-editor">{{ form.component_json }}</div>
-      </div>
+      </details>
 
     </div>
 

@@ -99,8 +99,12 @@ The Method step now includes an **Assay step outline** card above the JSON edito
 - You can also click **Remove all suggestions** at the assay level to batch-clear inferred template stages for that assay.
 - You can check multiple rows in the assay outline and click **Remove selected** to batch-delete both real steps and inferred stage suggestions in one action.
 - If you fill a suggested stage from the outline, the portal now maps virtual suggestion rows to a real appended step reliably (no step-index mismatch errors).
+- The assay outline now includes experimental assays that were filtered out during computational parsing. Use **Set computational** / **Set experimental** to control whether each assay contributes to confidence scoring.
+- When you switch an experimental assay to computational, the portal adds one warning per missing required stage so the Methods badge reflects remaining work.
+- Required stages default to `analyze` and `qc`; `process` is included only when the current method payload already uses a `process`/`processing` stage.
+- Filter-only warnings (`assay_filtered_non_computational`) are removed from the method warning list once the toggle-aware assay catalog is applied.
 - Cryptic template warnings are translated inline. For example, `assay='iPSC neuron differentiation' template=generic missing=align` is shown as a plain-English message that the assay is missing the `align` stage from the generic template.
-- The **Methods Parser data** JSON card is still available for full manual edits when needed.
+- The **Methods Parser data** JSON card is still available for full manual edits when needed, and it is collapsed by default.
 
 ### The Datasets step
 

@@ -73,6 +73,7 @@ class PaperCache(models.Model):
     canonical_id = models.CharField(max_length=64, unique=True, db_index=True)
     paper_json = models.JSONField(default=dict)
     figures_json = models.JSONField(default=list)
+    assay_computational_overrides = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     llm_model = models.CharField(max_length=64)
 
