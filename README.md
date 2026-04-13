@@ -9,6 +9,7 @@ A Django portal that wraps the [`researcher-ai`](https://github.com/byee4/resear
 3. Let the user inspect, edit, and correct each parsed component through a web UI.
 4. Render an interactive assay DAG, figure gallery, confidence dashboard, and a dedicated Methods RAG workflow visualization page.
 5. Expose a FastAPI layer under `/api/v1/` for the visual pipeline builder and diagnostics APIs — submit publications, poll status, read/write React Flow graph state, and fetch normalized RAG telemetry.
+   - Note: the dashboard Pipeline Builder tab is currently hidden behind a temporary server flag while other UX flows are prioritized.
 
 Supports OpenAI (GPT-4/o4), Anthropic (Claude), and Google (Gemini) models. API keys are entered per-session and never stored in the database.
 

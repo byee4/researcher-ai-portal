@@ -38,6 +38,7 @@ RESULT_DIR = DJANGO_ROOT / "parse_results"
 PDF_STAGE_DIR = RESULT_DIR / "uploaded_pdfs"
 
 STEP_ORDER = ["paper", "figures", "method", "datasets", "software", "pipeline"]
+SHOW_PIPELINE_BUILDER = False
 STEP_LABELS = {
     "paper": "Paper Parser",
     "figures": "Figure Parser",
@@ -4241,6 +4242,7 @@ def dashboard(request, job_id: str):
     )
     context.update(
         {
+            "show_pipeline_builder": SHOW_PIPELINE_BUILDER,
             "job_id": job_id,
             "dashboard_name": dashboard_name,
             "dag_app_name": dag_app_name,
