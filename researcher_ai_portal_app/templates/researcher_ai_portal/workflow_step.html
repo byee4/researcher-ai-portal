@@ -304,6 +304,7 @@
                                     data-output-data="{{ assay_step.output_data }}"
                                     data-parameters-json="{{ assay_step.parameters_json|escapejs }}"
                                     data-code-reference="{{ assay_step.code_reference }}"
+                                    data-template-stage="{{ assay_step.template_stage }}"
                                     data-inferred-stage-name="{{ assay_step.inferred_stage_name }}"
                                     data-inferred-stage-warning-index="{{ assay_step.inferred_stage_warning_index }}"
                                     data-warning-indices="{{ assay_step.warning_indices_csv }}">
@@ -401,6 +402,13 @@
               <div class="form-group">
                 <label class="text-xs text-muted">Code reference</label>
                 {{ method_step_correction_form.code_reference }}
+              </div>
+              <div class="form-group">
+                <label class="text-xs text-muted">Expected stage</label>
+                {{ method_step_correction_form.template_stage }}
+                <p class="text-xs text-muted" style="margin-top: 4px;">
+                  Associate this step with one expected stage: <code>qc</code>, <code>trim</code>, or <code>analyze</code>.
+                </p>
               </div>
               <button type="submit" class="btn btn-primary" style="justify-content: center;">Save step correction</button>
             </form>
@@ -1075,6 +1083,7 @@
           const outEl = methodField("output_data");
           const paramsEl = methodField("parameters");
           const codeEl = methodField("code_reference");
+          const templateStageEl = methodField("template_stage");
           if (aiEl) aiEl.value = assayIdx;
           if (siEl) siEl.value = stepIdx;
           if (stageEl) stageEl.value = inferredStageName;
@@ -1087,6 +1096,7 @@
           if (outEl) outEl.value = btn.dataset.outputData || "";
           if (paramsEl) paramsEl.value = btn.dataset.parametersJson || "{}";
           if (codeEl) codeEl.value = btn.dataset.codeReference || "";
+          if (templateStageEl) templateStageEl.value = btn.dataset.templateStage || inferredStageName || "";
           if (titleEl) titleEl.textContent = `Correct ${assayName} — Step ${stepNum}`;
           if (subtitleEl) subtitleEl.textContent = "These edits update the structured methods payload and can be re-saved in JSON below.";
           openMethodDrawer();

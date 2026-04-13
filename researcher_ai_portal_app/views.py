@@ -1466,6 +1466,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "parameters": parameters_dict,
                     "parameters_json": json.dumps(parameters_dict, ensure_ascii=True),
                     "code_reference": str(step.get("code_reference") or "").strip(),
+                    "template_stage": str(step.get("template_stage") or "").strip(),
                     "warnings": step_warning_rows,
                     "warning_indices_csv": ",".join(str(i) for i in warning_indices),
                     "missing_field_hints": _method_missing_field_hints(step),
@@ -1501,6 +1502,7 @@ def _method_assay_rows(method_payload: Any) -> list[dict[str, Any]]:
                     "parameters": "",
                     "parameters_json": "{}",
                     "code_reference": "",
+                    "template_stage": stage_name,
                     "warnings": [
                         {
                             "severity": "warning",
@@ -1997,8 +1999,13 @@ def _inject_method_step_correction(method_payload: Any, cleaned: dict[str, Any])
     else:
         raise ValueError("Parameters must be a dictionary.")
     step["code_reference"] = str(cleaned.get("code_reference") or "").strip()
+    selected_template_stage = str(cleaned.get("template_stage") or "").strip()
+    effective_template_stage = selected_template_stage or inferred_stage_name
+    if effective_template_stage:
+        step["template_stage"] = effective_template_stage
+    else:
+        step.pop("template_stage", None)
     if inferred_stage_name:
-        step["template_stage"] = inferred_stage_name
         payload = _clear_template_missing_stage_warning(
             payload,
             stage_name=inferred_stage_name,
@@ -4017,6 +4024,7 @@ def workflow_step(request, job_id: str, step: str):
             initial={
                 "assay_index": 0,
                 "step_index": 0,
+                "template_stage": "",
                 "inferred_stage_name": "",
                 "resolved_warning_indices": "",
                 "inferred_stage_warning_index": None,

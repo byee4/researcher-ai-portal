@@ -160,6 +160,8 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "method-step-select" in text
     assert "batch-remove-selected-btn" in text
     assert "Remove step" in text
+    assert "Expected stage" in text
+    assert "template_stage" in text
     assert "parameters as a JSON dictionary" in text
     assert "Expected methods payload shape per step" in text
     assert "Example warning translation" in text

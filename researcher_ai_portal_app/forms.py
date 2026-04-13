@@ -92,6 +92,13 @@ class FigureGroundTruthForm(forms.Form):
 class MethodStepCorrectionForm(forms.Form):
     """Structured form to correct one assay step in the methods payload."""
 
+    _TEMPLATE_STAGE_CHOICES = [
+        ("", "(none)"),
+        ("qc", "qc"),
+        ("trim", "trim"),
+        ("analyze", "analyze"),
+    ]
+
     assay_index = forms.IntegerField(min_value=0, required=True)
     step_index = forms.IntegerField(min_value=0, required=True)
     description = forms.CharField(required=False, max_length=1000)
@@ -113,6 +120,7 @@ class MethodStepCorrectionForm(forms.Form):
         ),
     )
     code_reference = forms.CharField(required=False, max_length=500)
+    template_stage = forms.ChoiceField(choices=_TEMPLATE_STAGE_CHOICES, required=False)
     inferred_stage_name = forms.CharField(required=False, max_length=240)
     resolved_warning_indices = forms.CharField(required=False, max_length=500)
     inferred_stage_warning_index = forms.IntegerField(required=False, min_value=0)

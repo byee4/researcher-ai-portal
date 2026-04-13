@@ -43,6 +43,7 @@ def test_method_assay_rows_returns_plain_english_step_rows():
     assert first["step_number"] == 1
     assert first["software"] == "STAR"
     assert first["input_data"] == "FASTQ"
+    assert first["template_stage"] == ""
     assert first["warnings"] == []
 
 
@@ -318,6 +319,65 @@ def test_inject_method_step_correction_removes_resolved_warning_indices():
     )
     assert updated["parse_warnings"] == ["paper_rag_vision_fallback: count=1 latency_seconds=0.2"]
     assert updated["assay_graph"]["assays"][0]["steps"][0]["parameters"] == {"outSAMtype": "BAM"}
+
+
+def test_inject_method_step_correction_sets_template_stage_from_dropdown():
+    payload = {
+        "assay_graph": {"assays": [{"name": "A", "steps": [{"step_number": 1, "software": "STAR"}]}]},
+        "parse_warnings": [],
+    }
+    updated = views._inject_method_step_correction(
+        payload,
+        {
+            "assay_index": 0,
+            "step_index": 0,
+            "description": "qc pass",
+            "software": "STAR",
+            "software_version": "2.7.11b",
+            "input_data": "FASTQ.gz",
+            "output_data": "BAM",
+            "parameters": {"outSAMtype": "BAM"},
+            "code_reference": "",
+            "template_stage": "qc",
+            "inferred_stage_name": "",
+            "resolved_warning_indices": "",
+            "inferred_stage_warning_index": None,
+        },
+    )
+    assert updated["assay_graph"]["assays"][0]["steps"][0]["template_stage"] == "qc"
+
+
+def test_inject_method_step_correction_clears_template_stage_when_blank():
+    payload = {
+        "assay_graph": {
+            "assays": [
+                {
+                    "name": "A",
+                    "steps": [{"step_number": 1, "software": "STAR", "template_stage": "trim"}],
+                }
+            ]
+        },
+        "parse_warnings": [],
+    }
+    updated = views._inject_method_step_correction(
+        payload,
+        {
+            "assay_index": 0,
+            "step_index": 0,
+            "description": "stage cleared",
+            "software": "STAR",
+            "software_version": "2.7.11b",
+            "input_data": "FASTQ.gz",
+            "output_data": "BAM",
+            "parameters": {},
+            "code_reference": "",
+            "template_stage": "",
+            "inferred_stage_name": "",
+            "resolved_warning_indices": "",
+            "inferred_stage_warning_index": None,
+        },
+    )
+    assert "template_stage" not in updated["assay_graph"]["assays"][0]["steps"][0]
 
 
 def test_clear_template_missing_stage_warning_removes_only_selected_stage():
