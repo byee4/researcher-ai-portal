@@ -84,7 +84,8 @@ Ground truth corrections are injected into the figure payload and propagate to t
 
 ### The Method step
 
-The Method step now includes an **Assay step outline** card above the JSON editor. It gives a plain-English view of each assay and every extracted step.
+The Method step now includes an **Assay step outline** card above the JSON editor with two tabs:
+**List view** (default), where each method step appears as a row, and **Grouped by assay**, which keeps the original assay-card layout.
 
 - Use **Correct this step** on any step to open a side drawer with editable fields.
 - Empty constrained fields include example formats and dropdown suggestions (for example `2.7.11b`, `FASTQ.gz`, `sorted BAM`) so it's clear what shape to enter.

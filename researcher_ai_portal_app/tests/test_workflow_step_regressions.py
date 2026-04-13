@@ -165,6 +165,13 @@ def test_workflow_step_template_includes_method_step_correction_card():
     assert "parameters as a JSON dictionary" in text
     assert "Expected methods payload shape per step" in text
     assert "Example warning translation" in text
+    assert "List view" in text
+    assert "Grouped by assay" in text
+    assert 'data-method-outline-tab="list"' in text
+    assert 'data-method-outline-tab="grouped"' in text
+    assert 'data-method-outline-panel="list"' in text
+    assert 'data-method-outline-panel="grouped"' in text
+    assert 'setMethodOutlineTab("list")' in text
 
 
 def test_shared_stepper_hides_pipeline_chip_when_pipeline_builder_is_hidden():
