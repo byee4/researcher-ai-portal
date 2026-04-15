@@ -1,0 +1,52 @@
+{
+  "project_name": "researcher-ai-portal",
+  "concept": "fix RAG data visualization",
+  "archetype": "bug-fix",
+  "stack": {
+    "language": "Python",
+    "framework": "Django 5.2 + FastAPI 0.115 + Dash 2.17 / Plotly 5",
+    "database": "PostgreSQL (via dj-database-url + psycopg2-binary)",
+    "orm": "Django ORM",
+    "ui_library": "django-plotly-dash, dash-cytoscape, React Flow (frontend)",
+    "test_framework": "pytest + pytest-django",
+    "package_manager": "pip (requirements.txt)"
+  },
+  "verification": {
+    "test": "pytest researcher_ai_portal_app/tests/ -x -q",
+    "lint": "ruff check .",
+    "typecheck": "",
+    "build": "docker-compose build"
+  },
+  "deploy": {
+    "platform": "Docker",
+    "command": "docker-compose up"
+  },
+  "integrations": {
+    "graphify": false,
+    "codemap": false,
+    "aidesigner": false,
+    "beads": true,
+    "forge_tooling": false
+  },
+  "code_graph": {
+    "provider": "serena",
+    "enabled": false,
+    "note": "restart Claude Code to activate"
+  },
+  "pipeline": {
+    "stages_enabled": [
+      "2-architect",
+      "3-implement",
+      "4-review"
+    ]
+  },
+  "topology": {
+    "parallel_groups": [],
+    "parallel_prereqs": {}
+  },
+  "ci": {
+    "scaffolded": false,
+    "provider": null
+  },
+  "wiki_enabled": false
+}

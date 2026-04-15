@@ -225,3 +225,23 @@ def test_figure_cards_template_renders_figure_popup_modal_shell():
     assert 'id="figure-popup-overlay"' in text
     assert 'id="figure-popup-dialog"' in text
     assert 'id="figure-popup-frame"' in text
+
+
+def test_rag_workflow_template_includes_visualization_fields():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "researcher_ai_portal"
+        / "rag_workflow.html"
+    )
+    text = template_path.read_text(encoding="utf-8")
+    # Generation model card
+    assert "generation.model" in text
+    # Vision fallback diagnostics card
+    assert "vision_fallback_count" in text
+    assert "vision_fallback_latency_seconds" in text
+    # Human review recommendation text
+    assert "human_review_summary" in text
+    assert "recommended_action" in text
+    # SVG must not have a hardcoded fixed pixel width
+    assert 'width="900"' not in text

@@ -1,0 +1,20 @@
+{
+  "event": "init",
+  "timestamp_utc": "2026-04-15T00:00:00Z",
+  "pipeline_id": "forge-cfbcdde9",
+  "concept": "fix RAG data visualization",
+  "archetype_detected": "bug-fix",
+  "archetype_supplied": null,
+  "stages_enabled": 3,
+  "integrations": {
+    "graphify": false,
+    "codemap": false,
+    "beads": true,
+    "forge_tooling": false
+  },
+  "decisions": [
+    "Archetype auto-detected as bug-fix from user concept 'fix RAG data visualization' + git history",
+    "Stages enabled: 2-architect, 3-implement, 4-review",
+    "Stack: Python / Django 5.2 + FastAPI + Dash-Plotly"
+  ]
+}

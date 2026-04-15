@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0",
+  "pipeline_id": "forge-cfbcdde9",
+  "created_utc": "2026-04-15T21:59:48Z",
+  "updated_utc": "2026-04-15T22:11:35Z",
+  "current_stage": null,
+  "stages": {
+    "2-architect": {
+      "status": "COMPLETE",
+      "started_utc": "2026-04-15T22:00:34Z",
+      "completed_utc": "2026-04-15T22:07:03Z",
+      "duration_seconds": null,
+      "gate_result": "PASS",
+      "cost_estimate_usd": null,
+      "loop_count": 0
+    },
+    "3-implement": {
+      "status": "COMPLETE",
+      "started_utc": "2026-04-15T22:07:03Z",
+      "completed_utc": "2026-04-15T22:08:43Z",
+      "duration_seconds": null,
+      "gate_result": "PASS",
+      "cost_estimate_usd": null,
+      "loop_count": 0
+    },
+    "4-review": {
+      "status": "COMPLETE",
+      "started_utc": "2026-04-15T22:08:43Z",
+      "completed_utc": "2026-04-15T22:11:35Z",
+      "duration_seconds": null,
+      "gate_result": "PASS_WITH_NOTES",
+      "cost_estimate_usd": null,
+      "loop_count": 0
+    }
+  },
+  "instrumentation": {},
+  "cost": {
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "total_cost_usd": 0.0
+  },
+  "loops": {
+    "review_count": 0,
+    "qa_count": 0,
+    "security_count": 0
+  }
+}
