@@ -475,7 +475,7 @@
                             data-title="{{ ds.title }}"
                             data-organism="{{ ds.organism }}"
                             data-experiment-type="{{ ds.experiment_type }}"
-                            data-summary="{{ ds.summary|escapejs }}"
+                            data-summary="{{ ds.summary }}"
                             data-primary-url="{{ ds.primary_url }}"
                             data-placeholder="{{ ds.placeholder|yesno:'1,0' }}">
                       ✏ Correct dataset
@@ -489,7 +489,7 @@
           {% endif %}
         </div>
 
-        <div id="dataset-correction-drawer" class="dataset-correction-drawer" aria-hidden="true">
+        <div id="dataset-correction-drawer" class="dataset-correction-drawer{% if dataset_correction_form and dataset_correction_form.errors %} open{% endif %}" aria-hidden="{% if dataset_correction_form and dataset_correction_form.errors %}false{% else %}true{% endif %}">
           <div class="dataset-correction-drawer-backdrop" data-close-dataset-drawer></div>
           <div class="dataset-correction-drawer-panel">
             <div class="dataset-correction-drawer-header">
@@ -503,6 +503,9 @@
               {% csrf_token %}
               <input type="hidden" name="step_action" value="inject_dataset_correction">
               {{ dataset_correction_form.dataset_index }}
+              {% if dataset_correction_form.errors %}
+                <div class="alert alert-error" style="margin: 0;">{{ dataset_correction_form.errors }}</div>
+              {% endif %}
               <div class="card card-sm" style="background: var(--surface-2);">
                 <p class="text-xs text-muted" style="margin: 0;">
                   Format guidance:

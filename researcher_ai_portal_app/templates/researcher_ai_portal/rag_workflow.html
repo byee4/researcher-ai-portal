@@ -35,7 +35,7 @@
     </div>
   {% endif %}
 
-  <div style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; margin-bottom:14px;">
+  <div style="display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap:10px; margin-bottom:14px;">
     <div class="card card-sm" style="text-align:center;">
       <div class="text-xs text-muted">Mode</div>
       <div class="font-700" style="color:var(--text);">{{ rag_workflow.mode|default:"per_job" }}</div>
@@ -56,13 +56,17 @@
       <div class="text-xs text-muted">Assays Parsed</div>
       <div class="font-700" style="color:var(--text);">{{ rag_workflow.result.assay_count|default:0 }}</div>
     </div>
+    <div class="card card-sm" style="text-align:center;">
+      <div class="text-xs text-muted">Model</div>
+      <div class="font-700" style="color:var(--text); font-size:0.8rem; overflow-wrap:break-word;">{{ rag_workflow.generation.model|default:"—" }}</div>
+    </div>
   </div>
 
   <div style="display:grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); gap:14px; margin-bottom:14px;">
     <div class="card" style="padding: 16px 18px;">
       <h2 style="margin-bottom:8px;">RAG Phase Graph</h2>
       <p class="text-sm text-muted" style="margin-bottom:10px;">Indexing → Retrieval → Prompt Assembly → Generation → Post-parse validation</p>
-      <div id="rag-graph" style="overflow:auto;"></div>
+      <div id="rag-graph" style="overflow:hidden;"></div>
     </div>
 
     <div class="card" style="padding: 16px 18px;">
@@ -78,6 +82,9 @@
             {% if rag_workflow.result.review_required %}Required{% else %}Not required{% endif %}
           </div>
         </div>
+        {% if rag_workflow.result.review_required and rag_workflow.diagnostics.human_review_summary.recommended_action %}
+          <p class="text-xs text-muted" style="margin: 2px 0 0 4px;">{{ rag_workflow.diagnostics.human_review_summary.recommended_action }}</p>
+        {% endif %}
         <div class="card card-sm" style="background:var(--surface-2);">
           <div class="text-xs text-muted">Retrieved Chunks</div>
           <div class="font-600" style="color:var(--text);">{{ rag_workflow.retrieval.retrieved_chunk_count|default:"—" }}</div>
@@ -85,6 +92,14 @@
         <div class="card card-sm" style="background:var(--surface-2);">
           <div class="text-xs text-muted">Context Tokens (est.)</div>
           <div class="font-600" style="color:var(--text);">{{ rag_workflow.retrieval.total_context_tokens_est|default:"—" }}</div>
+        </div>
+        <div class="card card-sm" style="background:var(--surface-2);">
+          <div class="text-xs text-muted">Vision Fallback</div>
+          <div class="font-600" style="color:var(--text);">
+            {% with fb=rag_workflow.diagnostics.vision_fallback_count|default:0 lat=rag_workflow.diagnostics.vision_fallback_latency_seconds %}
+              {{ fb }}{% if fb and lat %} · {{ lat }}s latency{% endif %}
+            {% endwith %}
+          </div>
         </div>
       </div>
     </div>
@@ -170,7 +185,7 @@
     }).join('');
 
     graph.innerHTML = `
-      <svg width="900" height="160" viewBox="0 0 900 160" role="img" aria-label="RAG workflow phase graph">
+      <svg width="100%" height="160" viewBox="0 0 900 160" role="img" aria-label="RAG workflow phase graph" preserveAspectRatio="xMidYMid meet">
         <defs>
           <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
             <path d="M0,0 L8,4 L0,8 z" fill="#94a3b8" />
@@ -234,7 +249,10 @@
 <style>
 @media (max-width: 980px) {
   .page > div[style*="grid-template-columns: minmax(0,1.1fr) minmax(0,1fr)"] { grid-template-columns: 1fr !important; }
-  .page > div[style*="grid-template-columns: repeat(5"] { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+  .page > div[style*="grid-template-columns: repeat(6"] { grid-template-columns: repeat(3, minmax(0,1fr)) !important; }
+}
+@media (max-width: 540px) {
+  .page > div[style*="grid-template-columns: repeat(6"] { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
 }
 </style>
 {% endblock %}

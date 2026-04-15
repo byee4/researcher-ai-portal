@@ -1,0 +1,18 @@
+{
+  "stage_id": "2-architect",
+  "gate_result": "PASS",
+  "outputs": [
+    {"path": ".forge/stages/2-architect/architecture-plan.md", "description": "Full plan with 5 ACs, 5 tasks, approach comparison"},
+    {"path": ".forge/stages/2-architect/implementer-prompt.md", "description": "Task-by-task implementation instructions with code snippets"},
+    {"path": ".forge/stages/2-architect/assumptions.json", "description": "4 assumptions with confidence levels"},
+    {"path": ".forge/stages/2-architect/DECISIONS_SUMMARY.md", "description": "5 key decisions with rationale"},
+    {"path": ".forge/stages/2-architect/threat-model.md", "description": "STRIDE + MAESTRO analysis — no new threats"}
+  ],
+  "decision": {
+    "selected_approach": "B — template-only patch",
+    "rationale": "All data already in payload; zero Python changes required; minimal diff"
+  },
+  "failure_mode_flags": [],
+  "next_stage": "3-implement",
+  "resumption_context": "Fix RAG data visualization in rag_workflow.html. Two bugs: (1) SVG width='900' overflows container — change to width='100%' in renderGraph() JS; (2) generation.model, diagnostics.vision_fallback_count/latency, diagnostics.human_review_summary.recommended_action are in the payload but not rendered. Add 6th summary card (Model), Vision Fallback card in diagnostics, and review recommendation text. Also add regression test in test_workflow_step_regressions.py. See implementer-prompt.md for exact code."
+}

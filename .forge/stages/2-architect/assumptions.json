@@ -1,0 +1,30 @@
+[
+  {
+    "id": "A-01",
+    "description": "build_rag_workflow_payload() populates generation.model from job.llm_model when no structured RAG telemetry is present",
+    "confidence": "high",
+    "evidence": "views.py:574 — `'model': str((rag.get('generation') or {}).get('model') or (job.get('llm_model') or ''))`",
+    "invalidation_impact": "If false, the Model card would show '—' even when a model was used. Low severity — still a correct fallback."
+  },
+  {
+    "id": "A-02",
+    "description": "diagnostics.vision_fallback_count is only present in the payload dict when count > 0 (absent otherwise)",
+    "confidence": "high",
+    "evidence": "views.py:416 — `if total_fallback_count > 0: out['vision_fallback_count'] = ...`",
+    "invalidation_impact": "If false (count always present), the `|default:0` filter in the template handles it gracefully — no rendering bug."
+  },
+  {
+    "id": "A-03",
+    "description": "SVG width='100%' + existing viewBox='0 0 900 160' scales proportionally without clipping in all modern browsers",
+    "confidence": "high",
+    "evidence": "SVG 1.1 spec; supported Chrome 4+, Firefox 3.5+, Safari 3.1+",
+    "invalidation_impact": "If a target browser doesn't support it, the SVG collapses to 0 width. Low risk given project audience (researchers using modern browsers)."
+  },
+  {
+    "id": "A-04",
+    "description": "No Python/view changes are needed because all required data fields are already populated by build_rag_workflow_payload()",
+    "confidence": "high",
+    "evidence": "Confirmed by reading views.py:559-584 — all four missing fields are present in the return dict",
+    "invalidation_impact": "If a field is unexpectedly missing, Django template will render the |default fallback — no crash, but field remains blank."
+  }
+]
