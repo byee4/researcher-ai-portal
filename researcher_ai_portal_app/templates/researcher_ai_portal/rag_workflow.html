@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="page">
+<div class="page" id="rag-page" data-job-id="{{ job_id }}">
   <div class="card" style="padding: 18px 22px; margin-bottom: 14px;">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
       <div>
@@ -38,23 +38,23 @@
   <div style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; margin-bottom:14px;">
     <div class="card card-sm" style="text-align:center;">
       <div class="text-xs text-muted">Mode</div>
-      <div class="font-700" style="color:var(--text);">{{ rag_workflow.mode|default:"per_job" }}</div>
+      <div class="font-700" id="metric-mode" style="color:var(--text);">{{ rag_workflow.mode|default:"per_job" }}</div>
     </div>
     <div class="card card-sm" style="text-align:center;">
       <div class="text-xs text-muted">Sections Indexed</div>
-      <div class="font-700" style="color:var(--text);">{{ rag_workflow.indexing.section_count|default:0 }}</div>
+      <div class="font-700" id="metric-sections-indexed" style="color:var(--text);">{{ rag_workflow.indexing.section_count|default:0 }}</div>
     </div>
     <div class="card card-sm" style="text-align:center;">
       <div class="text-xs text-muted">Figure Captions</div>
-      <div class="font-700" style="color:var(--text);">{{ rag_workflow.indexing.figure_caption_count|default:0 }}</div>
+      <div class="font-700" id="metric-figure-captions" style="color:var(--text);">{{ rag_workflow.indexing.figure_caption_count|default:0 }}</div>
     </div>
     <div class="card card-sm" style="text-align:center;">
       <div class="text-xs text-muted">Retrieval Rounds</div>
-      <div class="font-700" style="color:var(--text);">{{ rag_workflow.retrieval.rounds|default:"—" }}</div>
+      <div class="font-700" id="metric-retrieval-rounds" style="color:var(--text);">{{ rag_workflow.retrieval.rounds|default:"—" }}</div>
     </div>
     <div class="card card-sm" style="text-align:center;">
       <div class="text-xs text-muted">Assays Parsed</div>
-      <div class="font-700" style="color:var(--text);">{{ rag_workflow.result.assay_count|default:0 }}</div>
+      <div class="font-700" id="metric-assays-parsed" style="color:var(--text);">{{ rag_workflow.result.assay_count|default:0 }}</div>
     </div>
   </div>
 
@@ -70,21 +70,21 @@
       <div style="display:flex; flex-direction:column; gap:8px;">
         <div class="card card-sm" style="background:var(--surface-2);">
           <div class="text-xs text-muted">Warnings</div>
-          <div class="font-600" style="color:var(--text);">{{ rag_workflow.result.parse_warning_count|default:0 }}</div>
+          <div class="font-600" id="metric-parse-warning-count" style="color:var(--text);">{{ rag_workflow.result.parse_warning_count|default:0 }}</div>
         </div>
-        <div class="card card-sm" style="background:{% if rag_workflow.result.review_required %}var(--warning-soft){% else %}var(--surface-2){% endif %};">
+        <div class="card card-sm" id="metric-review-card" style="background:{% if rag_workflow.result.review_required %}var(--warning-soft){% else %}var(--surface-2){% endif %};">
           <div class="text-xs text-muted">Human Review</div>
-          <div class="font-600" style="color:{% if rag_workflow.result.review_required %}var(--warning){% else %}var(--text){% endif %};">
+          <div class="font-600" id="metric-review-required" style="color:{% if rag_workflow.result.review_required %}var(--warning){% else %}var(--text){% endif %};">
             {% if rag_workflow.result.review_required %}Required{% else %}Not required{% endif %}
           </div>
         </div>
         <div class="card card-sm" style="background:var(--surface-2);">
           <div class="text-xs text-muted">Retrieved Chunks</div>
-          <div class="font-600" style="color:var(--text);">{{ rag_workflow.retrieval.retrieved_chunk_count|default:"—" }}</div>
+          <div class="font-600" id="metric-retrieved-chunk-count" style="color:var(--text);">{{ rag_workflow.retrieval.retrieved_chunk_count|default:"—" }}</div>
         </div>
         <div class="card card-sm" style="background:var(--surface-2);">
           <div class="text-xs text-muted">Context Tokens (est.)</div>
-          <div class="font-600" style="color:var(--text);">{{ rag_workflow.retrieval.total_context_tokens_est|default:"—" }}</div>
+          <div class="font-600" id="metric-total-context-tokens-est" style="color:var(--text);">{{ rag_workflow.retrieval.total_context_tokens_est|default:"—" }}</div>
         </div>
       </div>
     </div>
@@ -117,8 +117,11 @@
 
 <script>
 (function () {
-  const payload = JSON.parse(document.getElementById('_rag-workflow-json').textContent || '{}');
-  const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
+  let payload = JSON.parse(document.getElementById('_rag-workflow-json').textContent || '{}');
+  const page = document.getElementById('rag-page');
+  const jobId = page ? String(page.getAttribute('data-job-id') || '') : '';
+  let refreshTimer = null;
+  let refreshInFlight = false;
 
   const PHASE_LABELS = {
     indexing: 'Indexing',
@@ -134,11 +137,50 @@
   const phaseSel = document.getElementById('timeline-phase');
   const searchInput = document.getElementById('timeline-search');
   const timelineList = document.getElementById('timeline-list');
+  const metricMode = document.getElementById('metric-mode');
+  const metricSectionsIndexed = document.getElementById('metric-sections-indexed');
+  const metricFigureCaptions = document.getElementById('metric-figure-captions');
+  const metricRetrievalRounds = document.getElementById('metric-retrieval-rounds');
+  const metricAssaysParsed = document.getElementById('metric-assays-parsed');
+  const metricParseWarningCount = document.getElementById('metric-parse-warning-count');
+  const metricReviewCard = document.getElementById('metric-review-card');
+  const metricReviewRequired = document.getElementById('metric-review-required');
+  const metricRetrievedChunkCount = document.getElementById('metric-retrieved-chunk-count');
+  const metricTotalContextTokensEst = document.getElementById('metric-total-context-tokens-est');
+
+  function timelineRows() {
+    return Array.isArray(payload.timeline) ? payload.timeline : [];
+  }
+
+  function formatMetric(value, fallback) {
+    return value === null || value === undefined || value === '' ? fallback : String(value);
+  }
+
+  function renderMetrics() {
+    const indexing = payload && payload.indexing ? payload.indexing : {};
+    const retrieval = payload && payload.retrieval ? payload.retrieval : {};
+    const result = payload && payload.result ? payload.result : {};
+    if (metricMode) metricMode.textContent = formatMetric(payload.mode, 'per_job');
+    if (metricSectionsIndexed) metricSectionsIndexed.textContent = formatMetric(indexing.section_count, '0');
+    if (metricFigureCaptions) metricFigureCaptions.textContent = formatMetric(indexing.figure_caption_count, '0');
+    if (metricRetrievalRounds) metricRetrievalRounds.textContent = formatMetric(retrieval.rounds, '—');
+    if (metricAssaysParsed) metricAssaysParsed.textContent = formatMetric(result.assay_count, '0');
+    if (metricParseWarningCount) metricParseWarningCount.textContent = formatMetric(result.parse_warning_count, '0');
+    if (metricRetrievedChunkCount) metricRetrievedChunkCount.textContent = formatMetric(retrieval.retrieved_chunk_count, '—');
+    if (metricTotalContextTokensEst) metricTotalContextTokensEst.textContent = formatMetric(retrieval.total_context_tokens_est, '—');
+
+    const reviewRequired = !!(result && result.review_required);
+    if (metricReviewCard) metricReviewCard.style.background = reviewRequired ? 'var(--warning-soft)' : 'var(--surface-2)';
+    if (metricReviewRequired) {
+      metricReviewRequired.textContent = reviewRequired ? 'Required' : 'Not required';
+      metricReviewRequired.style.color = reviewRequired ? 'var(--warning)' : 'var(--text)';
+    }
+  }
 
   function countsByPhase() {
     const out = {};
     for (const p of PHASES) out[p] = 0;
-    for (const row of timeline) {
+    for (const row of timelineRows()) {
       const key = row && row.phase;
       if (Object.prototype.hasOwnProperty.call(out, key)) out[key] += 1;
     }
@@ -186,7 +228,7 @@
     const level = levelSel.value;
     const phase = phaseSel.value;
     const needle = (searchInput.value || '').trim().toLowerCase();
-    const rows = timeline.filter(row => {
+    const rows = timelineRows().filter(row => {
       const rowLevel = String(row.level || 'info').toLowerCase();
       const rowPhase = String(row.phase || 'post_parse_validation');
       const msg = String(row.message || '');
@@ -226,8 +268,54 @@
   levelSel.addEventListener('change', renderTimeline);
   phaseSel.addEventListener('change', renderTimeline);
   searchInput.addEventListener('input', renderTimeline);
-  renderGraph();
-  renderTimeline();
+
+  function renderAll() {
+    renderMetrics();
+    renderGraph();
+    renderTimeline();
+  }
+
+  async function refreshPayload() {
+    if (!jobId || refreshInFlight) return;
+    refreshInFlight = true;
+    try {
+      const response = await fetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/rag-workflow`, {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) return;
+      payload = await response.json();
+      renderAll();
+    } catch (_) {
+      // best-effort poll only
+    } finally {
+      refreshInFlight = false;
+    }
+  }
+
+  function startRefreshLoop() {
+    if (refreshTimer) return;
+    refreshTimer = setInterval(refreshPayload, 2500);
+  }
+
+  function stopRefreshLoop() {
+    if (!refreshTimer) return;
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      refreshPayload();
+      startRefreshLoop();
+      return;
+    }
+    stopRefreshLoop();
+  });
+
+  renderAll();
+  startRefreshLoop();
+  refreshPayload();
 })();
 </script>
 

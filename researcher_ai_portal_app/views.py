@@ -102,13 +102,25 @@ _VISION_FALLBACK_WARN_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _BIOWORKFLOW_BLOCKED_RE = re.compile(r"bioworkflow_blocked:.*?ungrounded_fields\s*=\s*(\d+)", re.IGNORECASE)
-_RAG_RETRIEVAL_ROUNDS_RE = re.compile(r"retrieval(?:_refinement)?[_\s-]*rounds?\s*[:=]\s*(\d+)", re.IGNORECASE)
+_RAG_RETRIEVAL_ROUNDS_RE = re.compile(
+    r"(?:"
+    r"(?:retrieval(?:_refinement)?[_\s-]*rounds?|rounds?[_\s-]*of[_\s-]*retrieval)\s*(?:[:=]|\bis\b|\bwas\b)?\s*(\d+)"
+    r"|retrieval(?:_refinement)?\s*(?:[:=]|\bis\b|\bwas\b)\s*(\d+)\s*rounds?"
+    r")",
+    re.IGNORECASE,
+)
 _RAG_RETRIEVED_CHUNKS_RE = re.compile(
-    r"(?:retrieved|retrieval)[_\s-]*(?:chunks?|docs?|documents?)\s*[:=]\s*(\d+)",
+    r"(?:"
+    r"(?:retrieved|retrieval)[_\s-]*(?:chunks?|docs?|documents?)\s*(?:[:=]|\bis\b|\bwas\b)?\s*(\d+)"
+    r"|(?:retrieved|retrieval)\s+(\d+)\s*(?:chunks?|docs?|documents?)"
+    r")",
     re.IGNORECASE,
 )
 _RAG_CONTEXT_TOKENS_RE = re.compile(
-    r"(?:total[_\s-]*)?context[_\s-]*tokens?(?:_est)?\s*[:=]\s*(\d+)",
+    r"(?:"
+    r"(?:total[_\s-]*)?context[_\s-]*tokens?(?:[_\s-]*est)?\s*(?:[:=]|\bis\b|\bwas\b)?\s*(\d+)"
+    r"|(\d+)\s*(?:total[_\s-]*)?context[_\s-]*tokens?(?:[_\s-]*est)?"
+    r")",
     re.IGNORECASE,
 )
 _LLM_ENV_LOCK = threading.RLock()
@@ -496,7 +508,8 @@ def _extract_retrieval_metrics(parse_warnings: list[Any], parse_logs: list[dict[
             match = rx.search(text)
             if not match:
                 continue
-            val = _safe_int(match.group(1), 0)
+            val_raw = next((g for g in match.groups() if g is not None), match.group(0))
+            val = _safe_int(val_raw, 0)
             if key == "retrieval_rounds":
                 retrieval_rounds = val
             elif key == "retrieved_chunk_count":

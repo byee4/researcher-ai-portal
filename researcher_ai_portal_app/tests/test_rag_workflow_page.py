@@ -95,6 +95,27 @@ def test_build_rag_workflow_payload_merges_parse_logs_when_no_structured_metadat
     assert payload["timeline"][0]["phase"] == "indexing"
 
 
+def test_build_rag_workflow_payload_extracts_retrieval_metrics_from_natural_language_logs():
+    payload = views.build_rag_workflow_payload(
+        {
+            "llm_model": "gpt-5.4",
+            "components": {"method": {"assay_graph": {"assays": [], "dependencies": []}}},
+            "parse_logs": [
+                {
+                    "ts": "2026-04-09T01:00:00Z",
+                    "step": "method",
+                    "level": "info",
+                    "message": "retrieval was 3 rounds; retrieved 21 chunks; context tokens est was 2450",
+                }
+            ],
+            "job_metadata": {},
+        }
+    )
+    assert payload["retrieval"]["rounds"] == 3
+    assert payload["retrieval"]["retrieved_chunk_count"] == 21
+    assert payload["retrieval"]["total_context_tokens_est"] == 2450
+
+
 def test_rag_workflow_view_is_user_scoped(monkeypatch, db):
     user = get_user_model().objects.create_user("rag_owner", password="pw")
     other = get_user_model().objects.create_user("rag_other", password="pw")
