@@ -12,6 +12,7 @@ import hashlib
 from datetime import datetime, timezone
 from html import unescape
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 from typing import Any, Callable
@@ -19,6 +20,8 @@ from urllib.parse import quote, urljoin, urlparse
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.db import connection
+from django.db.utils import DatabaseError
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -1656,12 +1659,20 @@ def _apply_assay_computational_preferences(
 
 
 def _load_assay_overrides_from_cache(job: dict[str, Any]) -> dict[str, bool]:
+    """Read assay override toggles from PaperCache, safely handling pre-migration DBs."""
     source_type = str(job.get("source_type") or "").strip().lower()
     source = str(job.get("source") or "").strip()
     if not source_type or not source:
         return {}
+    if not _papercache_has_assay_override_column():
+        return {}
     canonical_id = _canonical_paper_cache_id(source_type, source)
-    row = PaperCache.objects.filter(canonical_id=canonical_id).first()
+    try:
+        row = PaperCache.objects.filter(canonical_id=canonical_id).first()
+    except DatabaseError as exc:
+        if _is_missing_assay_override_column_error(exc):
+            return {}
+        raise
     if row is None or not isinstance(row.assay_computational_overrides, dict):
         return {}
     out: dict[str, bool] = {}
@@ -1673,25 +1684,57 @@ def _load_assay_overrides_from_cache(job: dict[str, Any]) -> dict[str, bool]:
 
 
 def _save_assay_override_to_cache(job: dict[str, Any], assay_name: str, enabled: bool) -> None:
+    """Persist one assay override toggle when the backing DB column exists."""
     source_type = str(job.get("source_type") or "").strip().lower()
     source = str(job.get("source") or "").strip()
     key = _assay_name_key(assay_name)
     if not source_type or not source or not key:
         return
+    if not _papercache_has_assay_override_column():
+        return
     canonical_id = _canonical_paper_cache_id(source_type, source)
-    row, _ = PaperCache.objects.get_or_create(
-        canonical_id=canonical_id,
-        defaults={
-            "paper_json": {},
-            "figures_json": [],
-            "llm_model": str(job.get("llm_model") or ""),
-            "assay_computational_overrides": {},
-        },
+    try:
+        row, _ = PaperCache.objects.get_or_create(
+            canonical_id=canonical_id,
+            defaults={
+                "paper_json": {},
+                "figures_json": [],
+                "llm_model": str(job.get("llm_model") or ""),
+                "assay_computational_overrides": {},
+            },
+        )
+        overrides = dict(row.assay_computational_overrides or {})
+        overrides[key] = bool(enabled)
+        row.assay_computational_overrides = overrides
+        row.save(update_fields=["assay_computational_overrides"])
+    except DatabaseError as exc:
+        if _is_missing_assay_override_column_error(exc):
+            return
+        raise
+
+
+def _is_missing_assay_override_column_error(exc: BaseException) -> bool:
+    """Return True when a DB error indicates the override column is absent."""
+    text = str(exc or "").lower()
+    return (
+        "assay_computational_overrides" in text
+        and ("no such column" in text or "unknown column" in text)
     )
-    overrides = dict(row.assay_computational_overrides or {})
-    overrides[key] = bool(enabled)
-    row.assay_computational_overrides = overrides
-    row.save(update_fields=["assay_computational_overrides"])
+
+
+@lru_cache(maxsize=1)
+def _papercache_has_assay_override_column() -> bool:
+    """Best-effort schema check to support instances that haven't run migration 0005 yet."""
+    table_name = PaperCache._meta.db_table
+    try:
+        with connection.cursor() as cursor:
+            description = connection.introspection.get_table_description(cursor, table_name)
+    except Exception:
+        # If introspection is unavailable for any reason, keep old behavior and
+        # let the calling code handle concrete DB exceptions.
+        return True
+    columns = {str(col.name or "").strip().casefold() for col in description}
+    return "assay_computational_overrides" in columns
 
 
 def _method_assay_rows(method_payload: Any, assay_catalog: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:

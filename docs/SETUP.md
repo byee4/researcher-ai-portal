@@ -54,6 +54,18 @@ All configuration is environment-driven. Copy `.env.example` to `.env` and fill 
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection string, e.g. `postgresql://user:pass@host:5432/db`. Omit to use a local SQLite file (`template.db`). | — |
 
+### Database migration troubleshooting (plain-English)
+
+If you see an error like `no such column: researcher_ai_portal_app_papercache.assay_computational_overrides`, your database schema is older than the current app code.
+
+Run migrations in the same environment that starts Django:
+
+```bash
+python manage.py migrate
+```
+
+The portal now safely skips assay-override cache reads/writes on pre-migration databases, but running migrations is still the correct long-term fix.
+
 ### Globus authentication (optional)
 
 Globus OAuth is the primary auth backend. Without it, the app falls back to Django's local authentication, which is sufficient for development.

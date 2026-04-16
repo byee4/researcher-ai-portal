@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from django.db.utils import OperationalError
+
 
 PORTAL_ROOT = Path(__file__).resolve().parents[2]
 if str(PORTAL_ROOT) not in sys.path:
@@ -290,6 +292,31 @@ def test_remove_method_step_renumbers_remaining_steps():
     steps = updated["assay_graph"]["assays"][0]["steps"]
     assert [s["description"] for s in steps] == ["A", "C"]
     assert [s["step_number"] for s in steps] == [1, 2]
+
+
+def test_load_assay_overrides_from_cache_returns_empty_on_missing_column_error(monkeypatch):
+    job = {"source_type": "pmid", "source": "12345"}
+
+    class _BrokenQuerySet:
+        def first(self):
+            raise OperationalError("no such column: researcher_ai_portal_app_papercache.assay_computational_overrides")
+
+    monkeypatch.setattr(views, "_papercache_has_assay_override_column", lambda: True)
+    monkeypatch.setattr(views.PaperCache.objects, "filter", lambda **kwargs: _BrokenQuerySet())
+
+    assert views._load_assay_overrides_from_cache(job) == {}
+
+
+def test_save_assay_override_to_cache_noops_on_missing_column_error(monkeypatch):
+    job = {"source_type": "pmid", "source": "12345", "llm_model": "gpt-5.4"}
+
+    def _raise_missing_column(**kwargs):
+        raise OperationalError("no such column: researcher_ai_portal_app_papercache.assay_computational_overrides")
+
+    monkeypatch.setattr(views, "_papercache_has_assay_override_column", lambda: True)
+    monkeypatch.setattr(views.PaperCache.objects, "get_or_create", _raise_missing_column)
+
+    views._save_assay_override_to_cache(job, "RNA-seq", True)
 
 
 def test_inject_method_step_correction_removes_resolved_warning_indices():
