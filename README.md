@@ -2,6 +2,12 @@
 
 A Django portal that wraps the [`researcher-ai`](https://github.com/byee4/researcher-ai) package, letting researchers submit any publication (PubMed ID or PDF) and extract a fully structured computational workflow: figures, assay graphs, datasets, software, and an executable Snakemake/Nextflow pipeline config.
 
+## Visual overview
+
+This diagram shows the portal's main workflow in plain English: submit a paper, let the six-stage parser extract structured biology metadata, review the results in the browser, and export a reusable workflow representation for downstream analysis.
+
+![researcher-ai-portal explainer](docs/images/researcher-ai-portal-explainer.png)
+
 ## What it does
 
 1. Accept a PubMed ID, DOI, or uploaded PDF.
